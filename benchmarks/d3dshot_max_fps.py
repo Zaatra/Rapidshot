@@ -1,7 +1,6 @@
 import time
 import d3dshot
 
-
 TOP = 0
 LEFT = 0
 RIGHT = 1920
@@ -12,18 +11,16 @@ start_time = time.perf_counter()
 
 fps = 0
 
-
-sct = d3dshot.create(capture_output="numpy")
-
+# Create a screencapture instance using d3dshot
+screencapture = d3dshot.create(capture_output="numpy")
 
 start = time.perf_counter()
 while fps < 1000:
-    frame = sct.screenshot(region)
+    frame = screencapture.screenshot(region)
     if frame is not None:
         fps += 1
-
 
 end_time = time.perf_counter() - start_time
 
 print(f"{title}: {fps/end_time}")
-sct.stop()
+screencapture.stop()

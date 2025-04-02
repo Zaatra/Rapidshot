@@ -1,6 +1,6 @@
 # RapidShot
 
-A high-performance screenshot library for Windows using the Desktop Duplication API. This is a merged version combining features from multiple DXcam forks, designed to deliver ultra-fast capture capabilities with advanced functionality.
+A high-performance screencapture library for Windows using the Desktop Duplication API. This is a merged version combining features from multiple DXCam forks, designed to deliver ultra-fast capture capabilities with advanced functionality.
 
 ## Features
 
@@ -16,7 +16,8 @@ A high-performance screenshot library for Windows using the Desktop Duplication 
 
 ## Installation
 
-> **Note:** The package is installed as rapidshot and imported as import rapidshot.
+> **Note:** The package is installed as `rapidshot` and imported as `import rapidshot`.
+
 ### Basic Installation
 
 ```bash
@@ -43,18 +44,18 @@ pip install rapidshot[all]
 
 ## Quick Start
 
-### Basic Screenshot
+### Basic Screencapture
 
 ```python
 import rapidshot
 
-# Create a RapidShot instance on the primary monitor
-camera = rapidshot.create()
+# Create a ScreenCapture instance on the primary monitor
+screencapture = rapidshot.create()
 
-# Take a screenshot
-frame = camera.grab()
+# Take a screencapture
+frame = screencapture.grab()
 
-# Display the screenshot
+# Display the screencapture
 from PIL import Image
 Image.fromarray(frame).show()
 ```
@@ -68,22 +69,22 @@ right, bottom = left + 640, top + 640
 region = (left, top, right, bottom)
 
 # Capture only this region
-frame = camera.grab(region=region)  # 640x640x3 numpy.ndarray
+frame = screencapture.grab(region=region)  # 640x640x3 numpy.ndarray
 ```
 
 ### Continuous Capture
 
 ```python
 # Start capturing at 60 FPS
-camera.start(target_fps=60)
+screencapture.start(target_fps=60)
 
 # Get the latest frame
 for i in range(1000):
-    image = camera.get_latest_frame()  # Blocks until new frame is available
+    image = screencapture.get_latest_frame()  # Blocks until new frame is available
     # Process the frame...
 
 # Stop capturing
-camera.stop()
+screencapture.stop()
 ```
 
 ### Video Recording
@@ -92,11 +93,11 @@ camera.stop()
 import rapidshot
 import cv2
 
-# Create a RapidShot instance with BGR color format for OpenCV
-camera = rapidshot.create(output_color="BGR")
+# Create a ScreenCapture instance with BGR color format for OpenCV
+screencapture = rapidshot.create(output_color="BGR")
 
 # Start capturing at 30 FPS in video mode
-camera.start(target_fps=30, video_mode=True)
+screencapture.start(target_fps=30, video_mode=True)
 
 # Create a video writer
 writer = cv2.VideoWriter(
@@ -105,31 +106,31 @@ writer = cv2.VideoWriter(
 
 # Record for 10 seconds (300 frames at 30 FPS)
 for i in range(300):
-    writer.write(camera.get_latest_frame())
+    writer.write(screencapture.get_latest_frame())
 
 # Clean up
-camera.stop()
+screencapture.stop()
 writer.release()
 ```
 
 ### NVIDIA GPU Acceleration
 
 ```python
-# Create a RapidShot instance with NVIDIA GPU acceleration
-camera = rapidshot.create(nvidia_gpu=True)
+# Create a ScreenCapture instance with NVIDIA GPU acceleration
+screencapture = rapidshot.create(nvidia_gpu=True)
 
 # Screenshots will be processed on the GPU for improved performance
-frame = camera.grab()
+frame = screencapture.grab()
 ```
 
 ### Cursor Capture
 
 ```python
 # Take a screenshot
-frame = camera.grab()
+frame = screencapture.grab()
 
 # Get cursor information
-cursor = camera.grab_cursor()
+cursor = screencapture.grab_cursor()
 
 # Check if cursor is visible in the capture area
 if cursor.PointerPositionInfo.Visible:
@@ -151,10 +152,10 @@ if cursor.PointerPositionInfo.Visible:
 print(rapidshot.device_info())
 print(rapidshot.output_info())
 
-# Create camera instances for specific devices/outputs
-cam1 = rapidshot.create(device_idx=0, output_idx=0)  # First monitor on first GPU
-cam2 = rapidshot.create(device_idx=0, output_idx=1)  # Second monitor on first GPU
-cam3 = rapidshot.create(device_idx=1, output_idx=0)  # First monitor on second GPU
+# Create ScreenCapture instances for specific devices/outputs
+capture1 = rapidshot.create(device_idx=0, output_idx=0)  # First monitor on first GPU
+capture2 = rapidshot.create(device_idx=0, output_idx=1)  # Second monitor on first GPU
+capture3 = rapidshot.create(device_idx=1, output_idx=0)  # First monitor on second GPU
 ```
 
 ## Advanced Usage
@@ -162,34 +163,34 @@ cam3 = rapidshot.create(device_idx=1, output_idx=0)  # First monitor on second G
 ### Custom Buffer Size
 
 ```python
-# Create a camera with a larger frame buffer
-camera = rapidshot.create(max_buffer_len=256)
+# Create a ScreenCapture instance with a larger frame buffer
+screencapture = rapidshot.create(max_buffer_len=256)
 ```
 
 ### Different Color Formats
 
 ```python
 # RGB (default)
-camera_rgb = rapidshot.create(output_color="RGB")
+screencapture_rgb = rapidshot.create(output_color="RGB")
 
 # RGBA (with alpha channel)
-camera_rgba = rapidshot.create(output_color="RGBA")
+screencapture_rgba = rapidshot.create(output_color="RGBA")
 
 # BGR (OpenCV format)
-camera_bgr = rapidshot.create(output_color="BGR")
+screencapture_bgr = rapidshot.create(output_color="BGR")
 
 # Grayscale
-camera_gray = rapidshot.create(output_color="GRAY")
+screencapture_gray = rapidshot.create(output_color="GRAY")
 ```
 
 ### Resource Management
 
 ```python
 # Release resources when done
-camera.release()
+screencapture.release()
 
 # Or automatically released when object is deleted
-del camera
+del screencapture
 
 # Clean up all resources
 rapidshot.clean_up()
@@ -202,7 +203,7 @@ rapidshot.reset()
 - **Operating System:** Windows 10 or newer
 - **Python:** 3.7+
 - **GPU:** Compatible GPU for NVIDIA acceleration (for GPU features)
-- **RAM:** 8 GB+ (depending on the resolution and number of cameras used)
+- **RAM:** 8 GB+ (depending on the resolution and number of screencapture instances used)
 
 | Library         | Average FPS | GPU-accelerated FPS |
 |-----------------|-------------|---------------------|

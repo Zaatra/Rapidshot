@@ -1,69 +1,126 @@
-"""A Minimal example of creating a ghetto instant replay with hotkeys.
-Took less than 5 minutes to write using pyav + dxcam + pynput.
-The code is shit but you got the idea.
 """
+A minimal example of creating an instant replay with hotkeys using pyav,
+rapidshot, and pynput.
+
+Hotkeys:
+    - Ctrl+Alt+H: Save a replay of the last N seconds.
+    - Ctrl+Alt+I: Stop the recording.
+
+Press the hotkeys during execution to trigger the respective actions.
+"""
+
+import logging
+import time
 from collections import deque
 from threading import Event, Lock
-import dxcam
+
+import rapidshot  # Updated library name
 import av
 from pynput import keyboard
 
-
-stop_event = Event()
-buffer_lock = Lock()
-replay_count = 0
-target_fps = 120
-buffer = deque(maxlen=target_fps * 10)
-
-container = av.open(f"replay{replay_count}.mp4", mode="w")
-stream = container.add_stream("mpeg4", rate=target_fps)
-stream.pix_fmt, stream.height, stream.width = "yuv420p", 1080, 1920
-stream.bit_rate = 8_000_000
-
-camera = dxcam.create(output_color="RGB")
-camera.start(target_fps=target_fps, video_mode=True)
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
-def save_replay():
-    global container, buffer_lock, stream, buffer, replay_count
-    print("Saving Instant Replay for the last 10 seconds...")
-    with buffer_lock:
-        for idx, packet in enumerate(buffer):
-            packet.pts = packet.dts = idx
-            container.mux(packet)
-    for packet in stream.encode():
-        container.mux(packet)
-    container.close()
-    replay_count += 1
-    container = av.open(f"replay{replay_count}.mp4", mode="w")
-    stream = container.add_stream("mpeg4", rate=target_fps)
-    stream.pix_fmt, stream.height, stream.width = "yuv420p", 1080, 1920
-    stream.bit_rate = 8_000_000
+class InstantReplayRecorder:
+    def __init__(
+        self,
+        target_fps: int = 120,
+        replay_duration_sec: int = 10,
+        resolution: tuple = (1920, 1080),
+        output_format: str = "mpeg4",
+        output_pix_fmt: str = "yuv420p",
+        bitrate: int = 8_000_000,
+    ):
+        self.target_fps = target_fps
+        self.replay_duration_sec = replay_duration_sec
+        self.resolution = resolution
+        self.output_format = output_format
+        self.output_pix_fmt = output_pix_fmt
+        self.bitrate = bitrate
 
+        # Buffer holds encoded AV packets for the last replay_duration_sec seconds
+        self.buffer = deque(maxlen=self.target_fps * self.replay_duration_sec)
+        self.buffer_lock = Lock()
+        self.stop_event = Event()
+        self.replay_count = 0
 
-def stop_record():
-    global stop_event
-    print("Closing")
-    stop_event.set()
+        # Create the initial AV container and stream for writing replay video
+        self.container, self.stream = self._create_container()
 
+        # Initialize screen capture via rapidshot
+        self.screencapture = rapidshot.create(output_color="RGB")
+        self.screencapture.start(target_fps=self.target_fps, video_mode=True)
 
-listener = keyboard.GlobalHotKeys(
-    {"<ctrl>+<alt>+h": save_replay, "<ctrl>+<alt>+i": stop_record}
-)
-listener.start()
-try:
-    listener.wait()
-    while not stop_event.is_set():
-        frame = av.VideoFrame.from_ndarray(camera.get_latest_frame(), format="rgb24")
+        logging.info("InstantReplayRecorder initialized. Press Ctrl+Alt+H to save replay, Ctrl+Alt+I to stop.")
+
+    def _create_container(self):
+        """Creates a new AV container and stream for recording the replay."""
+        filename = f"replay{self.replay_count}.mp4"
+        container = av.open(filename, mode="w")
+        stream = container.add_stream(self.output_format, rate=self.target_fps)
+        stream.pix_fmt = self.output_pix_fmt
+        stream.width, stream.height = self.resolution
+        stream.bit_rate = self.bitrate
+        logging.info(f"Created new container: {filename}")
+        return container, stream
+
+    def save_replay(self):
+        """Saves the current buffer as a replay video."""
+        logging.info("Saving Instant Replay for the last {} seconds...".format(self.replay_duration_sec))
+        with self.buffer_lock:
+            for idx, packet in enumerate(self.buffer):
+                packet.pts = packet.dts = idx
+                self.container.mux(packet)
+        # Flush any remaining frames
+        for packet in self.stream.encode():
+            self.container.mux(packet)
+        self.container.close()
+        logging.info(f"Replay saved as replay{self.replay_count}.mp4")
+        self.replay_count += 1
+        self.container, self.stream = self._create_container()
+
+    def stop_record(self):
+        """Stops the recording loop."""
+        logging.info("Stopping recording.")
+        self.stop_event.set()
+
+    def run(self):
+        """Runs the main loop for capturing frames and handling hotkeys."""
+        hotkey_listener = keyboard.GlobalHotKeys({
+            "<ctrl>+<alt>+h": self.save_replay,
+            "<ctrl>+<alt>+i": self.stop_record
+        })
+        hotkey_listener.start()
+        logging.info("Hotkey listener started. Awaiting input...")
+
         try:
-            with buffer_lock:
-                for packet in stream.encode(frame):
-                    buffer.append(packet)
-            del frame
-        except Exception as e:
-            continue
-finally:
-    listener.stop()
-listener.join()
-camera.stop()
-container.close()
+            while not self.stop_event.is_set():
+                frame_data = self.screencapture.get_latest_frame()
+                if frame_data is None:
+                    continue
+                try:
+                    # Convert the captured frame to an AV video frame for encoding
+                    frame = av.VideoFrame.from_ndarray(frame_data, format="rgb24")
+                    with self.buffer_lock:
+                        for packet in self.stream.encode(frame):
+                            self.buffer.append(packet)
+                except Exception as e:
+                    logging.error("Error encoding frame: %s", e)
+        except KeyboardInterrupt:
+            logging.info("KeyboardInterrupt received. Exiting...")
+        finally:
+            hotkey_listener.stop()
+            hotkey_listener.join()
+            self.screencapture.stop()
+            self.container.close()
+            logging.info("Recording stopped and resources released.")
+
+
+def main():
+    recorder = InstantReplayRecorder()
+    recorder.run()
+
+
+if __name__ == "__main__":
+    main()

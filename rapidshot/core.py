@@ -4,10 +4,10 @@ from typing import Tuple, Optional, Union, List, Any
 from threading import Thread, Event, Lock
 import comtypes
 import numpy as np
-from dxcam.core import Device, Output, StageSurface, Duplicator
-from dxcam._libs.d3d11 import D3D11_BOX
-from dxcam.processor import Processor
-from dxcam.util.timer import (
+from rapidshot.core import Device, Output, StageSurface, Duplicator
+from rapidshot._libs.d3d11 import D3D11_BOX
+from rapidshot.processor import Processor
+from rapidshot.util.timer import (
     create_high_resolution_timer,
     set_periodic_timer,
     wait_for_timer,
@@ -23,8 +23,7 @@ try:
 except ImportError:
     CUPY_AVAILABLE = False
 
-
-class DXCamera:
+class ScreenCapture:
     def __init__(
         self,
         output: Output,
@@ -35,7 +34,7 @@ class DXCamera:
         max_buffer_len: int = 64,
     ) -> None:
         """
-        Initialize a DXCamera instance.
+        Initialize a ScreenCapture instance.
         
         Args:
             output: Output device to capture from
@@ -297,7 +296,7 @@ class DXCamera:
             
         self.__thread = Thread(
             target=self.__capture,
-            name="DXCamera",
+            name="ScreenCapture",
             args=(region, target_fps, video_mode),
         )
         self.__thread.daemon = True
@@ -435,7 +434,7 @@ class DXCamera:
         # Report capture statistics
         capture_time = time.perf_counter() - self.__capture_start_time
         if capture_time > 0:
-            print(f"Screen Capture FPS: {int(self.__frame_count/capture_time)}")
+            print(f"Screencapture FPS: {int(self.__frame_count/capture_time)}")
 
     def _rebuild_frame_buffer(self, region: Tuple[int, int, int, int]):
         """
@@ -507,10 +506,10 @@ class DXCamera:
         String representation.
         
         Returns:
-            String representation of the DXCamera instance
+            String representation of the ScreenCapture instance
         """
         return "<{}:\n\t{},\n\t{},\n\t{},\n\t{}\n>".format(
-            self.__class__.__name__,
+            "ScreenCapture",
             self._device,
             self._output,
             self._stagesurf,

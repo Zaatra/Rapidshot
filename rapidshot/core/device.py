@@ -2,8 +2,8 @@ import ctypes
 from dataclasses import dataclass
 from typing import List
 import comtypes
-from dxcam._libs.d3d11 import *
-from dxcam._libs.dxgi import *
+from rapidshot._libs.d3d11 import *
+from rapidshot._libs.dxgi import *
 
 
 @dataclass

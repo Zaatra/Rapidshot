@@ -126,7 +126,7 @@ class Processor:
         """
         if backend == ProcessorBackends.NUMPY:
             try:
-                from dxcam.processor.numpy_processor import NumpyProcessor
+                from rapidshot.processor.numpy_processor import NumpyProcessor
                 return NumpyProcessor(self.color_mode)
             except ImportError:
                 print("NumPy backend not available, falling back to PIL")
@@ -135,18 +135,18 @@ class Processor:
         
         if backend == ProcessorBackends.CUPY:
             try:
-                from dxcam.processor.cupy_processor import CupyProcessor
+                from rapidshot.processor.cupy_processor import CupyProcessor
                 return CupyProcessor(self.color_mode)
             except ImportError:
                 print("CuPy backend not available, falling back to NumPy")
-                from dxcam.processor.numpy_processor import NumpyProcessor
+                from rapidshot.processor.numpy_processor import NumpyProcessor
                 backend = ProcessorBackends.NUMPY
                 self._active_backend_type = backend
                 return NumpyProcessor(self.color_mode)
         
         if backend == ProcessorBackends.PIL:
             try:
-                from dxcam.processor.pillow_processor import PillowProcessor
+                from rapidshot.processor.pillow_processor import PillowProcessor
                 return PillowProcessor(self.color_mode)
             except ImportError:
                 raise ImportError("No available backend. Please install either NumPy or PIL.")

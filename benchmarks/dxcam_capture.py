@@ -1,7 +1,6 @@
 import time
 import dxcam
 
-
 TOP = 0
 LEFT = 0
 RIGHT = 1920
@@ -10,9 +9,9 @@ region = (LEFT, TOP, RIGHT, BOTTOM)
 title = "[DXcam] Capture benchmark"
 
 fps = 0
-camera = dxcam.create(output_idx=0)
-camera.start(target_fps=60)
+screencapture = dxcam.create(output_idx=0)
+screencapture.start(target_fps=60)
 for i in range(1000):
-    image = camera.get_latest_frame()
-camera.stop()
-del camera
+    image = screencapture.get_latest_frame()
+screencapture.stop()
+del screencapture

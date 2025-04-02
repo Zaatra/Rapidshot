@@ -4,14 +4,14 @@ with open("README.md", "r", encoding='utf-8') as f:
     long_description = f.read()
 
 setup(
-    name="dxcam-merged",
+    name="rapidshot",
     version="1.0.0",
-    description="A high-performance screenshot library for Windows using Desktop Duplication API",
+    description="A high-performance screencapture library for Windows using Desktop Duplication API",
     packages=find_packages(),
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/dxcam-merged",
-    author="DXcam Contributors",
+    url="https://github.com/Zaatra/Rapidshot",
+    author="Rapidshot Contributors",
     license="MIT",
     classifiers=[
         "Development Status :: 4 - Beta",

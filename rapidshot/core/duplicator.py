@@ -1,10 +1,10 @@
 import ctypes
 from time import sleep
 from dataclasses import dataclass, InitVar
-from dxcam._libs.d3d11 import *
-from dxcam._libs.dxgi import *
-from dxcam.core.device import Device
-from dxcam.core.output import Output
+from rapidshot._libs.d3d11 import *
+from rapidshot._libs.dxgi import *
+from rapidshot.core.device import Device
+from rapidshot.core.output import Output
 
 
 @dataclass

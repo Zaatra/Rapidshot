@@ -1,8 +1,8 @@
 import weakref
 import time
-from dxcam.dxcam import DXCamera
-from dxcam.core import Output, Device
-from dxcam.util.io import (
+from rapidshot.core import ScreenCapture
+from rapidshot.core import Output, Device
+from rapidshot.util.io import (
     enum_dxgi_adapters,
     get_output_metadata,
 )
@@ -10,18 +10,17 @@ from dxcam.util.io import (
 # Define explicitly what's exposed from this module
 __all__ = [
     "create", "device_info", "output_info", 
-    "clean_up", "reset", "DXCamera",
-    "DXCamError"
+    "clean_up", "reset", "ScreenCapture",
+    "RapidshotError"
 ]
 
-class DXCamError(Exception):
-    """Base exception for DXCam errors."""
+class RapidshotError(Exception):
+    """Base exception for Rapidshot errors."""
     pass
-
 
 class Singleton(type):
     """
-    Singleton metaclass to ensure only one instance of DXFactory exists.
+    Singleton metaclass to ensure only one instance of RapidshotFactory exists.
     """
     _instances = {}
 
@@ -30,16 +29,14 @@ class Singleton(type):
             cls._instances[cls] = super(Singleton, cls).__call__(*args, **kwargs)
         else:
             print(f"Only 1 instance of {cls.__name__} is allowed.")
-
         return cls._instances[cls]
 
-
-class DXFactory(metaclass=Singleton):
+class RapidshotFactory(metaclass=Singleton):
     """
-    Factory class for creating DXCamera instances.
-    Maintains a registry of created cameras to avoid duplicates.
+    Factory class for creating ScreenCapture instances.
+    Maintains a registry of created screencapture instances to avoid duplicates.
     """
-    _camera_instances = weakref.WeakValueDictionary()
+    _screencapture_instances = weakref.WeakValueDictionary()
 
     def __init__(self) -> None:
         """
@@ -67,7 +64,7 @@ class DXFactory(metaclass=Singleton):
         max_buffer_len: int = 64,
     ):
         """
-        Create a DXCamera instance.
+        Create a ScreenCapture instance.
         
         Args:
             device_idx: Device index
@@ -78,11 +75,11 @@ class DXFactory(metaclass=Singleton):
             max_buffer_len: Maximum buffer length for capture
             
         Returns:
-            DXCamera instance
+            ScreenCapture instance
         """
         # Validate device index
         if device_idx >= len(self.devices):
-            raise DXCamError(f"Invalid device index: {device_idx}, max index is {len(self.devices)-1}")
+            raise RapidshotError(f"Invalid device index: {device_idx}, max index is {len(self.devices)-1}")
             
         device = self.devices[device_idx]
         
@@ -101,26 +98,26 @@ class DXFactory(metaclass=Singleton):
             else:
                 output_idx = output_idx_list[0]
         elif output_idx >= len(self.outputs[device_idx]):
-            raise DXCamError(f"Invalid output index: {output_idx}, max index is {len(self.outputs[device_idx])-1}")
+            raise RapidshotError(f"Invalid output index: {output_idx}, max index is {len(self.outputs[device_idx])-1}")
         
         # Check if instance already exists
         instance_key = (device_idx, output_idx)
-        if instance_key in self._camera_instances:
+        if instance_key in self._screencapture_instances:
             print(
                 "".join(
                     (
-                        f"You already created a DXCamera Instance for Device {device_idx}--Output {output_idx}!\n",
+                        f"You already created a ScreenCapture Instance for Device {device_idx}--Output {output_idx}!\n",
                         "Returning the existed instance...\n",
                         "To change capture parameters you can manually delete the old object using `del obj`.",
                     )
                 )
             )
-            return self._camera_instances[instance_key]
+            return self._screencapture_instances[instance_key]
 
         # Create new instance
         output = self.outputs[device_idx][output_idx]
         output.update_desc()
-        camera = DXCamera(
+        screencapture = ScreenCapture(
             output=output,
             device=device,
             region=region,
@@ -128,11 +125,11 @@ class DXFactory(metaclass=Singleton):
             nvidia_gpu=nvidia_gpu,
             max_buffer_len=max_buffer_len,
         )
-        self._camera_instances[instance_key] = camera
+        self._screencapture_instances[instance_key] = screencapture
         
         # Small delay to ensure initialization is complete
         time.sleep(0.1)
-        return camera
+        return screencapture
 
     def device_info(self) -> str:
         """
@@ -163,23 +160,21 @@ class DXFactory(metaclass=Singleton):
 
     def clean_up(self):
         """
-        Release all created camera instances.
+        Release all created screencapture instances.
         """
-        for _, camera in self._camera_instances.items():
-            camera.release()
+        for _, screencapture in self._screencapture_instances.items():
+            screencapture.release()
 
     def reset(self):
         """
         Reset the factory, releasing all resources.
         """
         self.clean_up()
-        self._camera_instances.clear()
+        self._screencapture_instances.clear()
         Singleton._instances.clear()
 
-
 # Global factory instance
-__factory = DXFactory()
-
+__factory = RapidshotFactory()
 
 def create(
     device_idx: int = 0,
@@ -190,7 +185,7 @@ def create(
     max_buffer_len: int = 64,
 ):
     """
-    Create a DXCamera instance.
+    Create a ScreenCapture instance.
     
     Args:
         device_idx: Device index
@@ -201,7 +196,7 @@ def create(
         max_buffer_len: Maximum buffer length for capture
         
     Returns:
-        DXCamera instance
+        ScreenCapture instance
     """
     return __factory.create(
         device_idx=device_idx,
@@ -212,7 +207,6 @@ def create(
         max_buffer_len=max_buffer_len,
     )
 
-
 def device_info():
     """
     Get information about available devices.
@@ -221,7 +215,6 @@ def device_info():
         String with device information
     """
     return __factory.device_info()
-
 
 def output_info():
     """
@@ -232,13 +225,11 @@ def output_info():
     """
     return __factory.output_info()
 
-
 def clean_up():
     """
-    Release all created camera instances.
+    Release all created screencapture instances.
     """
     __factory.clean_up()
-
 
 def reset():
     """
@@ -246,11 +237,10 @@ def reset():
     """
     __factory.reset()
 
-
 # Version information
 __version__ = "1.0.0"
-__author__ = "DXCam Contributors"
-__description__ = "High-performance screenshot library for Windows using Desktop Duplication API"
+__author__ = "Rapidshot Contributors"
+__description__ = "High-performance screencapture library for Windows using Desktop Duplication API"
 
 # Expose key classes
-from dxcam.dxcam import DXCamera
+from rapidshot.core import ScreenCapture
