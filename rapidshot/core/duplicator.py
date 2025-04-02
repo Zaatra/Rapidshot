@@ -1,11 +1,24 @@
 import ctypes
+import logging
 from time import sleep
 from dataclasses import dataclass, InitVar
+from typing import Tuple, Optional, Union
 from rapidshot._libs.d3d11 import *
 from rapidshot._libs.dxgi import *
 from rapidshot.core.device import Device
 from rapidshot.core.output import Output
 
+# Configure logging
+logger = logging.getLogger(__name__)
+
+# Error constants for better reporting
+CURSOR_ERRORS = {
+    "NO_SHAPE": "No cursor shape available",
+    "SHAPE_BUFFER_EMPTY": "Cursor shape buffer is empty",
+    "BUFFER_TOO_SMALL": "Provided buffer is too small for cursor shape",
+    "QUERY_FAILED": "Failed to query cursor shape information",
+    "INTERFACE_ERROR": "Failed to access cursor interface"
+}
 
 @dataclass
 class Cursor:
@@ -29,6 +42,7 @@ class Duplicator:
     output: InitVar[Output] = None
     device: InitVar[Device] = None
     cursor: Cursor = Cursor()
+    last_error: str = ""
 
     def __post_init__(self, output: Output, device: Device) -> None:
         """
@@ -38,12 +52,19 @@ class Duplicator:
             output: Output to duplicate
             device: Device to use
         """
-        self.output = output
-        self.device = device
-        self.duplicator = ctypes.POINTER(IDXGIOutputDuplication)()
-        output.output.DuplicateOutput(device.device, ctypes.byref(self.duplicator))
+        try:
+            self.output = output
+            self.device = device
+            self.duplicator = ctypes.POINTER(IDXGIOutputDuplication)()
+            output.output.DuplicateOutput(device.device, ctypes.byref(self.duplicator))
+            logger.info(f"Duplicator initialized for output: {output.devicename}")
+        except comtypes.COMError as ce:
+            error_msg = f"Failed to initialize duplicator: {ce}"
+            logger.error(error_msg)
+            self.last_error = error_msg
+            raise RuntimeError(error_msg) from ce
 
-    def update_frame(self):
+    def update_frame(self) -> bool:
         """
         Update the frame and cursor state.
         
@@ -62,17 +83,23 @@ class Duplicator:
                 ctypes.byref(res),
             )
             frame_acquired = True
+            logger.debug("Frame acquired successfully")
             
             # Update cursor information if available
             if info.LastMouseUpdateTime.QuadPart > 0:
-                new_pointer_info, new_pointer_shape = self.get_frame_pointer_shape(info)
-                if new_pointer_shape is not False:
-                    self.cursor.Shape = new_pointer_shape
-                    self.cursor.PointerShapeInfo = new_pointer_info
+                cursor_result = self.get_frame_pointer_shape(info)
+                if isinstance(cursor_result, tuple) and len(cursor_result) == 3:
+                    new_pointer_info, new_pointer_shape, error_msg = cursor_result
+                    if new_pointer_shape is not False:
+                        self.cursor.Shape = new_pointer_shape
+                        self.cursor.PointerShapeInfo = new_pointer_info
+                    elif error_msg:
+                        logger.debug(f"Cursor shape not updated: {error_msg}")
                 self.cursor.PointerPositionInfo = info.PointerPosition
                 
             # No new frames
             if info.LastPresentTime.QuadPart == 0: 
+                logger.debug("No new frame content")
                 self.updated = False
                 return True
        
@@ -81,7 +108,10 @@ class Duplicator:
                 self.texture = res.QueryInterface(ID3D11Texture2D)
                 self.updated = True
                 return True
-            except comtypes.COMError:
+            except comtypes.COMError as ce:
+                error_msg = f"Failed to query texture interface: {ce}"
+                logger.warning(error_msg)
+                self.last_error = error_msg
                 self.updated = False
                 return True
                 
@@ -89,6 +119,7 @@ class Duplicator:
             # Handle access lost (e.g., display mode change)
             if (ctypes.c_int32(DXGI_ERROR_ACCESS_LOST).value == ce.args[0] or 
                 ctypes.c_int32(ABANDONED_MUTEX_EXCEPTION).value == ce.args[0]):
+                logger.info("Display mode changed or access lost, reinitializing duplicator")
                 self.release()  # Release resources before reinitializing
                 sleep(0.1)
                 # Re-initialize (will be picked up by _on_output_change)
@@ -96,50 +127,71 @@ class Duplicator:
                 
             # Handle timeout
             if ctypes.c_int32(DXGI_ERROR_WAIT_TIMEOUT).value == ce.args[0]:
+                logger.debug("Frame acquisition timed out")
                 self.updated = False
                 return True
                 
             # Other unexpected errors
+            error_msg = f"Unexpected error in update_frame: {ce}"
+            logger.error(error_msg)
+            self.last_error = error_msg
             raise ce
-        except Exception:
+        except Exception as e:
             # Catch any other unexpected exceptions to ensure cleanup
+            error_msg = f"Exception in update_frame: {e}"
+            logger.error(error_msg)
+            self.last_error = error_msg
             self.updated = False
             raise
         finally:
             # Always release the frame if it was acquired
             if frame_acquired:
-                self.duplicator.ReleaseFrame()
+                try:
+                    self.duplicator.ReleaseFrame()
+                except Exception as e:
+                    logger.warning(f"Failed to release frame: {e}")
                 
             # If we have a resource pointer but failed to get the texture,
             # ensure it's properly released
             if frame_acquired and res and not self.texture:
-                res.Release()
+                try:
+                    res.Release()
+                except Exception as e:
+                    logger.warning(f"Failed to release resource: {e}")
 
-    def release_frame(self):
+    def release_frame(self) -> None:
         """
         Release the current frame.
         """
         if self.duplicator is not None:
             try:
                 self.duplicator.ReleaseFrame()
-            except (comtypes.COMError, Exception):
-                # If ReleaseFrame fails, don't crash
-                pass
+                logger.debug("Frame released")
+            except comtypes.COMError as ce:
+                error_msg = f"Failed to release frame: {ce}"
+                logger.warning(error_msg)
+                self.last_error = error_msg
+            except Exception as e:
+                logger.warning(f"Unexpected error releasing frame: {e}")
 
-    def release(self):
+    def release(self) -> None:
         """
         Release all resources.
         """
         if self.duplicator is not None:
             try:
                 self.duplicator.Release()
-            except (comtypes.COMError, Exception):
-                # If Release fails, don't crash
-                pass
+                logger.info("Duplicator resources released")
+            except comtypes.COMError as ce:
+                error_msg = f"Failed to release duplicator: {ce}"
+                logger.warning(error_msg)
+                self.last_error = error_msg
+            except Exception as e:
+                logger.warning(f"Unexpected error releasing duplicator: {e}")
             finally:
                 self.duplicator = None
 
-    def get_frame_pointer_shape(self, frame_info):
+    def get_frame_pointer_shape(self, frame_info) -> Union[Tuple[DXGI_OUTDUPL_POINTER_SHAPE_INFO, bytes, str], Tuple[bool, bool, str]]:
         """
         Get pointer shape information from the current frame.
         
@@ -147,18 +199,24 @@ class Duplicator:
             frame_info: Frame information
             
         Returns:
-            Tuple of (pointer shape info, pointer shape buffer) or (False, False) if no shape
+            Tuple of (pointer shape info, pointer shape buffer, error_message) or (False, False, error_message) if error
         """
         # Skip if no pointer shape
         if frame_info.PointerShapeBufferSize == 0:
-            return False, False
+            return False, False, CURSOR_ERRORS["NO_SHAPE"]
             
         # Allocate buffer for pointer shape
         pointer_shape_info = DXGI_OUTDUPL_POINTER_SHAPE_INFO()  
         buffer_size_required = ctypes.c_uint()
-        pointer_shape_buffer = (ctypes.c_byte * frame_info.PointerShapeBufferSize)()
         
         try:
+            # Verify buffer size
+            if frame_info.PointerShapeBufferSize <= 0:
+                return False, False, CURSOR_ERRORS["SHAPE_BUFFER_EMPTY"]
+                
+            # Allocate buffer
+            pointer_shape_buffer = (ctypes.c_byte * frame_info.PointerShapeBufferSize)()
+            
             # Get pointer shape
             hr = self.duplicator.GetFramePointerShape(
                 frame_info.PointerShapeBufferSize, 
@@ -168,12 +226,41 @@ class Duplicator:
             ) 
             
             if hr >= 0:  # Success
-                return pointer_shape_info, pointer_shape_buffer
-        except (comtypes.COMError, Exception):
-            # Handle any exceptions getting the pointer shape
-            pass
+                logger.debug(f"Cursor shape acquired: {pointer_shape_info.Width}x{pointer_shape_info.Height}, Type: {pointer_shape_info.Type}")
+                return pointer_shape_info, pointer_shape_buffer, ""
+            else:
+                error_msg = f"GetFramePointerShape returned error code: {hr}"
+                logger.warning(error_msg)
+                self.last_error = error_msg
+                return False, False, error_msg
+                
+        except comtypes.COMError as ce:
+            if ctypes.c_int32(DXGI_ERROR_NOT_FOUND).value == ce.args[0]:
+                error_msg = f"Cursor shape not found: {ce}"
+            elif ctypes.c_int32(DXGI_ERROR_ACCESS_LOST).value == ce.args[0]:
+                error_msg = f"Access lost while getting cursor shape: {ce}"
+            else:
+                error_msg = f"COM error getting cursor shape: {ce}"
             
-        return False, False
+            logger.warning(error_msg)
+            self.last_error = error_msg
+            return False, False, error_msg
+            
+        except Exception as e:
+            # Handle any exceptions getting the pointer shape
+            error_msg = f"Exception getting cursor shape: {e}"
+            logger.warning(error_msg)
+            self.last_error = error_msg
+            return False, False, error_msg
+
+    def get_last_error(self) -> str:
+        """
+        Get the last error message.
+        
+        Returns:
+            Last error message
+        """
+        return self.last_error
 
     def __repr__(self) -> str:
         """
@@ -182,8 +269,9 @@ class Duplicator:
         Returns:
             String representation
         """
-        return "<{} Initialized:{} Cursor:{}available>".format(
+        cursor_status = "not available" if self.cursor.Shape is None else "available"
+        return "<{} Initialized:{} Cursor:{}>".format(
             self.__class__.__name__,
             self.duplicator is not None,
-            "" if self.cursor.Shape is None else " "
+            cursor_status
         )
