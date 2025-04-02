@@ -4,7 +4,7 @@ import logging
 import platform
 import sys
 from typing import Optional, Tuple, Dict, Any
-from rapidshot.core import ScreenCapture
+from rapidshot.capture import ScreenCapture  # Updated import: now from rapidshot.capture
 from rapidshot.core import Output, Device
 from rapidshot.util.io import (
     enum_dxgi_adapters,
@@ -54,6 +54,7 @@ class Singleton(type):
         else:
             logger.debug(f"Using existing instance of {cls.__name__}")
         return cls._instances[cls]
+
 
 class RapidshotFactory(metaclass=Singleton):
     """
@@ -244,6 +245,7 @@ class RapidshotFactory(metaclass=Singleton):
         self._screencapture_instances.clear()
         Singleton._instances.clear()
 
+
 # Global factory instance
 __factory = None
 
@@ -396,7 +398,7 @@ __author__ = "Rapidshot Contributors"
 __description__ = "High-performance screencapture library for Windows using Desktop Duplication API"
 
 # Expose key classes
-from rapidshot.core import ScreenCapture
+from rapidshot.capture import ScreenCapture  # Updated import
 
 # Initialize factory on first import - lazy initialization
 try:
