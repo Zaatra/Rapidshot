@@ -85,8 +85,16 @@ class Duplicator:
             frame_acquired = True
             logger.debug("Frame acquired successfully")
             
+            # FIX: Handle both LARGE_INTEGER and int types for LastMouseUpdateTime
+            # Get the mouse update time safely
+            if hasattr(info.LastMouseUpdateTime, 'QuadPart'):
+                mouse_update_time = info.LastMouseUpdateTime.QuadPart
+            else:
+                # Handle case where LastMouseUpdateTime is already an integer
+                mouse_update_time = info.LastMouseUpdateTime
+            
             # Update cursor information if available
-            if info.LastMouseUpdateTime.QuadPart > 0:
+            if mouse_update_time > 0:
                 cursor_result = self.get_frame_pointer_shape(info)
                 if isinstance(cursor_result, tuple) and len(cursor_result) == 3:
                     new_pointer_info, new_pointer_shape, error_msg = cursor_result
@@ -96,9 +104,17 @@ class Duplicator:
                     elif error_msg:
                         logger.debug(f"Cursor shape not updated: {error_msg}")
                 self.cursor.PointerPositionInfo = info.PointerPosition
+            
+            # FIX: Handle both LARGE_INTEGER and int types for LastPresentTime
+            # Get the last present time safely
+            if hasattr(info.LastPresentTime, 'QuadPart'):
+                last_present_time = info.LastPresentTime.QuadPart
+            else:
+                # Handle case where LastPresentTime is already an integer
+                last_present_time = info.LastPresentTime
                 
             # No new frames
-            if info.LastPresentTime.QuadPart == 0: 
+            if last_present_time == 0: 
                 logger.debug("No new frame content")
                 self.updated = False
                 return True
