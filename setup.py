@@ -5,7 +5,7 @@ with open("README.md", "r", encoding='utf-8') as f:
 
 setup(
     name="rapidshot",
-    version="1.0.6",
+    version="1.0.7",
     description="A high-performance screencapture library for Windows using Desktop Duplication API",
     packages=find_packages(),
     long_description=long_description,

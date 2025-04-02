@@ -393,7 +393,7 @@ def get_version_info() -> Dict[str, Any]:
     return info
 
 # Version information
-__version__ = "1.0.6"
+__version__ = "1.0.7"
 __author__ = "Rapidshot Contributors"
 __description__ = "High-performance screencapture library for Windows using Desktop Duplication API"
 

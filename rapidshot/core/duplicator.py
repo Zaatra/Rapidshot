@@ -43,6 +43,7 @@ class Duplicator:
     device: InitVar[Device] = None
     cursor: Cursor = Cursor()
     last_error: str = ""
+    cursor_visible: bool = False
 
     def __post_init__(self, output: Output, device: Device) -> None:
         """
@@ -58,6 +59,11 @@ class Duplicator:
             self.duplicator = ctypes.POINTER(IDXGIOutputDuplication)()
             output.output.DuplicateOutput(device.device, ctypes.byref(self.duplicator))
             logger.info(f"Duplicator initialized for output: {output.devicename}")
+            
+            # Store output dimensions and rotation
+            self._output_width, self._output_height = self.output.resolution
+            self._rotation_angle = self.output.rotation_angle
+            
         except comtypes.COMError as ce:
             error_msg = f"Failed to initialize duplicator: {ce}"
             logger.error(error_msg)
@@ -104,6 +110,7 @@ class Duplicator:
                     elif error_msg:
                         logger.debug(f"Cursor shape not updated: {error_msg}")
                 self.cursor.PointerPositionInfo = info.PointerPosition
+                self.cursor_visible = info.PointerPosition.Visible
             
             # FIX: Handle both LARGE_INTEGER and int types for LastPresentTime
             # Get the last present time safely
@@ -175,18 +182,69 @@ class Duplicator:
                 except Exception as e:
                     logger.warning(f"Failed to release resource: {e}")
 
+    # Add this method to provide compatibility with capture.py
+    def get_frame(self):
+        """
+        Get the current frame - wrapper for update_frame for API compatibility
+        
+        Returns:
+            Frame information or None if no update
+        """
+        if self.update_frame():
+            if not self.updated:
+                return None
+                
+            # Create a simple frame information object with expected attributes
+            class FrameInfo:
+                def __init__(self, rect, width, height, cursor_visible=False):
+                    self.rect = rect
+                    self.width = width
+                    self.height = height
+                    self.cursor_visible = cursor_visible
+                    
+            # Return frame info object with the expected data
+            return FrameInfo(
+                rect=self.texture,  # Use texture directly as rect
+                width=self._output_width,
+                height=self._output_height,
+                cursor_visible=self.cursor_visible
+            )
+        return None
+        
+    def get_output_dimensions(self):
+        """
+        Get the dimensions of the output device
+        
+        Returns:
+            Tuple of (width, height)
+        """
+        return (self._output_width, self._output_height)
+        
+    def get_rotation_angle(self):
+        """
+        Get the rotation angle of the output device
+        
+        Returns:
+            Rotation angle in degrees (0, 90, 180, or 270)
+        """
+        return self._rotation_angle
+
     def release_frame(self) -> None:
         """
         Release the current frame.
         """
+        # Release frame warning fix applied
         if self.duplicator is not None:
             try:
                 self.duplicator.ReleaseFrame()
                 logger.debug("Frame released")
             except comtypes.COMError as ce:
-                error_msg = f"Failed to release frame: {ce}"
-                logger.warning(error_msg)
-                self.last_error = error_msg
+                # Don't log as warning for specific known error code
+                if ce.args and ce.args[0] == -2005270527:
+                    logger.debug(f"Frame already released: {ce}")
+                else:
+                    logger.warning(f"Failed to release frame: {ce}")
+                    self.last_error = f"Failed to release frame: {ce}"
             except Exception as e:
                 logger.warning(f"Unexpected error releasing frame: {e}")
 

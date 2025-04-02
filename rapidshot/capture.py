@@ -76,6 +76,7 @@ class ScreenCapture:
         self.max_buffer_len = max_buffer_len
         self.continuous_mode = False
         self.buffer = False
+        self._buffer_lock = Lock()
         self._latest_frame = None
         self.cursor = False
         
@@ -243,7 +244,7 @@ class ScreenCapture:
 
     def _grab(self, region: Optional[Tuple[int, int, int, int]] = None) -> Optional[np.ndarray]:
         """
-        Grab a frame with a specific region.
+        Grab a frame with a specific region with improved error handling.
         
         Args:
             region: Region to capture (left, top, right, bottom)
@@ -251,77 +252,109 @@ class ScreenCapture:
         Returns:
             ndarray: Captured frame
         """
-        # Region handling fix applied
         try:
-            # Set up and acquire frame
+            # First, check if we're in continuous mode
             if self.continuous_mode and self.buffer:
                 with self._buffer_lock:
                     if not self.buffer:
                         return None
                     # Return the latest frame
                     frame = self._latest_frame
-            else:
-                frame_info = self._duplicator.get_frame()
-                if frame_info is None:
+                    return frame
+            
+            # Determine which API to use - try get_frame first, then update_frame
+            try:
+                # Check if get_frame method exists
+                if hasattr(self._duplicator, 'get_frame'):
+                    # Use get_frame API
+                    frame_info = self._duplicator.get_frame()
+                    if frame_info is None:
+                        return None
+                        
+                    # Make sure we have valid region
+                    effective_region = region or self.region
+                    if effective_region is None:
+                        output_dims = self._duplicator.get_output_dimensions()
+                        effective_region = (0, 0, output_dims[0], output_dims[1])
+                    
+                    # Validate region bounds
+                    left, top, right, bottom = effective_region
+                    output_width, output_height = self._duplicator.get_output_dimensions()
+                    
+                    left = max(0, min(left, output_width - 1))
+                    top = max(0, min(top, output_height - 1))
+                    right = max(left + 1, min(right, output_width))
+                    bottom = max(top + 1, min(bottom, output_height))
+                    
+                    effective_region = (left, top, right, bottom)
+                    
+                    # Process the frame
+                    frame = self._processor.process(
+                        frame_info.rect,
+                        frame_info.width,
+                        frame_info.height,
+                        effective_region,
+                        self._duplicator.get_rotation_angle()
+                    )
+                    
+                    # Handle cursor overlay if needed
+                    if self.cursor and frame_info.cursor_visible and hasattr(self, '_cursor_processor'):
+                        self._cursor_processor.draw_cursor(frame, frame_info)
+                    
+                    # Release the frame once processed
+                    self._duplicator.release_frame()
+                    return frame
+                
+                # Fall back to update_frame API
+                elif hasattr(self._duplicator, 'update_frame'):
+                    if self._duplicator.update_frame():
+                        if not self._duplicator.updated:
+                            return None
+                            
+                        # Process using regular method
+                        _region = self.region_to_memory_region(region or self.region, self.rotation_angle, self._output)
+                        _width = _region[2] - _region[0]
+                        _height = _region[3] - _region[1]
+                        
+                        # Rebuild surface if needed
+                        if self._stagesurf.width != _width or self._stagesurf.height != _height:
+                            self._stagesurf.release()
+                            self._stagesurf.rebuild(output=self._output, device=self._device, dim=(_width, _height))
+                        
+                        # Create source region
+                        source_region = D3D11_BOX(
+                            left=_region[0], top=_region[1], right=_region[2], bottom=_region[3], 
+                            front=0, back=1
+                        )
+                        
+                        # Copy and process
+                        self._device.im_context.CopySubresourceRegion(
+                            self._stagesurf.texture, 0, 0, 0, 0, 
+                            self._duplicator.texture, 0, ctypes.byref(source_region)
+                        )
+                        self._duplicator.release_frame()
+                        rect = self._stagesurf.map()
+                        frame = self._processor.process(
+                            rect, self.shot_w, self.shot_h, region or self.region, self.rotation_angle
+                        )
+                        self._stagesurf.unmap()
+                        return frame
+                    else:
+                        # Handle output change
+                        self._on_output_change()
+                        return None
+                else:
+                    logger.error("Duplicator has neither get_frame nor update_frame methods")
                     return None
                     
-                # Adjust region if needed
-                effective_region = region
-                if region is None:
-                    effective_region = (0, 0, *self._duplicator.get_output_dimensions())
-                    
-                # Make sure region is valid to prevent array index errors
-                left, top, right, bottom = effective_region
-                output_width, output_height = self._duplicator.get_output_dimensions()
+            except AttributeError as e:
+                logger.error(f"API method error: {e}")
+                return None
                 
-                left = max(0, min(left, output_width - 1))
-                top = max(0, min(top, output_height - 1))
-                right = max(left + 1, min(right, output_width))
-                bottom = max(top + 1, min(bottom, output_height))
-                
-                effective_region = (left, top, right, bottom)
-                
-                # Get frame using processor
-                frame = self._processor.process(
-                    frame_info.rect,
-                    frame_info.width,
-                    frame_info.height,
-                    effective_region,
-                    self._duplicator.get_rotation_angle()
-                )
-                
-                # Add cursor if enabled
-                if self.cursor and frame_info.cursor_visible:
-                    self._cursor_processor.draw_cursor(frame, frame_info)
-                    
-                # Release the frame once processed
-                self._duplicator.release_frame()
-                
-            # Process region manually if needed and previous processing didn't work
-            if frame is not None and region is not None:
-                try:
-                    # Check if the region needs additional cropping
-                    left, top, right, bottom = region
-                    height, width = frame.shape[:2]
-                    
-                    # Only crop if needed and valid
-                    if (left > 0 or top > 0 or right < width or bottom < height) and \
-                       (left < width and top < height and right > 0 and bottom > 0):
-                        # Ensure within bounds
-                        left = max(0, min(left, width - 1))
-                        top = max(0, min(top, height - 1))
-                        right = max(left + 1, min(right, width))
-                        bottom = max(top + 1, min(bottom, height))
-                        
-                        # Perform the crop
-                        frame = frame[top:bottom, left:right]
-                except Exception as e:
-                    logger.warning(f"Manual region crop failed: {e}")
-                    # Return full frame as fallback
-            
-            return frame
         except Exception as e:
             logger.error(f"Error grabbing frame: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
 
     def _on_output_change(self):
