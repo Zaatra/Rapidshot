@@ -1,8 +1,11 @@
 import ctypes
 import ctypes.wintypes as wintypes
 import comtypes
+import logging
 from .d3d11 import ID3D11Device
 
+# Set up logger
+logger = logging.getLogger("rapidshot._libs.dxgi")
 
 # DXGI error codes
 DXGI_ERROR_ACCESS_LOST = 0x887A0026
@@ -14,6 +17,11 @@ ABANDONED_MUTEX_EXCEPTION = -0x7785ffda  # -2005270490
 DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME = 0x00000001
 DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR = 0x00000002
 DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR = 0x00000004
+
+# DXGI 1.2-1.6 Definitions
+DXGI_GPU_PREFERENCE_UNSPECIFIED = 0
+DXGI_GPU_PREFERENCE_MINIMUM_POWER = 1
+DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE = 2
 
 
 class LUID(ctypes.Structure):
@@ -38,6 +46,46 @@ class DXGI_ADAPTER_DESC1(ctypes.Structure):
         ("SharedSystemMemory", wintypes.ULARGE_INTEGER),
         ("AdapterLuid", LUID),
         ("Flags", wintypes.UINT),
+    ]
+
+
+class DXGI_ADAPTER_DESC2(ctypes.Structure):
+    """
+    DXGI adapter description (DXGI 1.2).
+    """
+    _fields_ = [
+        ("Description", wintypes.WCHAR * 128),
+        ("VendorId", wintypes.UINT),
+        ("DeviceId", wintypes.UINT),
+        ("SubSysId", wintypes.UINT),
+        ("Revision", wintypes.UINT),
+        ("DedicatedVideoMemory", wintypes.ULARGE_INTEGER),
+        ("DedicatedSystemMemory", wintypes.ULARGE_INTEGER),
+        ("SharedSystemMemory", wintypes.ULARGE_INTEGER),
+        ("AdapterLuid", LUID),
+        ("Flags", wintypes.UINT),
+        ("GraphicsPreemptionGranularity", wintypes.UINT),
+        ("ComputePreemptionGranularity", wintypes.UINT),
+    ]
+
+
+class DXGI_ADAPTER_DESC3(ctypes.Structure):
+    """
+    DXGI adapter description (DXGI 1.6).
+    """
+    _fields_ = [
+        ("Description", wintypes.WCHAR * 128),
+        ("VendorId", wintypes.UINT),
+        ("DeviceId", wintypes.UINT),
+        ("SubSysId", wintypes.UINT),
+        ("Revision", wintypes.UINT),
+        ("DedicatedVideoMemory", wintypes.ULARGE_INTEGER),
+        ("DedicatedSystemMemory", wintypes.ULARGE_INTEGER),
+        ("SharedSystemMemory", wintypes.ULARGE_INTEGER),
+        ("AdapterLuid", LUID),
+        ("Flags", wintypes.UINT),
+        ("GraphicsPreemptionGranularity", wintypes.UINT),
+        ("ComputePreemptionGranularity", wintypes.UINT),
     ]
 
 
@@ -252,6 +300,45 @@ class IDXGIAdapter1(IDXGIAdapter):
     ]
 
 
+class IDXGIAdapter2(IDXGIAdapter1):
+    """
+    DXGI adapter interface version 2 (DXGI 1.2).
+    """
+    _iid_ = comtypes.GUID("{0AA1AE0A-FA0E-4B84-8644-E05FF8E5ACB5}")
+    _methods_ = [
+        comtypes.STDMETHOD(
+            comtypes.HRESULT, "GetDesc2", [ctypes.POINTER(DXGI_ADAPTER_DESC2)]
+        ),
+    ]
+
+
+class IDXGIAdapter3(IDXGIAdapter2):
+    """
+    DXGI adapter interface version 3 (DXGI 1.4).
+    """
+    _iid_ = comtypes.GUID("{645967A4-1392-4310-A798-8053CE3E93FD}")
+    _methods_ = [
+        comtypes.STDMETHOD(comtypes.HRESULT, "RegisterHardwareContentProtectionTeardownStatusEvent"),
+        comtypes.STDMETHOD(None, "UnregisterHardwareContentProtectionTeardownStatus"),
+        comtypes.STDMETHOD(comtypes.HRESULT, "QueryVideoMemoryInfo"),
+        comtypes.STDMETHOD(comtypes.HRESULT, "SetVideoMemoryReservation"),
+        comtypes.STDMETHOD(comtypes.HRESULT, "RegisterVideoMemoryBudgetChangeNotificationEvent"),
+        comtypes.STDMETHOD(None, "UnregisterVideoMemoryBudgetChangeNotification"),
+    ]
+
+
+class IDXGIAdapter4(IDXGIAdapter3):
+    """
+    DXGI adapter interface version 4 (DXGI 1.6).
+    """
+    _iid_ = comtypes.GUID("{3C8D99D1-4FBF-4181-A82C-AF66BF7BD24E}")
+    _methods_ = [
+        comtypes.STDMETHOD(
+            comtypes.HRESULT, "GetDesc3", [ctypes.POINTER(DXGI_ADAPTER_DESC3)]
+        ),
+    ]
+
+
 class IDXGIFactory(IDXGIObject):
     """
     DXGI factory interface.
@@ -280,7 +367,86 @@ class IDXGIFactory1(IDXGIFactory):
         comtypes.STDMETHOD(wintypes.BOOL, "IsCurrent"),
     ]
 
-# Create DXGI Factory function (missing function)
+
+class IDXGIFactory2(IDXGIFactory1):
+    """
+    DXGI factory interface version 2 (DXGI 1.2).
+    """
+    _iid_ = comtypes.GUID("{50C83A1C-E072-4C48-87B0-3630FA36A6D0}")
+    _methods_ = [
+        comtypes.STDMETHOD(wintypes.BOOL, "IsWindowedStereoEnabled"),
+        comtypes.STDMETHOD(comtypes.HRESULT, "CreateSwapChainForHwnd"),
+        comtypes.STDMETHOD(comtypes.HRESULT, "CreateSwapChainForCoreWindow"),
+        comtypes.STDMETHOD(comtypes.HRESULT, "GetSharedResourceAdapterLuid"),
+        comtypes.STDMETHOD(comtypes.HRESULT, "RegisterStereoStatusWindow"),
+        comtypes.STDMETHOD(comtypes.HRESULT, "RegisterStereoStatusEvent"),
+        comtypes.STDMETHOD(None, "UnregisterStereoStatus"),
+        comtypes.STDMETHOD(comtypes.HRESULT, "RegisterOcclusionStatusWindow"),
+        comtypes.STDMETHOD(comtypes.HRESULT, "RegisterOcclusionStatusEvent"),
+        comtypes.STDMETHOD(None, "UnregisterOcclusionStatus"),
+        comtypes.STDMETHOD(comtypes.HRESULT, "CreateSwapChainForComposition"),
+    ]
+
+
+class IDXGIFactory3(IDXGIFactory2):
+    """
+    DXGI factory interface version 3 (DXGI 1.3).
+    """
+    _iid_ = comtypes.GUID("{25483823-CD46-4C7D-86CA-47AA95B837BD}")
+    _methods_ = [
+        comtypes.STDMETHOD(wintypes.UINT, "GetCreationFlags"),
+    ]
+
+
+class IDXGIFactory4(IDXGIFactory3):
+    """
+    DXGI factory interface version 4 (DXGI 1.4).
+    """
+    _iid_ = comtypes.GUID("{1BC6EA02-EF36-464F-BF0C-21CA39E5168A}")
+    _methods_ = [
+        comtypes.STDMETHOD(
+            comtypes.HRESULT,
+            "EnumAdapterByLuid",
+            [LUID, ctypes.POINTER(comtypes.GUID), ctypes.POINTER(ctypes.c_void_p)],
+        ),
+        comtypes.STDMETHOD(
+            comtypes.HRESULT,
+            "EnumWarpAdapter",
+            [ctypes.POINTER(comtypes.GUID), ctypes.POINTER(ctypes.c_void_p)],
+        ),
+    ]
+
+
+class IDXGIFactory5(IDXGIFactory4):
+    """
+    DXGI factory interface version 5 (DXGI 1.5).
+    """
+    _iid_ = comtypes.GUID("{7632E1F5-EE65-4DCA-87FD-84CD75F8838D}")
+    _methods_ = [
+        comtypes.STDMETHOD(comtypes.HRESULT, "CheckFeatureSupport"),
+    ]
+
+
+class IDXGIFactory6(IDXGIFactory5):
+    """
+    DXGI factory interface version 6 (DXGI 1.6).
+    """
+    _iid_ = comtypes.GUID("{C1B6694F-FF09-44A9-B03C-77900A0A1D17}")
+    _methods_ = [
+        comtypes.STDMETHOD(
+            comtypes.HRESULT,
+            "EnumAdapterByGpuPreference",
+            [
+                wintypes.UINT,
+                wintypes.UINT,
+                ctypes.POINTER(comtypes.GUID),
+                ctypes.POINTER(ctypes.c_void_p),
+            ],
+        ),
+    ]
+
+
+# Create DXGI Factory function
 try:
     _CreateDXGIFactory1 = ctypes.windll.dxgi.CreateDXGIFactory1
     _CreateDXGIFactory1.restype = comtypes.HRESULT
@@ -303,8 +469,6 @@ try:
         return _CreateDXGIFactory1(riid, ppFactory)
 except (AttributeError, WindowsError) as e:
     # Provide a fallback implementation or raise an informative error
-    import logging
-    logger = logging.getLogger(__name__)
     logger.error(f"Failed to load CreateDXGIFactory1: {e}")
     
     def CreateDXGIFactory1(riid, ppFactory):
@@ -314,3 +478,53 @@ except (AttributeError, WindowsError) as e:
         raise RuntimeError(
             "CreateDXGIFactory1 is not available. This might indicate DirectX is not properly installed."
         )
+
+
+# Function to create DXGI Factory with the latest available version
+try:
+    _CreateDXGIFactory6 = ctypes.windll.dxgi.CreateDXGIFactory6
+    _CreateDXGIFactory6.restype = comtypes.HRESULT
+    _CreateDXGIFactory6.argtypes = [
+        ctypes.POINTER(comtypes.GUID),
+        ctypes.POINTER(ctypes.c_void_p)
+    ]
+    
+    def CreateDXGIFactory6(riid, ppFactory):
+        """
+        Create a DXGI factory object with DXGI 1.6.
+        
+        Args:
+            riid: Reference to the factory interface ID
+            ppFactory: Pointer to receive the created factory
+            
+        Returns:
+            HRESULT value
+        """
+        return _CreateDXGIFactory6(riid, ppFactory)
+except (AttributeError, WindowsError) as e:
+    logger.info(f"CreateDXGIFactory6 not available, falling back to CreateDXGIFactory1: {e}")
+    CreateDXGIFactory6 = None
+
+
+# Create DXGI Factory function with version detection
+def CreateLatestDXGIFactory(riid, ppFactory):
+    """
+    Create a DXGI factory with the latest available version.
+    
+    Args:
+        riid: Reference to the factory interface ID
+        ppFactory: Pointer to receive the created factory
+        
+    Returns:
+        HRESULT value
+    """
+    try:
+        if CreateDXGIFactory6 is not None:
+            logger.info("Using DXGI 1.6 (CreateDXGIFactory6)")
+            return CreateDXGIFactory6(riid, ppFactory)
+        else:
+            logger.info("Using DXGI 1.1 (CreateDXGIFactory1)")
+            return CreateDXGIFactory1(riid, ppFactory)
+    except Exception as e:
+        logger.error(f"Failed to create DXGI Factory: {e}")
+        raise

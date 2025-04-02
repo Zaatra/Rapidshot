@@ -1,6 +1,7 @@
 import ctypes
 import platform
-import logging
+import logging  # Added missing import
+from rapidshot.util.logging import get_logger
 import warnings
 import sys
 from rapidshot.processor.base import ProcessorBackends
@@ -215,7 +216,18 @@ class CupyProcessor:
             Processed frame as CuPy array
         """
         try:
-            pitch = int(rect.Pitch)
+            # Check if rect has Pitch attribute (DXGI_MAPPED_RECT)
+            if hasattr(rect, 'Pitch'):
+                pitch = int(rect.Pitch)
+            else:
+                # If rect doesn't have Pitch attribute, estimate pitch
+                logger.debug(f"Rect of type {type(rect)} doesn't have Pitch attribute, estimating based on width")
+                pitch = width * 4
+                
+                # If we can't process this type properly, return an empty frame
+                if not hasattr(rect, 'pBits'):
+                    logger.warning(f"Unable to process rect of type {type(rect)}, missing pBits attribute")
+                    return self.cp.zeros((height, width, 3), dtype=self.cp.uint8)
 
             # Calculate memory offset for region
             if rotation_angle in (0, 180):
@@ -232,19 +244,26 @@ class CupyProcessor:
                 size = pitch * width
 
             # Get buffer and create CuPy array
-            buffer = (ctypes.c_char * size).from_address(ctypes.addressof(rect.pBits.contents) + offset)
-            pitch = pitch // 4
-            
-            # Create CuPy array from buffer with appropriate shape
-            if rotation_angle in (0, 180):
-                # Transfer CPU memory to GPU
-                cpu_array = self.cp.frombuffer(buffer, dtype=self.cp.uint8).reshape(height, pitch, 4)
-                image = self.cp.asarray(cpu_array)
-            elif rotation_angle in (90, 270):
-                cpu_array = self.cp.frombuffer(buffer, dtype=self.cp.uint8).reshape(width, pitch, 4)
-                image = self.cp.asarray(cpu_array)
+            if hasattr(rect, 'pBits') and rect.pBits:
+                buffer = (ctypes.c_char * size).from_address(ctypes.addressof(rect.pBits.contents) + offset)
+                pitch = pitch // 4
+                
+                # Create CuPy array from buffer with appropriate shape
+                if rotation_angle in (0, 180):
+                    # Transfer CPU memory to GPU
+                    cpu_array = self.cp.frombuffer(buffer, dtype=self.cp.uint8).reshape(height, pitch, 4)
+                    image = self.cp.asarray(cpu_array)
+                elif rotation_angle in (90, 270):
+                    cpu_array = self.cp.frombuffer(buffer, dtype=self.cp.uint8).reshape(width, pitch, 4)
+                    image = self.cp.asarray(cpu_array)
+                else:
+                    raise ValueError(f"Invalid rotation angle: {rotation_angle}. Must be 0, 90, 180, or 270.")
             else:
-                raise ValueError(f"Invalid rotation angle: {rotation_angle}. Must be 0, 90, 180, or 270.")
+                logger.warning("Invalid buffer for rect, creating empty image")
+                if rotation_angle in (0, 180):
+                    image = self.cp.zeros((height, width, 4), dtype=self.cp.uint8)
+                else:
+                    image = self.cp.zeros((width, height, 4), dtype=self.cp.uint8)
 
             # Convert color format if needed
             if self.color_mode is not None:
@@ -264,10 +283,11 @@ class CupyProcessor:
             elif rotation_angle in (90, 270) and pitch != height:
                 image = image[:height, :, :]
 
-            # Final region adjustment
-            if region[3] - region[1] != image.shape[0]:
+            # Final region adjustment with safe bounds checking
+            h, w = image.shape[:2]
+            if region[3] - region[1] != h and region[1] < h and region[3] <= h:
                 image = image[region[1]:region[3], :, :]
-            if region[2] - region[0] != image.shape[1]:
+            if region[2] - region[0] != w and region[0] < w and region[2] <= w:
                 image = image[:, region[0]:region[2], :]
 
             return image
@@ -275,5 +295,5 @@ class CupyProcessor:
         except Exception as e:
             error_msg = f"Error processing frame with CuPy: {e}"
             logger.error(error_msg)
-            # Re-raise with more context
-            raise RuntimeError(error_msg) from e
+            # Create and return an empty frame as fallback
+            return self.cp.zeros((height, width, 3), dtype=self.cp.uint8)

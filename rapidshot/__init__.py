@@ -1,6 +1,6 @@
 import weakref
 import time
-import logging
+from rapidshot.util.logging import get_logger
 import platform
 import sys
 from typing import Optional, Tuple, Dict, Any
@@ -393,7 +393,7 @@ def get_version_info() -> Dict[str, Any]:
     return info
 
 # Version information
-__version__ = "1.0.7"
+__version__ = "1.0.9"
 __author__ = "Rapidshot Contributors"
 __description__ = "High-performance screencapture library for Windows using Desktop Duplication API"
 

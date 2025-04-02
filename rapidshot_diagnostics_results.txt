@@ -1,0 +1,17 @@
+RapidShot DirectX Diagnostic Results - 2025-04-02 13:48:15
+
+PASSED: 23
+WARNINGS: 5
+FAILED: 3
+
+FAILED TESTS:
+  • Error trying DXGI 1.4 (CreateDXGIFactory2): exception: access violation writing 0x00000026BD6252DE
+  • Error enumerating adapters: 'int' object is not callable
+  • Error in D3D11 device creation: 'int' object is not callable
+
+WARNINGS:
+  • Optional dependency opencv-python is not installed
+  • Optional dependency pillow is not installed
+  • Optional dependency cupy is not installed
+  • CreateDXGIFactory6 not found in dxgi.dll
+  • Error enumerating adapter 0: 'int' object is not callable

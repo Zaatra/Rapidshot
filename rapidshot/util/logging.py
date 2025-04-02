@@ -26,6 +26,8 @@ BACKUP_COUNT = 5
 LOG_LEVEL_ENV_VAR = "RAPIDSHOT_LOG_LEVEL"
 LOG_FILE_ENV_VAR = "RAPIDSHOT_LOG_FILE"
 
+# Global logger registry to avoid duplicate configuration
+_loggers = {}
 
 def setup_logging(
     console_level: Optional[int] = None,
@@ -121,7 +123,16 @@ def get_logger(name: str) -> logging.Logger:
     Returns:
         Logger for the module
     """
-    return logging.getLogger(f"rapidshot.{name}")
+    if name in _loggers:
+        return _loggers[name]
+        
+    if name.startswith("rapidshot."):
+        logger = logging.getLogger(name)
+    else:
+        logger = logging.getLogger(f"rapidshot.{name}")
+        
+    _loggers[name] = logger
+    return logger
 
 
 # Initialize logging when module is imported

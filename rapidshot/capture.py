@@ -5,6 +5,7 @@ from threading import Thread, Event, Lock
 import comtypes
 import numpy as np
 import logging
+from rapidshot.util.logging import get_logger
 from rapidshot.core.device import Device
 from rapidshot.core.output import Output
 from rapidshot.core.stagesurf import StageSurface

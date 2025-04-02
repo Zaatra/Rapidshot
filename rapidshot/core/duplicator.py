@@ -1,5 +1,5 @@
 import ctypes
-import logging
+from rapidshot.util.logging import get_logger
 from time import sleep
 from dataclasses import dataclass, InitVar
 from typing import Tuple, Optional, Union

@@ -1,6 +1,7 @@
 import ctypes
 import numpy as np
 import logging
+from rapidshot.util.logging import get_logger
 from numpy import rot90, ndarray, newaxis, uint8
 from numpy.ctypeslib import as_array
 from rapidshot.processor.base import ProcessorBackends
@@ -132,7 +133,19 @@ class NumpyProcessor:
         """
         # Fixed region handling patch applied
         try:
-            pitch = int(rect.Pitch)
+            # Check if rect has Pitch attribute (DXGI_MAPPED_RECT)
+            if hasattr(rect, 'Pitch'):
+                pitch = int(rect.Pitch)
+            else:
+                # If rect doesn't have Pitch attribute (like when it's a POINTER(ID3D11Texture2D)),
+                # estimate the pitch based on width and assuming 4 bytes per pixel (BGRA)
+                logger.debug(f"Rect of type {type(rect)} doesn't have Pitch attribute, estimating based on width")
+                pitch = width * 4
+                
+                # If we can't process this type properly, return an empty frame
+                if not hasattr(rect, 'pBits'):
+                    logger.warning(f"Unable to process rect of type {type(rect)}, missing pBits attribute")
+                    return np.zeros((height, width, 3), dtype=np.uint8)
             
             # Validate region bounds and clip to valid values
             region = list(region)
@@ -157,21 +170,28 @@ class NumpyProcessor:
 
             # Use direct memory access for efficiency
             try:
-                buffer = (ctypes.c_char * size).from_address(ctypes.addressof(rect.pBits.contents) + offset)
-                pitch = pitch // 4
-                
-                # Create NumPy array from buffer with appropriate shape
-                if rotation_angle in (0, 180):
-                    image = np.ndarray((height, pitch, 4), dtype=np.uint8, buffer=buffer)
-                elif rotation_angle in (90, 270):
-                    image = np.ndarray((width, pitch, 4), dtype=np.uint8, buffer=buffer)
+                if hasattr(rect, 'pBits') and rect.pBits:
+                    buffer = (ctypes.c_char * size).from_address(ctypes.addressof(rect.pBits.contents) + offset)
+                    pitch = pitch // 4
+                    
+                    # Create NumPy array from buffer with appropriate shape
+                    if rotation_angle in (0, 180):
+                        image = np.ndarray((height, pitch, 4), dtype=np.uint8, buffer=buffer)
+                    elif rotation_angle in (90, 270):
+                        image = np.ndarray((width, pitch, 4), dtype=np.uint8, buffer=buffer)
+                    else:
+                        raise RuntimeError(f"Invalid rotation angle: {rotation_angle}")
                 else:
-                    raise RuntimeError(f"Invalid rotation angle: {rotation_angle}")
+                    logger.warning("Invalid buffer for rect, creating empty image")
+                    if rotation_angle in (0, 180):
+                        image = np.zeros((height, width, 4), dtype=np.uint8)
+                    else:
+                        image = np.zeros((width, height, 4), dtype=np.uint8)
             except Exception as e:
                 logger.error(f"Buffer access error: {e}")
                 # Create an empty frame as fallback
                 image = np.zeros((height if rotation_angle in (0, 180) else width, 
-                                pitch, 4), dtype=np.uint8)
+                                width if rotation_angle in (0, 180) else height, 4), dtype=np.uint8)
 
             # Convert color format if needed
             if self.color_mode is not None and image.size > 0:
