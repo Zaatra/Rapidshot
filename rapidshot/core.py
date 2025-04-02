@@ -4,7 +4,10 @@ from typing import Tuple, Optional, Union, List, Any
 from threading import Thread, Event, Lock
 import comtypes
 import numpy as np
-from rapidshot.core import Device, Output, StageSurface, Duplicator
+from rapidshot.core.device import Device
+from rapidshot.core.output import Output
+from rapidshot.core.stagesurf import StageSurface
+from rapidshot.core.duplicator import Duplicator
 from rapidshot._libs.d3d11 import D3D11_BOX
 from rapidshot.processor import Processor
 from rapidshot.util.timer import (
