@@ -52,6 +52,7 @@ class Duplicator:
         """
         info = DXGI_OUTDUPL_FRAME_INFO()
         res = ctypes.POINTER(IDXGIResource)()
+        frame_acquired = False
         
         try:
             # Acquire the next frame with a short timeout
@@ -60,6 +61,7 @@ class Duplicator:
                 ctypes.byref(info),
                 ctypes.byref(res),
             )
+            frame_acquired = True
             
             # Update cursor information if available
             if info.LastMouseUpdateTime.QuadPart > 0:
@@ -68,6 +70,20 @@ class Duplicator:
                     self.cursor.Shape = new_pointer_shape
                     self.cursor.PointerShapeInfo = new_pointer_info
                 self.cursor.PointerPositionInfo = info.PointerPosition
+                
+            # No new frames
+            if info.LastPresentTime.QuadPart == 0: 
+                self.updated = False
+                return True
+       
+            # Process the frame
+            try:
+                self.texture = res.QueryInterface(ID3D11Texture2D)
+                self.updated = True
+                return True
+            except comtypes.COMError:
+                self.updated = False
+                return True
                 
         except comtypes.COMError as ce:
             # Handle access lost (e.g., display mode change)
@@ -85,36 +101,43 @@ class Duplicator:
                 
             # Other unexpected errors
             raise ce
-
-        # No new frames
-        if info.LastPresentTime.QuadPart == 0: 
-            self.duplicator.ReleaseFrame()
+        except Exception:
+            # Catch any other unexpected exceptions to ensure cleanup
             self.updated = False
-            return True
-   
-        # Process the frame
-        try:
-            self.texture = res.QueryInterface(ID3D11Texture2D)
-        except comtypes.COMError:
-            self.duplicator.ReleaseFrame()
-
-        self.updated = True
-        return True
+            raise
+        finally:
+            # Always release the frame if it was acquired
+            if frame_acquired:
+                self.duplicator.ReleaseFrame()
+                
+            # If we have a resource pointer but failed to get the texture,
+            # ensure it's properly released
+            if frame_acquired and res and not self.texture:
+                res.Release()
 
     def release_frame(self):
         """
         Release the current frame.
         """
         if self.duplicator is not None:
-            self.duplicator.ReleaseFrame()
+            try:
+                self.duplicator.ReleaseFrame()
+            except (comtypes.COMError, Exception):
+                # If ReleaseFrame fails, don't crash
+                pass
 
     def release(self):
         """
         Release all resources.
         """
         if self.duplicator is not None:
-            self.duplicator.Release()
-            self.duplicator = None
+            try:
+                self.duplicator.Release()
+            except (comtypes.COMError, Exception):
+                # If Release fails, don't crash
+                pass
+            finally:
+                self.duplicator = None
 
     def get_frame_pointer_shape(self, frame_info):
         """
@@ -135,17 +158,21 @@ class Duplicator:
         buffer_size_required = ctypes.c_uint()
         pointer_shape_buffer = (ctypes.c_byte * frame_info.PointerShapeBufferSize)()
         
-        # Get pointer shape
-        hr = self.duplicator.GetFramePointerShape(
-            frame_info.PointerShapeBufferSize, 
-            ctypes.byref(pointer_shape_buffer), 
-            ctypes.byref(buffer_size_required), 
-            ctypes.byref(pointer_shape_info)
-        ) 
-        
-        if hr >= 0:  # Success
-            return pointer_shape_info, pointer_shape_buffer
-        
+        try:
+            # Get pointer shape
+            hr = self.duplicator.GetFramePointerShape(
+                frame_info.PointerShapeBufferSize, 
+                ctypes.byref(pointer_shape_buffer), 
+                ctypes.byref(buffer_size_required), 
+                ctypes.byref(pointer_shape_info)
+            ) 
+            
+            if hr >= 0:  # Success
+                return pointer_shape_info, pointer_shape_buffer
+        except (comtypes.COMError, Exception):
+            # Handle any exceptions getting the pointer shape
+            pass
+            
         return False, False
 
     def __repr__(self) -> str:
