@@ -1,12 +1,9 @@
 import ctypes
-import numpy as np
-from numpy import rot90, ndarray, newaxis, uint8
-from numpy.ctypeslib import as_array
 
 
-class NumpyProcessor:
+class CupyProcessor:
     """
-    NumPy-based processor for image processing.
+    CUDA-accelerated processor using CuPy.
     """
     def __init__(self, color_mode):
         """
@@ -15,17 +12,35 @@ class NumpyProcessor:
         Args:
             color_mode: Color format (RGB, RGBA, BGR, BGRA, GRAY)
         """
+        # Import CuPy in constructor to delay import until needed
+        try:
+            import cupy as cp
+            self.cp = cp
+            
+            # Check version compatibility
+            version = cp.__version__
+            if version < "10.0.0":
+                print(f"Warning: Using CuPy version {version}. Version 10.0.0 or higher is recommended.")
+        except ImportError:
+            raise ImportError("CuPy is required for CUDA acceleration. Install with 'pip install cupy-cuda11x'")
+            
         self.cvtcolor = None
         self.color_mode = color_mode
-        self.PBYTE = ctypes.POINTER(ctypes.c_ubyte)
         
+        # Try importing cuCV now to give early warning
+        try:
+            import cucv.cv2
+            self._has_cucv = True
+        except ImportError:
+            self._has_cucv = False
+            
         # Simplified processing for BGRA
         if self.color_mode == 'BGRA':
             self.color_mode = None
 
     def process_cvtcolor(self, image):
         """
-        Convert color format.
+        Convert color format using cuCV or OpenCV.
         
         Args:
             image: Image to convert
@@ -33,8 +48,12 @@ class NumpyProcessor:
         Returns:
             Converted image
         """
-        import cv2
-
+        # Use the already imported cuCV if available, otherwise use regular OpenCV
+        if self._has_cucv:
+            import cucv.cv2 as cv2
+        else:
+            import cv2
+            
         # Initialize color conversion function once
         if self.cvtcolor is None:
             color_mapping = {
@@ -50,26 +69,13 @@ class NumpyProcessor:
                 self.cvtcolor = lambda img: cv2.cvtColor(img, cv2_code)
             else:
                 # Add axis for grayscale to maintain shape consistency
-                self.cvtcolor = lambda img: cv2.cvtColor(img, cv2_code)[..., np.newaxis]
+                self.cvtcolor = lambda img: cv2.cvtColor(img, cv2_code)[..., self.cp.newaxis]
                 
         return self.cvtcolor(image)
 
-    def shot(self, image_ptr, rect, width, height):
-        """
-        Process directly to a provided memory buffer.
-        
-        Args:
-            image_ptr: Pointer to image buffer
-            rect: Mapped rectangle
-            width: Width
-            height: Height
-        """
-        # Direct memory copy for maximum performance
-        ctypes.memmove(image_ptr, rect.pBits, height * width * 4)
-
     def process(self, rect, width, height, region, rotation_angle):
         """
-        Process a frame.
+        Process a frame using GPU acceleration.
         
         Args:
             rect: Mapped rectangle
@@ -79,7 +85,7 @@ class NumpyProcessor:
             rotation_angle: Rotation angle
             
         Returns:
-            Processed frame
+            Processed frame as CuPy array
         """
         pitch = int(rect.Pitch)
 
@@ -97,15 +103,18 @@ class NumpyProcessor:
         else:
             size = pitch * width
 
-        # Use direct memory access for efficiency
+        # Get buffer and create CuPy array
         buffer = (ctypes.c_char * size).from_address(ctypes.addressof(rect.pBits.contents) + offset)
         pitch = pitch // 4
         
-        # Create NumPy array from buffer with appropriate shape
+        # Create CuPy array from buffer with appropriate shape
         if rotation_angle in (0, 180):
-            image = np.ndarray((height, pitch, 4), dtype=np.uint8, buffer=buffer)
+            # Transfer CPU memory to GPU
+            cpu_array = self.cp.frombuffer(buffer, dtype=self.cp.uint8).reshape(height, pitch, 4)
+            image = self.cp.asarray(cpu_array)
         elif rotation_angle in (90, 270):
-            image = np.ndarray((width, pitch, 4), dtype=np.uint8, buffer=buffer)
+            cpu_array = self.cp.frombuffer(buffer, dtype=self.cp.uint8).reshape(width, pitch, 4)
+            image = self.cp.asarray(cpu_array)
 
         # Convert color format if needed
         if self.color_mode is not None:
@@ -113,11 +122,11 @@ class NumpyProcessor:
 
         # Apply rotation
         if rotation_angle == 90:
-            image = np.rot90(image, axes=(1, 0))
+            image = self.cp.rot90(image, axes=(1, 0))
         elif rotation_angle == 180:
-            image = np.rot90(image, k=2, axes=(0, 1))
+            image = self.cp.rot90(image, k=2, axes=(0, 1))
         elif rotation_angle == 270:
-            image = np.rot90(image, axes=(0, 1))
+            image = self.cp.rot90(image, axes=(0, 1))
 
         # Crop to actual dimensions if needed
         if rotation_angle in (0, 180) and pitch != width:

@@ -7,7 +7,7 @@ LEFT = 0
 RIGHT = 1920
 BOTTOM = 1080
 region = (LEFT, TOP, RIGHT, BOTTOM)
-title = "[DXcam] FPS benchmark"
+title = "[dxcam] FPS benchmark"
 start_time = time.perf_counter()
 
 

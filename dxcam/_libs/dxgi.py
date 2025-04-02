@@ -4,16 +4,29 @@ import comtypes
 from .d3d11 import ID3D11Device
 
 
+# DXGI error codes
 DXGI_ERROR_ACCESS_LOST = 0x887A0026
 DXGI_ERROR_NOT_FOUND = 0x887A0002
 DXGI_ERROR_WAIT_TIMEOUT = 0x887A0027
+ABANDONED_MUTEX_EXCEPTION = -0x7785ffda  # -2005270490
+
+# Pointer shape type constants
+DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME = 0x00000001
+DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR = 0x00000002
+DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR = 0x00000004
 
 
 class LUID(ctypes.Structure):
+    """
+    Locally unique identifier structure.
+    """
     _fields_ = [("LowPart", wintypes.DWORD), ("HighPart", wintypes.LONG)]
 
 
 class DXGI_ADAPTER_DESC1(ctypes.Structure):
+    """
+    DXGI adapter description.
+    """
     _fields_ = [
         ("Description", wintypes.WCHAR * 128),
         ("VendorId", wintypes.UINT),
@@ -29,6 +42,9 @@ class DXGI_ADAPTER_DESC1(ctypes.Structure):
 
 
 class DXGI_OUTPUT_DESC(ctypes.Structure):
+    """
+    DXGI output description.
+    """
     _fields_ = [
         ("DeviceName", wintypes.WCHAR * 32),
         ("DesktopCoordinates", wintypes.RECT),
@@ -39,10 +55,29 @@ class DXGI_OUTPUT_DESC(ctypes.Structure):
 
 
 class DXGI_OUTDUPL_POINTER_POSITION(ctypes.Structure):
+    """
+    DXGI output duplication pointer position.
+    """
     _fields_ = [("Position", wintypes.POINT), ("Visible", wintypes.BOOL)]
 
 
+class DXGI_OUTDUPL_POINTER_SHAPE_INFO(ctypes.Structure):
+    """
+    DXGI output duplication pointer shape info.
+    """
+    _fields_ = [
+        ("Type", wintypes.UINT),
+        ("Width", wintypes.UINT),
+        ("Height", wintypes.UINT),
+        ("Pitch", wintypes.UINT),
+        ("HotSpot", wintypes.POINT),
+    ]
+
+
 class DXGI_OUTDUPL_FRAME_INFO(ctypes.Structure):
+    """
+    DXGI output duplication frame info.
+    """
     _fields_ = [
         ("LastPresentTime", wintypes.LARGE_INTEGER),
         ("LastMouseUpdateTime", wintypes.LARGE_INTEGER),
@@ -56,10 +91,16 @@ class DXGI_OUTDUPL_FRAME_INFO(ctypes.Structure):
 
 
 class DXGI_MAPPED_RECT(ctypes.Structure):
+    """
+    DXGI mapped rectangle.
+    """
     _fields_ = [("Pitch", wintypes.INT), ("pBits", ctypes.POINTER(wintypes.FLOAT))]
 
 
 class IDXGIObject(comtypes.IUnknown):
+    """
+    DXGI object interface.
+    """
     _iid_ = comtypes.GUID("{aec22fb8-76f3-4639-9be0-28eb43a67a2e}")
     _methods_ = [
         comtypes.STDMETHOD(comtypes.HRESULT, "SetPrivateData"),
@@ -70,6 +111,9 @@ class IDXGIObject(comtypes.IUnknown):
 
 
 class IDXGIDeviceSubObject(IDXGIObject):
+    """
+    DXGI device sub-object interface.
+    """
     _iid_ = comtypes.GUID("{3d3e0379-f9de-4d58-bb6c-18d62992f1a6}")
     _methods_ = [
         comtypes.STDMETHOD(comtypes.HRESULT, "GetDevice"),
@@ -77,6 +121,9 @@ class IDXGIDeviceSubObject(IDXGIObject):
 
 
 class IDXGIResource(IDXGIDeviceSubObject):
+    """
+    DXGI resource interface.
+    """
     _iid_ = comtypes.GUID("{035f3ab4-482e-4e50-b41f-8a7f8bd8960b}")
     _methods_ = [
         comtypes.STDMETHOD(comtypes.HRESULT, "GetSharedHandle"),
@@ -87,6 +134,9 @@ class IDXGIResource(IDXGIDeviceSubObject):
 
 
 class IDXGISurface(IDXGIDeviceSubObject):
+    """
+    DXGI surface interface.
+    """
     _iid_ = comtypes.GUID("{cafcb56c-6ac3-4889-bf47-9e23bbd260ec}")
     _methods_ = [
         comtypes.STDMETHOD(comtypes.HRESULT, "GetDesc"),
@@ -98,6 +148,9 @@ class IDXGISurface(IDXGIDeviceSubObject):
 
 
 class IDXGIOutputDuplication(IDXGIObject):
+    """
+    DXGI output duplication interface.
+    """
     _iid_ = comtypes.GUID("{191cfac3-a341-470d-b26e-a864f428319c}")
     _methods_ = [
         comtypes.STDMETHOD(None, "GetDesc"),
@@ -112,7 +165,16 @@ class IDXGIOutputDuplication(IDXGIObject):
         ),
         comtypes.STDMETHOD(comtypes.HRESULT, "GetFrameDirtyRects"),
         comtypes.STDMETHOD(comtypes.HRESULT, "GetFrameMoveRects"),
-        comtypes.STDMETHOD(comtypes.HRESULT, "GetFramePointerShape"),
+        comtypes.STDMETHOD(
+            comtypes.HRESULT, 
+            "GetFramePointerShape", 
+            [
+                wintypes.UINT,
+                ctypes.c_void_p,
+                ctypes.POINTER(wintypes.UINT),
+                ctypes.POINTER(DXGI_OUTDUPL_POINTER_SHAPE_INFO),
+            ]
+        ),
         comtypes.STDMETHOD(comtypes.HRESULT, "MapDesktopSurface"),
         comtypes.STDMETHOD(comtypes.HRESULT, "UnMapDesktopSurface"),
         comtypes.STDMETHOD(comtypes.HRESULT, "ReleaseFrame"),
@@ -120,6 +182,9 @@ class IDXGIOutputDuplication(IDXGIObject):
 
 
 class IDXGIOutput(IDXGIObject):
+    """
+    DXGI output interface.
+    """
     _iid_ = comtypes.GUID("{ae02eedb-c735-4690-8d52-5a8dc20213aa}")
     _methods_ = [
         comtypes.STDMETHOD(
@@ -140,6 +205,9 @@ class IDXGIOutput(IDXGIObject):
 
 
 class IDXGIOutput1(IDXGIOutput):
+    """
+    DXGI output interface version 1.
+    """
     _iid_ = comtypes.GUID("{00cddea8-939b-4b83-a340-a685226666cc}")
     _methods_ = [
         comtypes.STDMETHOD(comtypes.HRESULT, "GetDisplayModeList1"),
@@ -157,6 +225,9 @@ class IDXGIOutput1(IDXGIOutput):
 
 
 class IDXGIAdapter(IDXGIObject):
+    """
+    DXGI adapter interface.
+    """
     _iid_ = comtypes.GUID("{2411e7e1-12ac-4ccf-bd14-9798e8534dc0}")
     _methods_ = [
         comtypes.STDMETHOD(
@@ -170,6 +241,9 @@ class IDXGIAdapter(IDXGIObject):
 
 
 class IDXGIAdapter1(IDXGIAdapter):
+    """
+    DXGI adapter interface version 1.
+    """
     _iid_ = comtypes.GUID("{29038f61-3839-4626-91fd-086879011a05}")
     _methods_ = [
         comtypes.STDMETHOD(
@@ -179,6 +253,9 @@ class IDXGIAdapter1(IDXGIAdapter):
 
 
 class IDXGIFactory(IDXGIObject):
+    """
+    DXGI factory interface.
+    """
     _iid_ = comtypes.GUID("{7b7166ec-21c7-44ae-b21a-c9ae321ae369}")
     _methods_ = [
         comtypes.STDMETHOD(comtypes.HRESULT, "EnumAdapters"),
@@ -190,6 +267,9 @@ class IDXGIFactory(IDXGIObject):
 
 
 class IDXGIFactory1(IDXGIFactory):
+    """
+    DXGI factory interface version 1.
+    """
     _iid_ = comtypes.GUID("{770aae78-f26f-4dba-a829-253c83d1b387}")
     _methods_ = [
         comtypes.STDMETHOD(

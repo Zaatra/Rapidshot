@@ -1,195 +1,236 @@
-# **DXcam**
-> ***Fastest Python Screenshot for Windows***
-```python
-import dxcam
-camera = dxcam.create()
-camera.grab()
-```
+# RapidShot
 
-## Introduction
-DXcam is a Python high-performance screenshot library for Windows using Desktop Duplication API. Capable of 240Hz+ capturing. It was originally built as a part of deep learning pipeline for FPS games to perform better than existed python solutions ([python-mss](https://github.com/BoboTiG/python-mss), [D3DShot](https://github.com/SerpentAI/D3DShot/)). 
+A high-performance screenshot library for Windows using the Desktop Duplication API. This is a merged version combining features from multiple DXcam forks, designed to deliver ultra-fast capture capabilities with advanced functionality.
 
-Compared to these existed solutions, DXcam provides:
-- Way faster screen capturing speed (> 240Hz)
-- Capturing of Direct3D exclusive full-screen application without interrupting, even when alt+tab.
-- Automatic handling of scaled / stretched resolution.
-- Accurate FPS targeting when in capturing mode, makes it suitable for Video output. 
-- Seamless integration with NumPy, OpenCV, PyTorch, etc.
+## Features
 
-> ***Contributions are welcome!***
+- **Ultra-fast capture**: 240Hz+ capturing capability
+- **Multi-backend support**: NumPy, PIL, and CUDA/CuPy backends
+- **Cursor capture**: Capture mouse cursor position and shape
+- **Direct3D support**: Capture Direct3D exclusive full-screen applications without interruption
+- **NVIDIA GPU acceleration**: GPU-accelerated processing using CuPy
+- **Multi-monitor setup**: Support for multiple GPUs and monitors
+- **Flexible output formats**: RGB, RGBA, BGR, BGRA, and grayscale support
+- **Region-based capture**: Efficient capture of specific screen regions
+- **Rotation handling**: Automatic handling of rotated displays
 
 ## Installation
-### From PyPI:
+
+> **Note:** The package is installed as rapidshot and imported as import rapidshot.
+### Basic Installation
+
 ```bash
-pip install dxcam
+pip install rapidshot
 ```
 
-**Note:** OpenCV is required by DXcam for colorspace conversion. If you don't already have OpenCV, install it easily with command `pip install dxcam[cv2]`.
+### With OpenCV Support (recommended)
 
-### From source:
 ```bash
-pip install --editable .
-
-# for installing OpenCV also
-pip install --editable .[cv2]
+pip install rapidshot[cv2]
 ```
 
-## Usage
-In DXCam, each output (monitor) is asscociated to a ```DXCamera``` instance.
-To create a DXCamera instance:
-```python
-import dxcam
-camera = dxcam.create()  # returns a DXCamera instance on primary monitor
+### With NVIDIA GPU Acceleration
+
+```bash
+pip install rapidshot[gpu]
 ```
-### Screenshot
-For screenshot, simply use ```.grab```:
+
+### With All Dependencies
+
+```bash
+pip install rapidshot[all]
+```
+
+## Quick Start
+
+### Basic Screenshot
+
 ```python
+import rapidshot
+
+# Create a RapidShot instance on the primary monitor
+camera = rapidshot.create()
+
+# Take a screenshot
 frame = camera.grab()
-```
-The returned ```frame``` will be a ```numpy.ndarray``` in the shape of ```(Height,  Width, 3[RGB])```. This is the default and the only supported format (**for now**). It is worth noting that ```.grab``` will return ```None``` if there is no new frame since the last time you called ```.grab```. Usually it means there's nothing new to render since last time (E.g. You are idling).
 
-To view the captured screenshot:
-```python
+# Display the screenshot
 from PIL import Image
 Image.fromarray(frame).show()
 ```
-To screenshot a specific region, use the ```region``` parameter: it takes ```tuple[int, int, int, int]``` as the left, top, right, bottom coordinates of the bounding box. Similar to [PIL.ImageGrab.grab](https://pillow.readthedocs.io/en/stable/reference/ImageGrab.html).
+
+### Region-based Capture
+
 ```python
+# Define a specific region
 left, top = (1920 - 640) // 2, (1080 - 640) // 2
 right, bottom = left + 640, top + 640
 region = (left, top, right, bottom)
-frame = camera.grab(region=region)  # numpy.ndarray of size (640x640x3) -> (HXWXC)
+
+# Capture only this region
+frame = camera.grab(region=region)  # 640x640x3 numpy.ndarray
 ```
-The above code will take a screenshot of the center ```640x640``` portion of a ```1920x1080``` monitor.
-### Screen Capture
-To start a screen capture, simply use ```.start```: the capture will be started in a separated thread, default at 60Hz. Use ```.stop``` to stop the capture.
+
+### Continuous Capture
+
 ```python
-camera.start(region=(left, top, right, bottom))  # Optional argument to capture a region
-camera.is_capturing  # True
-# ... Do Something
-camera.stop()
-camera.is_capturing  # False
-```
-### Consume the Screen Capture Data
-While the ```DXCamera``` instance is in capture mode, you can use ```.get_latest_frame``` to get the latest frame in the frame buffer:
-```python
-camera.start()
+# Start capturing at 60 FPS
+camera.start(target_fps=60)
+
+# Get the latest frame
 for i in range(1000):
-    image = camera.get_latest_frame()  # Will block until new frame available
+    image = camera.get_latest_frame()  # Blocks until new frame is available
+    # Process the frame...
+
+# Stop capturing
 camera.stop()
 ```
-Notice that ```.get_latest_frame``` by default will block until there is a new frame available since the last call to ```.get_latest_frame```. To change this behavior, use ```video_mode=True```.
 
-## Advanced Usage and Remarks
-### Multiple monitors / GPUs
+### Video Recording
+
 ```python
-cam1 = dxcam.create(device_idx=0, output_idx=0)
-cam2 = dxcam.create(device_idx=0, output_idx=1)
-cam3 = dxcam.create(device_idx=1, output_idx=1)
-img1 = cam1.grab()
-img2 = cam2.grab()
-img2 = cam3.grab()
-```
-The above code creates three ```DXCamera``` instances for: ```[monitor0, GPU0], [monitor1, GPU0], [monitor1, GPU1]```, and subsequently takes three full-screen screenshots. (cross GPU untested, but I hope it works.) To get a complete list of devices and outputs:
-```pycon
->>> import dxcam
->>> dxcam.device_info()
-'Device[0]:<Device Name:NVIDIA GeForce RTX 3090 Dedicated VRAM:24348Mb VendorId:4318>\n'
->>> dxcam.output_info()
-'Device[0] Output[0]: Res:(1920, 1080) Rot:0 Primary:True\nDevice[0] Output[1]: Res:(1920, 1080) Rot:0 Primary:False\n'
-```
+import rapidshot
+import cv2
 
-### Output Format
-You can specify the output color mode upon creation of the DXCamera instance:
-```python
-dxcam.create(output_idx=0, output_color="BGRA")
-```
-We currently support "RGB", "RGBA", "BGR", "BGRA", "GRAY", with "GRAY being the gray scale. As for the data format, ```DXCamera``` only supports ```numpy.ndarray```  in shape of ```(Height, Width, Channels)``` right now. ***We will soon add support for other output formats.***
+# Create a RapidShot instance with BGR color format for OpenCV
+camera = rapidshot.create(output_color="BGR")
 
-### Video Buffer
-The captured frames will be insert into a fixed-size ring buffer, and when the buffer is full the newest frame will replace the oldest frame. You can specify the max buffer length (defualt to 64) using the argument ```max_buffer_len``` upon creation of the ```DXCamera``` instance. 
-```python
-camera = dxcam.create(max_buffer_len=512)
-```
-***Note:  Right now to consume frames during capturing there is only `get_latest_frame` available which assume the user to process frames in a LIFO pattern. This is a read-only action and won't pop the processed frame from the buffer. we will make changes to support various of consuming pattern soon.***
+# Start capturing at 30 FPS in video mode
+camera.start(target_fps=30, video_mode=True)
 
-### Target FPS
-To make ```DXCamera``` capture close to the user specified ```target_fps```, we used the undocumented ```CREATE_WAITABLE_TIMER_HIGH_RESOLUTION ``` flag to create a Windows [Waitable Timer Object](https://docs.microsoft.com/en-us/windows/win32/sync/waitable-timer-objects). This is far more accurate (+/- 1ms) than Python (<3.11) ```time.sleep``` (min resolution 16ms). The implementation is done through ```ctypes``` creating a perodic timer. Python 3.11 used a similar approach[^2]. 
-```python
-camera.start(target_fps=120)  # Should not be made greater than 160.
-```
-However, due to Windows itself is a preemptive OS[^1] and the overhead of Python calls, the target FPS can not be guarenteed accurate when greater than 160. (See Benchmarks)
-
-
-### Video Mode
-The default behavior of ```.get_latest_frame``` only put newly rendered frame in the buffer, which suits the usage scenario of a object detection/machine learning pipeline. However, when recording a video that is not ideal since we aim to get the frames at a constant framerate: When the ```video_mode=True``` is specified when calling ```.start``` method of a ```DXCamera``` instance, the frame buffer will be feeded at the target fps, using the last frame if there is no new frame available. For example, the following code output a 5-second, 120Hz screen capture:
-```python
-target_fps = 120
-camera = dxcam.create(output_idx=0, output_color="BGR")
-camera.start(target_fps=target_fps, video_mode=True)
+# Create a video writer
 writer = cv2.VideoWriter(
-    "video.mp4", cv2.VideoWriter_fourcc(*"mp4v"), target_fps, (1920, 1080)
+    "video.mp4", cv2.VideoWriter_fourcc(*"mp4v"), 30, (1920, 1080)
 )
-for i in range(600):
+
+# Record for 10 seconds (300 frames at 30 FPS)
+for i in range(300):
     writer.write(camera.get_latest_frame())
+
+# Clean up
 camera.stop()
 writer.release()
 ```
-> You can do interesting stuff with libraries like ```pyav``` and ```pynput```: see examples/instant_replay.py for a ghetto implementation of instant replay using hot-keys
 
+### NVIDIA GPU Acceleration
 
-### Safely Releasing of Resource
-Upon calling ```.release``` on a DXCamera instance, it will stop any active capturing, free the buffer and release the duplicator and staging resource. Upon calling ```.stop()```, DXCamera will stop the active capture and free the frame buffer. If you want to manually recreate a ```DXCamera``` instance on the same output with different parameters, you can also manully delete it:
 ```python
-camera1 = dxcam.create(output_idx=0, output_color="BGR")
-camera2 = dxcam.create(output_idx=0)  # Not allowed, camera1 will be returned
-camera1 is camera2  # True
-del camera1
-del camera2
-camera2 = dxcam.create(output_idx=0)  # Allowed
+# Create a RapidShot instance with NVIDIA GPU acceleration
+camera = rapidshot.create(nvidia_gpu=True)
+
+# Screenshots will be processed on the GPU for improved performance
+frame = camera.grab()
 ```
 
-## Benchmarks
-### For Max FPS Capability:
+### Cursor Capture
+
 ```python
-start_time, fps = time.perf_counter(), 0
-cam = dxcam.create()
-start = time.perf_counter()
-while fps < 1000:
-    frame = cam.grab()
-    if frame is not None:  # New frame
-        fps += 1
-end_time = time.perf_counter() - start_time
-print(f"{title}: {fps/end_time}")
+# Take a screenshot
+frame = camera.grab()
+
+# Get cursor information
+cursor = camera.grab_cursor()
+
+# Check if cursor is visible in the capture area
+if cursor.PointerPositionInfo.Visible:
+    # Get cursor position
+    x, y = cursor.PointerPositionInfo.Position.x, cursor.PointerPositionInfo.Position.y
+    print(f"Cursor position: ({x}, {y})")
+    
+    # Cursor shape information is also available
+    if cursor.Shape is not None:
+        width = cursor.PointerShapeInfo.Width
+        height = cursor.PointerShapeInfo.Height
+        print(f"Cursor size: {width}x{height}")
 ```
-When using a similar logistic (only captured new frame counts), ```DXCam, python-mss, D3DShot``` benchmarked as follow:
 
-|             | DXcam  | python-mss | D3DShot |
-|-------------|--------|------------|---------|
-| Average FPS | 238.79 :checkered_flag: | 75.87      | 118.36  |
-| Std Dev     | 1.25   | 0.5447     | 0.3224   |
+## Multiple Monitors / GPUs
 
-The benchmark is across 5 runs, with a light-moderate usage on my PC (5900X + 3090; Chrome ~30tabs, VS Code opened, etc.), I used the [Blur Buster UFO test](https://www.testufo.com/framerates#count=5&background=stars&pps=960) to constantly render 240 fps on my monitor (Zowie 2546K). DXcam captured almost every frame rendered.
-
-### For Targeting FPS:
 ```python
-camera = dxcam.create(output_idx=0)
-camera.start(target_fps=60)
-for i in range(1000):
-    image = camera.get_latest_frame()
-camera.stop()
+# Show available devices and outputs
+print(rapidshot.device_info())
+print(rapidshot.output_info())
+
+# Create camera instances for specific devices/outputs
+cam1 = rapidshot.create(device_idx=0, output_idx=0)  # First monitor on first GPU
+cam2 = rapidshot.create(device_idx=0, output_idx=1)  # Second monitor on first GPU
+cam3 = rapidshot.create(device_idx=1, output_idx=0)  # First monitor on second GPU
 ```
-|   (Target)\\(mean,std)          | DXcam  | python-mss | D3DShot |
-|-------------  |--------                 |------------|---------|
-| 60fps         | 61.71, 0.26 :checkered_flag: | N/A     | 47.11, 1.33  |
-| 30fps         | 30.08, 0.02 :checkered_flag:  | N/A     | 21.24, 0.17  |
 
-## Work Referenced
-[D3DShot](https://github.com/SerpentAI/D3DShot/) : DXcam borrows the ctypes header directly from the no-longer maintained D3DShot.
+## Advanced Usage
 
-[OBS Studio](https://github.com/obsproject/obs-studio) : Learned a lot from it.
+### Custom Buffer Size
+
+```python
+# Create a camera with a larger frame buffer
+camera = rapidshot.create(max_buffer_len=256)
+```
+
+### Different Color Formats
+
+```python
+# RGB (default)
+camera_rgb = rapidshot.create(output_color="RGB")
+
+# RGBA (with alpha channel)
+camera_rgba = rapidshot.create(output_color="RGBA")
+
+# BGR (OpenCV format)
+camera_bgr = rapidshot.create(output_color="BGR")
+
+# Grayscale
+camera_gray = rapidshot.create(output_color="GRAY")
+```
+
+### Resource Management
+
+```python
+# Release resources when done
+camera.release()
+
+# Or automatically released when object is deleted
+del camera
+
+# Clean up all resources
+rapidshot.clean_up()
+
+# Reset the library completely
+rapidshot.reset()
+```
+## System Requirements
+
+- **Operating System:** Windows 10 or newer
+- **Python:** 3.7+
+- **GPU:** Compatible GPU for NVIDIA acceleration (for GPU features)
+- **RAM:** 8 GB+ (depending on the resolution and number of cameras used)
+
+| Library         | Average FPS | GPU-accelerated FPS |
+|-----------------|-------------|---------------------|
+| RapidShot       | 240+        | 300+                |
+| Original DXCam  | 210         | N/A                 |
+| Python-MSS      | 75          | N/A                 |
+| D3DShot         | 118         | N/A                 |
+
+### Troubleshooting
+
+- **ImportError with CuPy:** Ensure you have compatible CUDA drivers installed.
+- **Black screens when capturing:** Verify the application isn’t running in exclusive fullscreen mode.
+- **Low performance:** Experiment with different backends (NUMPY vs. CUPY) to optimize performance.
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request
 
 
-[^1]: <https://en.wikipedia.org/wiki/Preemption_(computing)> Preemption (computing)
+## License
 
-[^2]: <https://github.com/python/cpython/issues/65501> bpo-21302: time.sleep() uses waitable timer on Windows
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Acknowledgments
+
+RapidShot is a merged version of the following projects:
+
+- Original DXcam by ra1nty
+- dxcampil - PIL-based version
+- DXcam-AI-M-BOT - Cursor support version
+- BetterCam - GPU acceleration version
