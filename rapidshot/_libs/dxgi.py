@@ -279,3 +279,38 @@ class IDXGIFactory1(IDXGIFactory):
         ),
         comtypes.STDMETHOD(wintypes.BOOL, "IsCurrent"),
     ]
+
+# Create DXGI Factory function (missing function)
+try:
+    _CreateDXGIFactory1 = ctypes.windll.dxgi.CreateDXGIFactory1
+    _CreateDXGIFactory1.restype = comtypes.HRESULT
+    _CreateDXGIFactory1.argtypes = [
+        ctypes.POINTER(comtypes.GUID),
+        ctypes.POINTER(ctypes.c_void_p)
+    ]
+
+    def CreateDXGIFactory1(riid, ppFactory):
+        """
+        Create a DXGI factory object.
+        
+        Args:
+            riid: Reference to the factory interface ID
+            ppFactory: Pointer to receive the created factory
+            
+        Returns:
+            HRESULT value
+        """
+        return _CreateDXGIFactory1(riid, ppFactory)
+except (AttributeError, WindowsError) as e:
+    # Provide a fallback implementation or raise an informative error
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.error(f"Failed to load CreateDXGIFactory1: {e}")
+    
+    def CreateDXGIFactory1(riid, ppFactory):
+        """
+        Fallback implementation that raises an error.
+        """
+        raise RuntimeError(
+            "CreateDXGIFactory1 is not available. This might indicate DirectX is not properly installed."
+        )

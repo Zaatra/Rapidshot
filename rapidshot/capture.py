@@ -47,57 +47,67 @@ class ScreenCapture:
             nvidia_gpu: Whether to use NVIDIA GPU acceleration
             max_buffer_len: Maximum buffer length for capture
         """
-        # Check if GPU acceleration is requested but CuPy is not available
-        if nvidia_gpu and not CUPY_AVAILABLE:
-            print("Warning: NVIDIA GPU acceleration requested but CuPy is not available. Falling back to CPU mode.")
-            nvidia_gpu = False
-            
-        self._output: Output = output
-        self._device: Device = device
-        self._stagesurf: StageSurface = StageSurface(
-            output=self._output, device=self._device
-        )
-        self._duplicator: Duplicator = Duplicator(
-            output=self._output, device=self._device
-        )
-        self._processor: Processor = Processor(output_color=output_color, nvidia_gpu=nvidia_gpu)
-        
-        # Initialize with all fields for completeness
-        self.width, self.height = self._output.resolution
-        self._sourceRegion = D3D11_BOX(
-            left=0, top=0, right=self.width, bottom=self.height, front=0, back=1
-        )
-        
-        self.nvidia_gpu = nvidia_gpu
-        self.shot_w, self.shot_h = self.width, self.height
-        self.channel_size = len(output_color) if output_color != "GRAY" else 1
-        self.rotation_angle: int = self._output.rotation_angle
-        self.output_color = output_color
-
-        self._region_set_by_user = region is not None
-        self.region: Tuple[int, int, int, int] = region
-        if self.region is None:
-            self.region = (0, 0, self.width, self.height)
-        self._validate_region(self.region)
-
-        self.max_buffer_len = max_buffer_len
+        # Initialize basic attributes first to prevent errors during cleanup if initialization fails
         self.is_capturing = False
-
         self.__thread = None
         self.__lock = Lock()
         self.__stop_capture = Event()
-
         self.__frame_available = Event()
         self.__frame_buffer = None
         self.__head = 0
         self.__tail = 0
         self.__full = False
-        self.__has_frame = False  # Track if we have at least one frame
-
+        self.__has_frame = False
         self.__timer_handle = None
-
         self.__frame_count = 0
         self.__capture_start_time = 0
+        self.rotation_angle = 0
+        self.width = 0
+        self.height = 0
+        self.region = None
+        self._region_set_by_user = False
+        self._sourceRegion = None
+        self.shot_w = 0
+        self.shot_h = 0
+        self.max_buffer_len = max_buffer_len
+        
+        try:
+            # Check if GPU acceleration is requested but CuPy is not available
+            if nvidia_gpu and not CUPY_AVAILABLE:
+                print("Warning: NVIDIA GPU acceleration requested but CuPy is not available. Falling back to CPU mode.")
+                nvidia_gpu = False
+                
+            self._output = output
+            self._device = device
+            self._stagesurf = StageSurface(
+                output=self._output, device=self._device
+            )
+            self._duplicator = Duplicator(
+                output=self._output, device=self._device
+            )
+            self._processor = Processor(output_color=output_color, nvidia_gpu=nvidia_gpu)
+            
+            # Initialize with all fields for completeness
+            self.width, self.height = self._output.resolution
+            self._sourceRegion = D3D11_BOX(
+                left=0, top=0, right=self.width, bottom=self.height, front=0, back=1
+            )
+            
+            self.nvidia_gpu = nvidia_gpu
+            self.shot_w, self.shot_h = self.width, self.height
+            self.channel_size = len(output_color) if output_color != "GRAY" else 1
+            self.rotation_angle = self._output.rotation_angle
+            self.output_color = output_color
+
+            self._region_set_by_user = region is not None
+            self.region = region
+            if self.region is None:
+                self.region = (0, 0, self.width, self.height)
+            self._validate_region(self.region)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Error initializing ScreenCapture: {e}")
+            raise
     
     def region_to_memory_region(self, region: Tuple[int, int, int, int], rotation_angle: int, output: Output):
         """
@@ -337,16 +347,20 @@ class ScreenCapture:
         """
         Stop capturing frames.
         """
-        if self.is_capturing:
-            self.__frame_available.set()
-            self.__stop_capture.set()
-            if self.__thread is not None:
+        if hasattr(self, 'is_capturing') and self.is_capturing:
+            if hasattr(self, '__frame_available'):
+                self.__frame_available.set()
+            if hasattr(self, '__stop_capture'):
+                self.__stop_capture.set()
+            if hasattr(self, '__thread') and self.__thread is not None:
                 self.__thread.join(timeout=10)
         self.is_capturing = False
         self.__frame_buffer = None
         self.__frame_count = 0
-        self.__frame_available.clear()
-        self.__stop_capture.clear()
+        if hasattr(self, '__frame_available'):
+            self.__frame_available.clear()
+        if hasattr(self, '__stop_capture'):
+            self.__stop_capture.clear()
         self.__has_frame = False  # Reset frame status
 
     def get_latest_frame(self, as_numpy: bool = True):
@@ -463,7 +477,7 @@ class ScreenCapture:
                 continue
                 
         # Clean up
-        if self.__timer_handle:
+        if hasattr(self, '__timer_handle') and self.__timer_handle:
             cancel_timer(self.__timer_handle)
             self.__timer_handle = None
         if capture_error is not None:
@@ -521,25 +535,39 @@ class ScreenCapture:
         self.region = region
         
         # Update the source region with the new coordinates
-        self._sourceRegion.left = region[0]
-        self._sourceRegion.top = region[1]
-        self._sourceRegion.right = region[2]
-        self._sourceRegion.bottom = region[3]
+        if hasattr(self, '_sourceRegion') and self._sourceRegion is not None:
+            self._sourceRegion.left = region[0]
+            self._sourceRegion.top = region[1]
+            self._sourceRegion.right = region[2]
+            self._sourceRegion.bottom = region[3]
         self.shot_w, self.shot_h = region[2]-region[0], region[3]-region[1]
 
     def release(self):
         """
         Release all resources.
         """
-        self.stop()
-        self._duplicator.release()
-        self._stagesurf.release()
+        try:
+            if hasattr(self, 'is_capturing'):
+                self.stop()
+            
+            if hasattr(self, '_duplicator'):
+                self._duplicator.release()
+                
+            if hasattr(self, '_stagesurf'):
+                self._stagesurf.release()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Error during release: {e}")
 
     def __del__(self):
         """
         Destructor to ensure resources are released.
         """
-        self.release()
+        try:
+            self.release()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Error during destruction: {e}")
 
     def __repr__(self) -> str:
         """
@@ -548,10 +576,13 @@ class ScreenCapture:
         Returns:
             String representation of the ScreenCapture instance
         """
-        return "<{}:\n\t{},\n\t{},\n\t{},\n\t{}\n>".format(
-            "ScreenCapture",
-            self._device,
-            self._output,
-            self._stagesurf,
-            self._duplicator,
-        )
+        try:
+            return "<{}:\n\t{},\n\t{},\n\t{},\n\t{}\n>".format(
+                "ScreenCapture",
+                self._device if hasattr(self, '_device') else "No device",
+                self._output if hasattr(self, '_output') else "No output",
+                self._stagesurf if hasattr(self, '_stagesurf') else "No stage surface",
+                self._duplicator if hasattr(self, '_duplicator') else "No duplicator",
+            )
+        except Exception:
+            return "<ScreenCapture: initialization incomplete>"
