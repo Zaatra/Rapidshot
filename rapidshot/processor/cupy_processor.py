@@ -1,10 +1,14 @@
 import ctypes
+from rapidshot.processor.base import ProcessorBackends
 
 
 class CupyProcessor:
     """
     CUDA-accelerated processor using CuPy.
     """
+    # Class attribute to identify the backend type
+    BACKEND_TYPE = ProcessorBackends.CUPY
+    
     def __init__(self, color_mode):
         """
         Initialize the processor.

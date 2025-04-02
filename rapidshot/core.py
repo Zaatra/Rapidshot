@@ -4,7 +4,6 @@ from typing import Tuple, Optional, Union, List, Any
 from threading import Thread, Event, Lock
 import comtypes
 import numpy as np
-# Fix 1: Direct imports from specific modules instead of circular import
 from rapidshot.core.device import Device
 from rapidshot.core.output import Output
 from rapidshot.core.stagesurf import StageSurface
@@ -93,6 +92,7 @@ class ScreenCapture:
         self.__head = 0
         self.__tail = 0
         self.__full = False
+        self.__has_frame = False  # Track if we have at least one frame
 
         self.__timer_handle = None
 
@@ -111,14 +111,31 @@ class ScreenCapture:
         Returns:
             Converted region
         """
+        # Extract region coordinates
+        left, top, right, bottom = region
+        
+        # Get surface dimensions
+        width, height = output.surface_size
+        
+        # Convert based on rotation angle
         if rotation_angle == 0:
-            return region
-        elif rotation_angle == 90:  # Axes (X,Y) -> (-Y,X)
-            return (region[1], output.surface_size[1]-region[2], region[3], output.surface_size[1]-region[0])
-        elif rotation_angle == 180:  # Axes (X,Y) -> (-X,-Y)
-            return (output.surface_size[0]-region[2], output.surface_size[1]-region[3], output.surface_size[0]-region[0], output.surface_size[1]-region[1])
-        else:  # rotation_angle == 270 Axes (X,Y) -> (Y,-X)
-            return (output.surface_size[0]-region[3], region[0], output.surface_size[0]-region[1], region[2])
+            # No rotation
+            return (left, top, right, bottom)
+        elif rotation_angle == 90:
+            # 90-degree rotation (clockwise)
+            # In 90-degree rotation, x becomes y, and y becomes (width - x)
+            return (top, width - right, bottom, width - left)
+        elif rotation_angle == 180:
+            # 180-degree rotation
+            # In 180-degree rotation, x becomes (width - x), and y becomes (height - y)
+            return (width - right, height - bottom, width - left, height - top)
+        elif rotation_angle == 270:
+            # 270-degree rotation (clockwise)
+            # In 270-degree rotation, x becomes (height - y), and y becomes x
+            return (height - bottom, left, height - top, right)
+        else:
+            # Invalid rotation angle
+            raise ValueError(f"Invalid rotation angle: {rotation_angle}. Must be 0, 90, 180, or 270.")
 
     def grab(self, region: Optional[Tuple[int, int, int, int]] = None) -> Optional[np.ndarray]:
         """
@@ -189,7 +206,7 @@ class ScreenCapture:
                 self._stagesurf.release()
                 self._stagesurf.rebuild(output=self._output, device=self._device, dim=(_width, _height))
 
-            # Fix 2: Create a source-specific region object with the transformed coordinates
+            # Create a source-specific region object with the transformed coordinates
             source_region = D3D11_BOX(
                 left=_region[0], top=_region[1], right=_region[2], bottom=_region[3], front=0, back=1
             )
@@ -230,7 +247,7 @@ class ScreenCapture:
                 self._stagesurf.release()
                 self._stagesurf.rebuild(output=self._output, device=self._device, dim=(_width, _height))
 
-            # Fix 2: Create a source-specific region object with the transformed coordinates
+            # Create a source-specific region object with the transformed coordinates
             source_region = D3D11_BOX(
                 left=_region[0], top=_region[1], right=_region[2], bottom=_region[3], front=0, back=1
             )
@@ -330,6 +347,7 @@ class ScreenCapture:
         self.__frame_count = 0
         self.__frame_available.clear()
         self.__stop_capture.clear()
+        self.__has_frame = False  # Reset frame status
 
     def get_latest_frame(self, as_numpy: bool = True):
         """
@@ -342,11 +360,17 @@ class ScreenCapture:
         Returns:
             Latest captured frame as numpy or cupy array
         """
+        # Wait until a frame is available
         self.__frame_available.wait()
+        
+        # Lock to ensure thread safety
         with self.__lock:
+            # Get the most recent frame
             ret = self.__frame_buffer[(self.__head - 1) % self.max_buffer_len]
+            # Clear the event to indicate frame has been consumed
             self.__frame_available.clear()
         
+        # Convert to numpy if requested
         if self.nvidia_gpu and CUPY_AVAILABLE:
             if as_numpy:
                 return cp.asnumpy(ret)
@@ -412,26 +436,25 @@ class ScreenCapture:
                         self.__frame_available.set()
                         self.__frame_count += 1
                         self.__full = self.__head == self.__tail
-                elif video_mode:
+                        self.__has_frame = True  # We now have at least one frame
+                elif video_mode and self.__has_frame:  # Only duplicate in video mode if we have at least one frame
                     with self.__lock:
-                        # Make sure we have at least one frame before trying to copy
-                        if self.__frame_count > 0:
-                            # Copy last frame for video mode
-                            if self.nvidia_gpu and CUPY_AVAILABLE:
-                                self.__frame_buffer[self.__head] = cp.array(
-                                    self.__frame_buffer[(self.__head - 1) % self.max_buffer_len]
-                                )
-                            else:
-                                self.__frame_buffer[self.__head] = np.array(
-                                    self.__frame_buffer[(self.__head - 1) % self.max_buffer_len]
-                                )
-                                
-                            if self.__full:
-                                self.__tail = (self.__tail + 1) % self.max_buffer_len
-                            self.__head = (self.__head + 1) % self.max_buffer_len
-                            self.__frame_available.set()
-                            self.__frame_count += 1
-                            self.__full = self.__head == self.__tail
+                        # Copy last frame for video mode
+                        if self.nvidia_gpu and CUPY_AVAILABLE:
+                            self.__frame_buffer[self.__head] = cp.array(
+                                self.__frame_buffer[(self.__head - 1) % self.max_buffer_len]
+                            )
+                        else:
+                            self.__frame_buffer[self.__head] = np.array(
+                                self.__frame_buffer[(self.__head - 1) % self.max_buffer_len]
+                            )
+                            
+                        if self.__full:
+                            self.__tail = (self.__tail + 1) % self.max_buffer_len
+                        self.__head = (self.__head + 1) % self.max_buffer_len
+                        self.__frame_available.set()
+                        self.__frame_count += 1
+                        self.__full = self.__head == self.__tail
             except Exception as e:
                 import traceback
                 print(traceback.format_exc())
@@ -478,6 +501,7 @@ class ScreenCapture:
             self.__head = 0
             self.__tail = 0
             self.__full = False
+            self.__has_frame = False  # Reset frame status
 
     def _validate_region(self, region: Tuple[int, int, int, int]):
         """

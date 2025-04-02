@@ -1,11 +1,15 @@
 import ctypes
 from PIL import Image
+from rapidshot.processor.base import ProcessorBackends
 
 
 class PillowProcessor:
     """
     PIL-based processor for image processing.
     """
+    # Class attribute to identify the backend type
+    BACKEND_TYPE = ProcessorBackends.PIL
+    
     def __init__(self, color_mode: str = "RGB"):
         """
         Initialize the processor.

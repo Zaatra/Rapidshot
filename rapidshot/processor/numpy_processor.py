@@ -2,12 +2,16 @@ import ctypes
 import numpy as np
 from numpy import rot90, ndarray, newaxis, uint8
 from numpy.ctypeslib import as_array
+from rapidshot.processor.base import ProcessorBackends
 
 
 class NumpyProcessor:
     """
     NumPy-based processor for image processing.
     """
+    # Class attribute to identify the backend type
+    BACKEND_TYPE = ProcessorBackends.NUMPY
+    
     def __init__(self, color_mode):
         """
         Initialize the processor.
