@@ -4,6 +4,7 @@ from typing import Tuple, Optional, Union, List, Any
 from threading import Thread, Event, Lock
 import comtypes
 import numpy as np
+# Fix 1: Direct imports from specific modules instead of circular import
 from rapidshot.core.device import Device
 from rapidshot.core.output import Output
 from rapidshot.core.stagesurf import StageSurface
@@ -188,9 +189,14 @@ class ScreenCapture:
                 self._stagesurf.release()
                 self._stagesurf.rebuild(output=self._output, device=self._device, dim=(_width, _height))
 
+            # Fix 2: Create a source-specific region object with the transformed coordinates
+            source_region = D3D11_BOX(
+                left=_region[0], top=_region[1], right=_region[2], bottom=_region[3], front=0, back=1
+            )
+
             # Copy with region support
             self._device.im_context.CopySubresourceRegion(
-                self._stagesurf.texture, 0, 0, 0, 0, self._duplicator.texture, 0, ctypes.byref(self._sourceRegion)
+                self._stagesurf.texture, 0, 0, 0, 0, self._duplicator.texture, 0, ctypes.byref(source_region)
             )
             self._duplicator.release_frame()
             rect = self._stagesurf.map()
@@ -224,9 +230,14 @@ class ScreenCapture:
                 self._stagesurf.release()
                 self._stagesurf.rebuild(output=self._output, device=self._device, dim=(_width, _height))
 
+            # Fix 2: Create a source-specific region object with the transformed coordinates
+            source_region = D3D11_BOX(
+                left=_region[0], top=_region[1], right=_region[2], bottom=_region[3], front=0, back=1
+            )
+
             # Copy the frame
             self._device.im_context.CopySubresourceRegion(
-                self._stagesurf.texture, 0, 0, 0, 0, self._duplicator.texture, 0, ctypes.byref(self._sourceRegion)
+                self._stagesurf.texture, 0, 0, 0, 0, self._duplicator.texture, 0, ctypes.byref(source_region)
             )
             self._duplicator.release_frame()
             rect = self._stagesurf.map()
@@ -403,22 +414,24 @@ class ScreenCapture:
                         self.__full = self.__head == self.__tail
                 elif video_mode:
                     with self.__lock:
-                        # Copy last frame for video mode
-                        if self.nvidia_gpu and CUPY_AVAILABLE:
-                            self.__frame_buffer[self.__head] = cp.array(
-                                self.__frame_buffer[(self.__head - 1) % self.max_buffer_len]
-                            )
-                        else:
-                            self.__frame_buffer[self.__head] = np.array(
-                                self.__frame_buffer[(self.__head - 1) % self.max_buffer_len]
-                            )
-                            
-                        if self.__full:
-                            self.__tail = (self.__tail + 1) % self.max_buffer_len
-                        self.__head = (self.__head + 1) % self.max_buffer_len
-                        self.__frame_available.set()
-                        self.__frame_count += 1
-                        self.__full = self.__head == self.__tail
+                        # Make sure we have at least one frame before trying to copy
+                        if self.__frame_count > 0:
+                            # Copy last frame for video mode
+                            if self.nvidia_gpu and CUPY_AVAILABLE:
+                                self.__frame_buffer[self.__head] = cp.array(
+                                    self.__frame_buffer[(self.__head - 1) % self.max_buffer_len]
+                                )
+                            else:
+                                self.__frame_buffer[self.__head] = np.array(
+                                    self.__frame_buffer[(self.__head - 1) % self.max_buffer_len]
+                                )
+                                
+                            if self.__full:
+                                self.__tail = (self.__tail + 1) % self.max_buffer_len
+                            self.__head = (self.__head + 1) % self.max_buffer_len
+                            self.__frame_available.set()
+                            self.__frame_count += 1
+                            self.__full = self.__head == self.__tail
             except Exception as e:
                 import traceback
                 print(traceback.format_exc())
