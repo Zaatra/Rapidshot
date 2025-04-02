@@ -1,7 +1,88 @@
 [build-system]
-requires = ["setuptools>=42"]
+requires = ["setuptools>=45", "wheel", "setuptools_scm>=6.2"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "rapidshot"
 version = "1.0.0"
+description = "A high-performance screencapture library for Windows using Desktop Duplication API"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+    { name = "RapidShot Contributors", email = "example@example.com" }
+]
+keywords = ["screencapture", "desktop-duplication", "screen-recorder", "windows"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: Microsoft :: Windows :: Windows 10",
+    "Operating System :: Microsoft :: Windows :: Windows 11",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: Multimedia :: Graphics :: Capture",
+    "Topic :: Multimedia :: Graphics :: Capture :: Screen Capture"
+]
+dependencies = [
+    "numpy>=1.19.0",
+    "comtypes>=1.1.0",
+]
+
+[project.optional-dependencies]
+cv2 = ["opencv-python>=4.5.0"]
+gpu = ["cupy-cuda11x>=11.0.0", "opencv-python>=4.5.0"]
+pil = ["pillow>=8.0.0"]
+all = [
+    "numpy>=1.19.0",
+    "comtypes>=1.1.0",
+    "opencv-python>=4.5.0",
+    "pillow>=8.0.0",
+]
+dev = [
+    "black>=22.3.0",
+    "isort>=5.10.1", 
+    "mypy>=0.950",
+    "pytest>=7.0.0",
+    "pytest-cov>=3.0.0",
+    "flake8>=4.0.1",
+    "tox>=3.24.5",
+]
+docs = [
+    "sphinx>=4.5.0",
+    "sphinx-rtd-theme>=1.0.0",
+    "myst-parser>=0.18.0",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/Zaatra/Rapidshot"
+"Bug Reports" = "https://github.com/Zaatra/Rapidshot/issues"
+"Source" = "https://github.com/Zaatra/Rapidshot"
+"Documentation" = "https://github.com/Zaatra/Rapidshot"
+
+[tool.setuptools]
+packages = ["rapidshot"]
+
+[tool.black]
+line-length = 100
+target-version = ["py38", "py39", "py310"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
