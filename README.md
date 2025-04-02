@@ -125,6 +125,8 @@ frame = screencapture.grab()
 
 ### Cursor Capture
 
+RapidShot provides comprehensive cursor capture capabilities, allowing you to track cursor position, visibility, and shape in your screen captures.
+
 ```python
 # Take a screenshot
 frame = screencapture.grab()
@@ -143,6 +145,77 @@ if cursor.PointerPositionInfo.Visible:
         width = cursor.PointerShapeInfo.Width
         height = cursor.PointerShapeInfo.Height
         print(f"Cursor size: {width}x{height}")
+```
+
+#### Advanced Cursor Handling
+
+The cursor information provided by RapidShot can be used in various ways:
+
+1. **Overlay cursor on captured image:**
+
+```python
+import numpy as np
+import cv2
+
+def overlay_cursor(frame, cursor):
+    """Overlay cursor on captured frame."""
+    if not cursor.PointerPositionInfo.Visible or cursor.Shape is None:
+        return frame
+    
+    # Create an overlay from cursor shape data
+    shape_type = cursor.PointerShapeInfo.Type
+    width = cursor.PointerShapeInfo.Width
+    height = cursor.PointerShapeInfo.Height
+    
+    # Different processing based on cursor type (monochrome, color, or masked)
+    if shape_type & DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME:
+        # Process monochrome cursor
+        # ...
+    elif shape_type & DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR:
+        # Process color cursor
+        # ...
+    elif shape_type & DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR:
+        # Process masked color cursor
+        # ...
+    
+    # Position the cursor on the frame at its current coordinates
+    x, y = cursor.PointerPositionInfo.Position.x, cursor.PointerPositionInfo.Position.y
+    
+    # Ensure cursor is within frame boundaries
+    # ...
+    
+    # Blend cursor with frame
+    # ...
+    
+    return frame_with_cursor
+
+# Usage example
+frame = screencapture.grab()
+cursor = screencapture.grab_cursor()
+composite_image = overlay_cursor(frame, cursor)
+```
+
+2. **Track cursor movements:**
+
+```python
+import time
+
+# Record cursor positions over time
+positions = []
+screencapture = rapidshot.create()
+
+for i in range(100):
+    cursor = screencapture.grab_cursor()
+    if cursor.PointerPositionInfo.Visible:
+        positions.append((
+            time.time(),
+            cursor.PointerPositionInfo.Position.x,
+            cursor.PointerPositionInfo.Position.y
+        ))
+    time.sleep(0.05)  # Sample at 20Hz
+
+# Analyze cursor movement
+# ...
 ```
 
 ## Multiple Monitors / GPUs
@@ -198,12 +271,43 @@ rapidshot.clean_up()
 # Reset the library completely
 rapidshot.reset()
 ```
-## System Requirements
 
-- **Operating System:** Windows 10 or newer
-- **Python:** 3.7+
-- **GPU:** Compatible GPU for NVIDIA acceleration (for GPU features)
-- **RAM:** 8 GB+ (depending on the resolution and number of screencapture instances used)
+## Benchmarks and Performance Comparison
+
+RapidShot includes benchmark utilities to compare its performance against other popular screen capture libraries. The benchmark scripts are located in the `benchmarks/` directory and are designed to provide objective performance measurements.
+
+### Benchmark Structure
+
+- **FPS Benchmarks**: Measure the maximum frame rate achievable by each library
+  - `rapidshot_max_fps.py` - Tests RapidShot's maximum FPS
+  - `bettercam_max_fps.py` - Tests BetterCam's maximum FPS
+  - `dxcam_max_fps.py` - Tests DXCam's maximum FPS
+  - `d3dshot_max_fps.py` - Tests D3DShot's maximum FPS
+  - `mss_max_fps.py` - Tests MSS's maximum FPS
+
+- **Capture Benchmarks**: Test the continuous capture performance
+  - `rapidshot_capture.py` - Tests RapidShot's continuous capture
+  - `bettercam_capture.py` - Tests BetterCam's continuous capture
+  - `dxcam_capture.py` - Tests DXCam's continuous capture
+
+### Running Benchmarks
+
+To run a benchmark comparison:
+
+```bash
+# Run RapidShot benchmark
+python benchmarks/rapidshot_max_fps.py
+
+# Run with GPU acceleration
+python benchmarks/rapidshot_max_fps.py --gpu
+
+# Test with different color formats
+python benchmarks/rapidshot_max_fps.py --color BGRA
+```
+
+### Benchmark Results
+
+The table below shows typical performance results across different libraries:
 
 | Library         | Average FPS | GPU-accelerated FPS |
 |-----------------|-------------|---------------------|
@@ -212,10 +316,17 @@ rapidshot.reset()
 | Python-MSS      | 75          | N/A                 |
 | D3DShot         | 118         | N/A                 |
 
+## System Requirements
+
+- **Operating System:** Windows 10 or newer
+- **Python:** 3.7+
+- **GPU:** Compatible GPU for NVIDIA acceleration (for GPU features)
+- **RAM:** 8 GB+ (depending on the resolution and number of screencapture instances used)
+
 ### Troubleshooting
 
 - **ImportError with CuPy:** Ensure you have compatible CUDA drivers installed.
-- **Black screens when capturing:** Verify the application isn’t running in exclusive fullscreen mode.
+- **Black screens when capturing:** Verify the application isn't running in exclusive fullscreen mode.
 - **Low performance:** Experiment with different backends (NUMPY vs. CUPY) to optimize performance.
 
 ## Contributing
