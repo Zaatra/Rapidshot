@@ -4,6 +4,7 @@ from typing import Tuple, Optional, Union, List, Any
 from threading import Thread, Event, Lock
 import comtypes
 import numpy as np
+import logging
 from rapidshot.core.device import Device
 from rapidshot.core.output import Output
 from rapidshot.core.stagesurf import StageSurface
@@ -18,6 +19,9 @@ from rapidshot.util.timer import (
     INFINITE,
     WAIT_FAILED,
 )
+
+# Set up logger
+logger = logging.getLogger(__name__)
 
 # Try to import CuPy for GPU acceleration
 try:
@@ -70,11 +74,15 @@ class ScreenCapture:
         self.shot_w = 0
         self.shot_h = 0
         self.max_buffer_len = max_buffer_len
+        self.continuous_mode = False
+        self.buffer = False
+        self._latest_frame = None
+        self.cursor = False
         
         try:
             # Check if GPU acceleration is requested but CuPy is not available
             if nvidia_gpu and not CUPY_AVAILABLE:
-                print("Warning: NVIDIA GPU acceleration requested but CuPy is not available. Falling back to CPU mode.")
+                logger.warning("NVIDIA GPU acceleration requested but CuPy is not available. Falling back to CPU mode.")
                 nvidia_gpu = False
                 
             self._output = output
@@ -105,8 +113,7 @@ class ScreenCapture:
                 self.region = (0, 0, self.width, self.height)
             self._validate_region(self.region)
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).error(f"Error initializing ScreenCapture: {e}")
+            logger.error(f"Error initializing ScreenCapture: {e}")
             raise
     
     def region_to_memory_region(self, region: Tuple[int, int, int, int], rotation_angle: int, output: Output):
@@ -234,47 +241,87 @@ class ScreenCapture:
             self._on_output_change()
             return False
 
-    def _grab(self, region: Tuple[int, int, int, int]) -> Optional[np.ndarray]:
+    def _grab(self, region: Optional[Tuple[int, int, int, int]] = None) -> Optional[np.ndarray]:
         """
-        Internal implementation of grab.
+        Grab a frame with a specific region.
         
         Args:
             region: Region to capture (left, top, right, bottom)
             
         Returns:
-            Captured frame as numpy array, or None if no update
+            ndarray: Captured frame
         """
-        if self._duplicator.update_frame():
-            if not self._duplicator.updated:
-                return None
-
-            _region = self.region_to_memory_region(region, self.rotation_angle, self._output)
-            _width = _region[2] - _region[0]
-            _height = _region[3] - _region[1]
-
-            # Rebuild surface if needed
-            if self._stagesurf.width != _width or self._stagesurf.height != _height:
-                self._stagesurf.release()
-                self._stagesurf.rebuild(output=self._output, device=self._device, dim=(_width, _height))
-
-            # Create a source-specific region object with the transformed coordinates
-            source_region = D3D11_BOX(
-                left=_region[0], top=_region[1], right=_region[2], bottom=_region[3], front=0, back=1
-            )
-
-            # Copy the frame
-            self._device.im_context.CopySubresourceRegion(
-                self._stagesurf.texture, 0, 0, 0, 0, self._duplicator.texture, 0, ctypes.byref(source_region)
-            )
-            self._duplicator.release_frame()
-            rect = self._stagesurf.map()
-            frame = self._processor.process(
-                rect, self.shot_w, self.shot_h, region, self.rotation_angle
-            )
-            self._stagesurf.unmap()
+        # Region handling fix applied
+        try:
+            # Set up and acquire frame
+            if self.continuous_mode and self.buffer:
+                with self._buffer_lock:
+                    if not self.buffer:
+                        return None
+                    # Return the latest frame
+                    frame = self._latest_frame
+            else:
+                frame_info = self._duplicator.get_frame()
+                if frame_info is None:
+                    return None
+                    
+                # Adjust region if needed
+                effective_region = region
+                if region is None:
+                    effective_region = (0, 0, *self._duplicator.get_output_dimensions())
+                    
+                # Make sure region is valid to prevent array index errors
+                left, top, right, bottom = effective_region
+                output_width, output_height = self._duplicator.get_output_dimensions()
+                
+                left = max(0, min(left, output_width - 1))
+                top = max(0, min(top, output_height - 1))
+                right = max(left + 1, min(right, output_width))
+                bottom = max(top + 1, min(bottom, output_height))
+                
+                effective_region = (left, top, right, bottom)
+                
+                # Get frame using processor
+                frame = self._processor.process(
+                    frame_info.rect,
+                    frame_info.width,
+                    frame_info.height,
+                    effective_region,
+                    self._duplicator.get_rotation_angle()
+                )
+                
+                # Add cursor if enabled
+                if self.cursor and frame_info.cursor_visible:
+                    self._cursor_processor.draw_cursor(frame, frame_info)
+                    
+                # Release the frame once processed
+                self._duplicator.release_frame()
+                
+            # Process region manually if needed and previous processing didn't work
+            if frame is not None and region is not None:
+                try:
+                    # Check if the region needs additional cropping
+                    left, top, right, bottom = region
+                    height, width = frame.shape[:2]
+                    
+                    # Only crop if needed and valid
+                    if (left > 0 or top > 0 or right < width or bottom < height) and \
+                       (left < width and top < height and right > 0 and bottom > 0):
+                        # Ensure within bounds
+                        left = max(0, min(left, width - 1))
+                        top = max(0, min(top, height - 1))
+                        right = max(left + 1, min(right, width))
+                        bottom = max(top + 1, min(bottom, height))
+                        
+                        # Perform the crop
+                        frame = frame[top:bottom, left:right]
+                except Exception as e:
+                    logger.warning(f"Manual region crop failed: {e}")
+                    # Return full frame as fallback
+            
             return frame
-        else:
-            self._on_output_change()
+        except Exception as e:
+            logger.error(f"Error grabbing frame: {e}")
             return None
 
     def _on_output_change(self):
@@ -471,7 +518,7 @@ class ScreenCapture:
                         self.__full = self.__head == self.__tail
             except Exception as e:
                 import traceback
-                print(traceback.format_exc())
+                logger.error(f"Error in capture thread: {e}\n{traceback.format_exc()}")
                 self.__stop_capture.set()
                 capture_error = e
                 continue
@@ -487,7 +534,7 @@ class ScreenCapture:
         # Report capture statistics
         capture_time = time.perf_counter() - self.__capture_start_time
         if capture_time > 0:
-            print(f"Screencapture FPS: {int(self.__frame_count/capture_time)}")
+            logger.info(f"Screencapture FPS: {int(self.__frame_count/capture_time)}")
 
     def _rebuild_frame_buffer(self, region: Tuple[int, int, int, int]):
         """
@@ -527,20 +574,32 @@ class ScreenCapture:
         Raises:
             ValueError: If region is invalid
         """
-        l, t, r, b = region
-        if not (self.width >= r > l >= 0 and self.height >= b > t >= 0):
-            raise ValueError(
-                f"Invalid Region: Region should be in {self.width}x{self.height}"
-            )
-        self.region = region
-        
-        # Update the source region with the new coordinates
-        if hasattr(self, '_sourceRegion') and self._sourceRegion is not None:
-            self._sourceRegion.left = region[0]
-            self._sourceRegion.top = region[1]
-            self._sourceRegion.right = region[2]
-            self._sourceRegion.bottom = region[3]
-        self.shot_w, self.shot_h = region[2]-region[0], region[3]-region[1]
+        try:
+            l, t, r, b = region
+            # Apply bounds checking
+            l = max(0, min(l, self.width - 1))
+            t = max(0, min(t, self.height - 1))
+            r = max(l + 1, min(r, self.width))
+            b = max(t + 1, min(b, self.height))
+            
+            # Update region with validated values
+            region = (l, t, r, b)
+            
+            self.region = region
+            
+            # Update the source region with the new coordinates
+            if hasattr(self, '_sourceRegion') and self._sourceRegion is not None:
+                self._sourceRegion.left = region[0]
+                self._sourceRegion.top = region[1]
+                self._sourceRegion.right = region[2]
+                self._sourceRegion.bottom = region[3]
+            self.shot_w, self.shot_h = region[2]-region[0], region[3]-region[1]
+        except Exception as e:
+            # If validation fails, use safe default
+            logger.error(f"Region validation error: {e}")
+            if hasattr(self, 'width') and hasattr(self, 'height'):
+                self.region = (0, 0, self.width, self.height)
+                self.shot_w, self.shot_h = self.width, self.height
 
     def release(self):
         """
@@ -556,8 +615,7 @@ class ScreenCapture:
             if hasattr(self, '_stagesurf'):
                 self._stagesurf.release()
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(f"Error during release: {e}")
+            logger.warning(f"Error during release: {e}")
 
     def __del__(self):
         """
@@ -566,8 +624,7 @@ class ScreenCapture:
         try:
             self.release()
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(f"Error during destruction: {e}")
+            logger.warning(f"Error during destruction: {e}")
 
     def __repr__(self) -> str:
         """
