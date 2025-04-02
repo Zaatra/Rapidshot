@@ -26,21 +26,17 @@ class RapidshotError(Exception):
     """Base exception for Rapidshot errors."""
     pass
 
-
 class DeviceError(RapidshotError):
     """Exception raised for errors related to device operations."""
     pass
-
 
 class OutputError(RapidshotError):
     """Exception raised for errors related to output operations."""
     pass
 
-
 class ConfigurationError(RapidshotError):
     """Exception raised for errors related to configuration."""
     pass
-
 
 class Singleton(type):
     """
@@ -54,7 +50,6 @@ class Singleton(type):
         else:
             logger.debug(f"Using existing instance of {cls.__name__}")
         return cls._instances[cls]
-
 
 class RapidshotFactory(metaclass=Singleton):
     """
@@ -107,6 +102,7 @@ class RapidshotFactory(metaclass=Singleton):
         output_color: str = "RGB",
         nvidia_gpu: bool = False,
         max_buffer_len: int = 64,
+        prefer_integrated: bool = False  # New parameter to force integrated GPU
     ):
         """
         Create a ScreenCapture instance.
@@ -118,11 +114,23 @@ class RapidshotFactory(metaclass=Singleton):
             output_color: Color format (RGB, RGBA, BGR, BGRA, GRAY)
             nvidia_gpu: Whether to use NVIDIA GPU acceleration
             max_buffer_len: Maximum buffer length for capture
+            prefer_integrated: If True, will search for an integrated GPU (e.g., Intel) and select it.
             
         Returns:
             ScreenCapture instance
         """
-        logger.debug(f"Creating ScreenCapture with device_idx={device_idx}, output_idx={output_idx}, nvidia_gpu={nvidia_gpu}")
+        logger.debug(f"Creating ScreenCapture with device_idx={device_idx}, output_idx={output_idx}, nvidia_gpu={nvidia_gpu}, prefer_integrated={prefer_integrated}")
+        
+        # If the user prefers an integrated GPU, try to find one automatically.
+        if prefer_integrated:
+            for idx, device in enumerate(self.devices):
+                desc = device.desc.Description if device.desc and hasattr(device.desc, "Description") else ""
+                if "intel" in desc.lower():
+                    device_idx = idx
+                    logger.info(f"Selecting integrated GPU: {desc} at index {idx}")
+                    break
+            else:
+                logger.info("No integrated GPU found; using default device index.")
         
         # Validate device index
         if device_idx >= len(self.devices):
@@ -139,9 +147,7 @@ class RapidshotFactory(metaclass=Singleton):
                 metadata = self.output_metadata.get(output.devicename)
                 if metadata and metadata[1]:  # Is primary
                     output_idx_list.append(idx)
-            
             if not output_idx_list:
-                # No primary monitor found, use the first one
                 output_idx = 0
                 logger.info("No primary monitor found, using first available output.")
             else:
@@ -166,12 +172,10 @@ class RapidshotFactory(metaclass=Singleton):
             return self._screencapture_instances[instance_key]
 
         try:
-            # Create new instance
             output = self.outputs[device_idx][output_idx]
             output.update_desc()
             
             if nvidia_gpu:
-                # Check if NVIDIA GPU is requested but not available
                 try:
                     import cupy
                     logger.info("Using NVIDIA GPU acceleration with CuPy")
@@ -272,6 +276,7 @@ def create(
     output_color: str = "RGB",
     nvidia_gpu: bool = False,
     max_buffer_len: int = 64,
+    prefer_integrated: bool = False  # New parameter passed to factory
 ):
     """
     Create a ScreenCapture instance.
@@ -283,6 +288,7 @@ def create(
         output_color: Color format (RGB, RGBA, BGR, BGRA, GRAY)
         nvidia_gpu: Whether to use NVIDIA GPU acceleration
         max_buffer_len: Maximum buffer length for capture
+        prefer_integrated: If True, forces selection of an integrated GPU if available.
         
     Returns:
         ScreenCapture instance
@@ -295,6 +301,7 @@ def create(
         output_color=output_color,
         nvidia_gpu=nvidia_gpu,
         max_buffer_len=max_buffer_len,
+        prefer_integrated=prefer_integrated,
     )
 
 def device_info():
@@ -393,7 +400,7 @@ def get_version_info() -> Dict[str, Any]:
     return info
 
 # Version information
-__version__ = "1.0.9"
+__version__ = "1.1.0"
 __author__ = "Rapidshot Contributors"
 __description__ = "High-performance screencapture library for Windows using Desktop Duplication API"
 
