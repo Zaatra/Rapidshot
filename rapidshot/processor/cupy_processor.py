@@ -210,90 +210,135 @@ class CupyProcessor:
             width: Width
             height: Height
             region: Region to capture
-            rotation_angle: Rotation angle
-            
-        Returns:
-            Processed frame as CuPy array
+            rotation_angle: Rotation angle,
+            output_buffer: Pre-allocated CuPy array to store the processed frame.
         """
+        # Phase 1: Get data into the output buffer (no rotation, no color conversion yet)
+        # Import numpy for ctypes bridge, cupy (self.cp) is already imported
+        import numpy as np
+
         try:
-            # Check if rect has Pitch attribute (DXGI_MAPPED_RECT)
+            if not hasattr(rect, 'pBits') or not rect.pBits:
+                logger.warning(f"Invalid rect or pBits, cannot process. Rect type: {type(rect)}")
+                if output_buffer is not None:
+                    output_buffer.fill(0)
+                return
+
+            # Original width and height of the texture from Duplicator
+            # width, height are passed in, representing the full output dimensions
+
             if hasattr(rect, 'Pitch'):
                 pitch = int(rect.Pitch)
             else:
-                # If rect doesn't have Pitch attribute, estimate pitch
                 logger.debug(f"Rect of type {type(rect)} doesn't have Pitch attribute, estimating based on width")
-                pitch = width * 4
-                
-                # If we can't process this type properly, return an empty frame
-                if not hasattr(rect, 'pBits'):
-                    logger.warning(f"Unable to process rect of type {type(rect)}, missing pBits attribute")
-                    return self.cp.zeros((height, width, 3), dtype=self.cp.uint8)
+                pitch = width * 4 # Assuming BGRA format (4 bytes per pixel)
 
-            # Calculate memory offset for region
-            if rotation_angle in (0, 180):
-                offset = (region[1] if rotation_angle == 0 else height - region[3]) * pitch
-                height = region[3] - region[1]
-            else:
-                offset = (region[0] if rotation_angle == 270 else width - region[2]) * pitch
-                width = region[2] - region[0]
-
-            # Calculate buffer size
-            if rotation_angle in (0, 180):
-                size = pitch * height
-            else:
-                size = pitch * width
-
-            # Get buffer and create CuPy array
-            if hasattr(rect, 'pBits') and rect.pBits:
-                buffer = (ctypes.c_char * size).from_address(ctypes.addressof(rect.pBits.contents) + offset)
-                pitch = pitch // 4
-                
-                # Create CuPy array from buffer with appropriate shape
-                if rotation_angle in (0, 180):
-                    # Transfer CPU memory to GPU
-                    cpu_array = self.cp.frombuffer(buffer, dtype=self.cp.uint8).reshape(height, pitch, 4)
-                    image = self.cp.asarray(cpu_array)
-                elif rotation_angle in (90, 270):
-                    cpu_array = self.cp.frombuffer(buffer, dtype=self.cp.uint8).reshape(width, pitch, 4)
-                    image = self.cp.asarray(cpu_array)
-                else:
-                    raise ValueError(f"Invalid rotation angle: {rotation_angle}. Must be 0, 90, 180, or 270.")
-            else:
-                logger.warning("Invalid buffer for rect, creating empty image")
-                if rotation_angle in (0, 180):
-                    image = self.cp.zeros((height, width, 4), dtype=self.cp.uint8)
-                else:
-                    image = self.cp.zeros((width, height, 4), dtype=self.cp.uint8)
-
-            # Convert color format if needed
-            if self.color_mode is not None:
-                image = self.process_cvtcolor(image)
-
-            # Apply rotation
-            if rotation_angle == 90:
-                image = self.cp.rot90(image, axes=(1, 0))
-            elif rotation_angle == 180:
-                image = self.cp.rot90(image, k=2, axes=(0, 1))
-            elif rotation_angle == 270:
-                image = self.cp.rot90(image, axes=(0, 1))
-
-            # Crop to actual dimensions if needed
-            if rotation_angle in (0, 180) and pitch != width:
-                image = image[:, :width, :]
-            elif rotation_angle in (90, 270) and pitch != height:
-                image = image[:height, :, :]
-
-            # Final region adjustment with safe bounds checking
-            h, w = image.shape[:2]
-            if region[3] - region[1] != h and region[1] < h and region[3] <= h:
-                image = image[region[1]:region[3], :, :]
-            if region[2] - region[0] != w and region[0] < w and region[2] <= w:
-                image = image[:, region[0]:region[2], :]
-
-            return image
+            buffer_address = ctypes.addressof(rect.pBits.contents)
             
+            # Create a NumPy array view of the entire source frame buffer from rect.pBits
+            # This view is on CPU memory, pointing to the DDA buffer.
+            source_image_np_view = np.ctypeslib.as_array(
+                (ctypes.c_ubyte * (pitch * height)).from_address(buffer_address)
+            ).reshape((height, pitch // 4, 4)) # height, actual_cols_with_pitch, channels
+
+            # Validate and adjust region coordinates
+            left, top, right, bottom = region
+            left = max(0, min(left, width - 1))
+            top = max(0, min(top, height - 1))
+            right = max(left + 1, min(right, width))
+            bottom = max(top + 1, min(bottom, height))
+
+            region_height = bottom - top
+            region_width = right - left
+
+            if output_buffer.shape[0] != region_height or \
+               output_buffer.shape[1] != region_width or \
+               output_buffer.shape[2] != 4: # Assuming BGRA for now
+                logger.error(
+                    f"Output buffer shape {output_buffer.shape} does not match "
+                    f"region shape ({region_height}, {region_width}, 4)."
+                )
+                output_buffer.fill(0)
+                return
+            
+            # Extract the specified region from the source_image_np_view (this is still a NumPy array/view)
+            # This creates a view, or a copy if slicing is complex, but it's CPU-side.
+            region_np_view = source_image_np_view[top:bottom, left:right, :]
+            
+            # Ensure region_np_view is C-contiguous for CuPy copy if it's not already.
+            # This is important if the slicing above created a non-contiguous view.
+            if not region_np_view.flags['C_CONTIGUOUS']:
+                region_np_view = np.ascontiguousarray(region_np_view)
+
+            # Copy data from the NumPy region view (CPU) to the CuPy output_buffer (GPU)
+            output_buffer.set(region_np_view)
+
+            
+            # Phase 2: Color Conversion and Rotation
+            current_array = output_buffer # Start with the pooled buffer (already has BGRA data)
+            is_still_pooled_buffer = True
+
+            # Color Conversion
+            if self.color_mode is not None: # Not 'BGRA', so conversion is intended
+                # process_cvtcolor expects a CuPy array if _has_cucv, or NumPy if falling back to cv2
+                # Since current_array is CuPy, this is fine for cuCV.
+                # For OpenCV fallback, process_cvtcolor would need a NumPy array.
+                # Let's assume process_cvtcolor is adapted or handles CuPy array input.
+                # For now, we pass current_array. If it's OpenCV, it might involve implicit DtoH copy.
+                
+                # If using OpenCV (non-cuCV path), it's better to convert from the CPU numpy array
+                # *before* copying to output_buffer, or copy output_buffer to CPU, convert, copy back.
+                # This logic assumes process_cvtcolor can handle a CuPy array and returns a CuPy array.
+                
+                temp_for_conversion = current_array
+                # If not using cuCV, and process_cvtcolor expects NumPy, we need a DtoH copy
+                if not self._has_cucv:
+                    logger.debug("CupyProcessor: Using OpenCV for color conversion, involves DtoH copy.")
+                    temp_for_conversion = self.cp.asnumpy(current_array)
+
+                converted_array = self.process_cvtcolor(temp_for_conversion) # process_cvtcolor returns array
+
+                # If OpenCV was used, converted_array is NumPy, convert back to CuPy
+                if not self._has_cucv and isinstance(converted_array, np.ndarray):
+                    converted_array = self.cp.asarray(converted_array)
+
+                if converted_array.shape[0] == current_array.shape[0] and \
+                   converted_array.shape[1] == current_array.shape[1]:
+                    if converted_array.shape[2] != current_array.shape[2]: # Channel change
+                        current_array = converted_array
+                        is_still_pooled_buffer = False
+                    elif converted_array.data.ptr != current_array.data.ptr: # Different memory block
+                        if is_still_pooled_buffer:
+                            current_array[:] = converted_array
+                        # else current_array is already new, no need to copy to original output_buffer
+                else: # Height/width changed
+                    logger.warning("CuPy color conversion changed height/width, which is unexpected.")
+                    current_array = converted_array
+                    is_still_pooled_buffer = False
+            
+            # Rotation
+            if rotation_angle != 0:
+                k = (rotation_angle // 90) % 4
+                if k != 0:
+                    rotated_array = self.cp.rot90(current_array, k=k)
+                    
+                    if rotated_array.shape[0] != current_array.shape[0] or \
+                       rotated_array.shape[1] != current_array.shape[1]:
+                        current_array = rotated_array
+                        is_still_pooled_buffer = False
+                    elif is_still_pooled_buffer:
+                        current_array[:] = rotated_array
+                    else: # Shape is same, but current_array is already a new buffer
+                        current_array = rotated_array 
+
+            return current_array, is_still_pooled_buffer
+
         except Exception as e:
             error_msg = f"Error processing frame with CuPy: {e}"
             logger.error(error_msg)
-            # Create and return an empty frame as fallback
-            return self.cp.zeros((height, width, 3), dtype=self.cp.uint8)
+            if output_buffer is not None and hasattr(output_buffer, 'fill'):
+                try:
+                    output_buffer.fill(0)
+                except Exception as fill_e:
+                    logger.error(f"Error filling CuPy output_buffer after another error: {fill_e}")
+            return output_buffer, False # Indicate buffer might be invalid

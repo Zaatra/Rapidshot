@@ -150,119 +150,141 @@ class NumpyProcessor:
             width: Width
             height: Height
             region: Region to capture
-            rotation_angle: Rotation angle
-            
-        Returns:
-            Processed frame
+            rotation_angle: Rotation angle,
+            output_buffer: Pre-allocated NumPy array to store the processed frame.
         """
-        # Fixed region handling patch applied
+        # Phase 1: Get data into the output buffer (no rotation, no color conversion yet)
         try:
-            # Check if rect has Pitch attribute (DXGI_MAPPED_RECT)
+            if not hasattr(rect, 'pBits') or not rect.pBits:
+                logger.warning(f"Invalid rect or pBits, cannot process. Rect type: {type(rect)}")
+                # Optionally fill output_buffer with zeros or handle error
+                if output_buffer is not None:
+                    output_buffer.fill(0)
+                return
+
+            # Original width and height of the texture from Duplicator
+            # width, height are passed in, representing the full output dimensions
+
+            # Determine pitch
             if hasattr(rect, 'Pitch'):
                 pitch = int(rect.Pitch)
             else:
-                # If rect doesn't have Pitch attribute (like when it's a POINTER(ID3D11Texture2D)),
-                # estimate the pitch based on width and assuming 4 bytes per pixel (BGRA)
                 logger.debug(f"Rect of type {type(rect)} doesn't have Pitch attribute, estimating based on width")
-                pitch = width * 4
-                
-                # If we can't process this type properly, return an empty frame
-                if not hasattr(rect, 'pBits'):
-                    logger.warning(f"Unable to process rect of type {type(rect)}, missing pBits attribute")
-                    return np.zeros((height, width, 3), dtype=np.uint8)
+                pitch = width * 4 # Assuming BGRA format (4 bytes per pixel)
+
+            # Create a NumPy array view of the entire source frame buffer from rect.pBits
+            # The total size of the buffer pointed by pBits can be estimated by pitch * height
+            # However, rect.pBits is a POINTER(BYTE), so we need its value (address)
+            buffer_address = ctypes.addressof(rect.pBits.contents)
             
-            # Validate region bounds and clip to valid values
-            region = list(region)
-            region[0] = max(0, min(region[0], width-1))
-            region[1] = max(0, min(region[1], height-1))
-            region[2] = max(region[0]+1, min(region[2], width))
-            region[3] = max(region[1]+1, min(region[3], height))
+            # Full source image view (this is the entire screen buffer from Duplicator)
+            # Assuming BGRA format (4 channels)
+            source_image_view = np.ctypeslib.as_array(
+                (ctypes.c_ubyte * (pitch * height)).from_address(buffer_address)
+            ).reshape((height, pitch // 4, 4)) # height, actual_cols_with_pitch, channels
 
-            # Calculate memory offset for region
-            if rotation_angle in (0, 180):
-                offset = (region[1] if rotation_angle == 0 else height - region[3]) * pitch
-                height = region[3] - region[1]
-            else:
-                offset = (region[0] if rotation_angle == 270 else width - region[2]) * pitch
-                width = region[2] - region[0]
+            # Validate and adjust region coordinates against the source dimensions (width, height)
+            # region is (left, top, right, bottom)
+            left, top, right, bottom = region
+            left = max(0, min(left, width - 1))
+            top = max(0, min(top, height - 1))
+            right = max(left + 1, min(right, width))
+            bottom = max(top + 1, min(bottom, height))
 
-            # Calculate buffer size
-            if rotation_angle in (0, 180):
-                size = pitch * height
-            else:
-                size = pitch * width
+            # Extract the specified region from the source_image_view
+            # We need to consider the pitch. The actual width of data per row is pitch // 4.
+            # The 'width' parameter is the logical width of the screen.
+            # Cropping should be done based on logical coordinates (left, top, right, bottom)
+            # then copied to output_buffer which should match the region's shape.
+            
+            region_height = bottom - top
+            region_width = right - left
 
-            # Use direct memory access for efficiency
-            try:
-                if hasattr(rect, 'pBits') and rect.pBits:
-                    buffer = (ctypes.c_char * size).from_address(ctypes.addressof(rect.pBits.contents) + offset)
-                    pitch = pitch // 4
+            if output_buffer.shape[0] != region_height or \
+               output_buffer.shape[1] != region_width or \
+               output_buffer.shape[2] != 4: # Assuming BGRA for now
+                logger.error(
+                    f"Output buffer shape {output_buffer.shape} does not match "
+                    f"region shape ({region_height}, {region_width}, 4)."
+                )
+                # Handle error: fill with zeros or raise
+                output_buffer.fill(0)
+                return
+
+            # Copy the region from source_image_view to output_buffer
+            # source_image_view is (height, pitch // 4, 4)
+            # output_buffer is (region_height, region_width, 4)
+            
+            # If pitch // 4 == width (i.e., no padding in rows), this is simpler:
+            # output_buffer[:, :, :] = source_image_view[top:bottom, left:right, :]
+            # If there is padding (pitch // 4 > width), we must copy row by row or use striding tricks.
+            # For simplicity and correctness with pitch:
+            for i in range(region_height):
+                # Source row index: top + i
+                # Source columns: from left to right
+                # Destination row index: i
+                # Destination columns: all
+                row_data = source_image_view[top + i, left:right, :]
+                output_buffer[i, :, :] = row_data
+            
+            
+            # Phase 2: Color Conversion and Rotation
+            current_array = output_buffer # Start with the pooled buffer
+            is_still_pooled_buffer = True
+
+            # Color Conversion
+            # self.color_mode is None if original was 'BGRA' and no conversion is needed.
+            # output_buffer is already BGRA (4 channels).
+            if self.color_mode is not None: # Not 'BGRA', so conversion is intended
+                # process_cvtcolor expects BGRA input if it's doing standard conversions.
+                # output_buffer is BGRA, so that's fine.
+                # It returns a new array (or potentially a view for NumPy slicing based ones)
+                converted_array = self.process_cvtcolor(current_array) # Pass current_array directly
+
+                if converted_array.shape[0] == current_array.shape[0] and \
+                   converted_array.shape[1] == current_array.shape[1]:
+                    # If number of channels changed (e.g. to BGR or GRAY)
+                    if converted_array.shape[2] != current_array.shape[2]:
+                        # We cannot use the original output_buffer if channel count changes.
+                        # Create a new array for the converted result.
+                        current_array = converted_array # This is a new array.
+                        is_still_pooled_buffer = False
+                    elif converted_array.base is not current_array.base and converted_array is not current_array : 
+                        # It's a copy with the same shape (e.g. BGRA to RGBA via NumPy slice)
+                        # or OpenCV conversion that maintained shape.
+                        # Copy data back to the pooled buffer if it's still the active one.
+                        if is_still_pooled_buffer:
+                             current_array[:] = converted_array
+                        # else: current_array is already a new buffer, no need to copy to output_buffer
+                else: # Shape (height/width) changed during color conversion (should not happen with current cvtcolor)
+                    logger.warning("Color conversion changed height/width, which is unexpected.")
+                    current_array = converted_array
+                    is_still_pooled_buffer = False
+            
+            # Rotation
+            if rotation_angle != 0:
+                k = (rotation_angle // 90) % 4
+                if k != 0:
+                    rotated_array = np.rot90(current_array, k=k) # axes=(0,1) is default for 2D, need (1,0) for image width/height swap
                     
-                    # Create NumPy array from buffer with appropriate shape
-                    if rotation_angle in (0, 180):
-                        image = np.ndarray((height, pitch, 4), dtype=np.uint8, buffer=buffer)
-                    elif rotation_angle in (90, 270):
-                        image = np.ndarray((width, pitch, 4), dtype=np.uint8, buffer=buffer)
-                    else:
-                        raise RuntimeError(f"Invalid rotation angle: {rotation_angle}")
-                else:
-                    logger.warning("Invalid buffer for rect, creating empty image")
-                    if rotation_angle in (0, 180):
-                        image = np.zeros((height, width, 4), dtype=np.uint8)
-                    else:
-                        image = np.zeros((width, height, 4), dtype=np.uint8)
-            except Exception as e:
-                logger.error(f"Buffer access error: {e}")
-                # Create an empty frame as fallback
-                image = np.zeros((height if rotation_angle in (0, 180) else width, 
-                                width if rotation_angle in (0, 180) else height, 4), dtype=np.uint8)
+                    # Check if shape changed due to rotation
+                    if rotated_array.shape[0] != current_array.shape[0] or \
+                       rotated_array.shape[1] != current_array.shape[1]:
+                        current_array = rotated_array
+                        is_still_pooled_buffer = False # Shape changed, cannot use original pooled buffer
+                    elif is_still_pooled_buffer : # Shape is same, and we are still using the pooled buffer
+                        current_array[:] = rotated_array # Copy back to pooled buffer
+                    else: # Shape is same, but current_array is already a new buffer
+                        current_array = rotated_array # Update current_array to be the rotated one
 
-            # Convert color format if needed
-            if self.color_mode is not None and image.size > 0:
-                try:
-                    image = self.process_cvtcolor(image)
-                except Exception as e:
-                    logger.error(f"Color conversion error: {e}")
-                    # If color conversion fails, just return the original image
-                    pass
+            return current_array, is_still_pooled_buffer
 
-            # Apply rotation safely
-            try:
-                if rotation_angle == 90:
-                    image = np.rot90(image, axes=(1, 0))
-                elif rotation_angle == 180:
-                    image = np.rot90(image, k=2, axes=(0, 1))
-                elif rotation_angle == 270:
-                    image = np.rot90(image, axes=(0, 1))
-            except Exception as e:
-                logger.error(f"Rotation error: {e}")
-                # Continue with unrotated image
-
-            # Safe cropping with bounds checking
-            try:
-                # Crop to actual dimensions if needed
-                if rotation_angle in (0, 180) and pitch != width:
-                    image = image[:, :min(width, image.shape[1]), :]
-                elif rotation_angle in (90, 270) and pitch != height:
-                    image = image[:min(height, image.shape[0]), :, :]
-            except Exception as e:
-                logger.error(f"Dimension cropping error: {e}")
-                # Continue with uncropped image
-
-            # Final region adjustment with safe bounds checking
-            try:
-                h, w = image.shape[:2]
-                if region[3] - region[1] != h and region[1] < h and region[3] <= h:
-                    image = image[region[1]:region[3], :, :]
-                if region[2] - region[0] != w and region[0] < w and region[2] <= w:
-                    image = image[:, region[0]:region[2], :]
-            except Exception as e:
-                logger.error(f"Region adjustment error: {e}")
-                # Continue with unadjusted image
-
-            return image
-            
         except Exception as e:
-            logger.error(f"Frame processing error: {e}")
-            # Return an empty frame in case of error
-            return np.zeros((480, 640, 3), dtype=np.uint8)
+            logger.error(f"Frame processing error in NumpyProcessor: {e}")
+            # Ensure output_buffer is zeroed out in case of any error, then return it with False flag
+            if output_buffer is not None and hasattr(output_buffer, 'fill'):
+                try:
+                    output_buffer.fill(0)
+                except Exception as fill_e:
+                    logger.error(f"Error filling output_buffer after another error: {fill_e}")
+            return output_buffer, False # Indicate buffer might be invalid or is not the result
