@@ -41,6 +41,7 @@ class Duplicator:
     updated: bool = False
     output: InitVar[Output] = None
     device: InitVar[Device] = None
+    timeout_ms: int = 10  # Timeout for AcquireNextFrame in milliseconds
     cursor: Cursor = Cursor()
     last_error: str = ""
     cursor_visible: bool = False
@@ -84,7 +85,7 @@ class Duplicator:
         try:
             # Acquire the next frame with a short timeout
             self.duplicator.AcquireNextFrame(
-                10,  # 10ms timeout
+                self.timeout_ms,
                 ctypes.byref(info),
                 ctypes.byref(res),
             )

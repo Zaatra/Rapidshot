@@ -37,12 +37,14 @@ dependencies = [
 [project.optional-dependencies]
 cv2 = ["opencv-python>=4.5.0"]
 gpu = ["cupy-cuda11x>=11.0.0", "opencv-python>=4.5.0"]
+gpu_cuda12 = ["cupy-cuda12x>=12.0.0", "opencv-python>=4.5.0"]
 pil = ["pillow>=8.0.0"]
 all = [
     "numpy>=1.19.0",
     "comtypes>=1.1.0",
     "opencv-python>=4.5.0",
     "pillow>=8.0.0",
+    "cupy-cuda11x>=11.0.0", # Added for default GPU support
 ]
 dev = [
     "black>=22.3.0",
