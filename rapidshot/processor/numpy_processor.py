@@ -69,37 +69,61 @@ class NumpyProcessor:
                                 image.shape[1] if len(image.shape) > 1 else 640, 3), dtype=np.uint8)
         
         try:
-            import cv2
-
-            # Initialize color conversion function once
+            # Initialize color conversion function once, if not already done
             if self.cvtcolor is None:
-                color_mapping = {
-                    "RGB": cv2.COLOR_BGRA2RGB,
-                    "RGBA": cv2.COLOR_BGRA2RGBA,
-                    "BGR": cv2.COLOR_BGRA2BGR,
-                    "GRAY": cv2.COLOR_BGRA2GRAY
-                }
-                
-                if self.color_mode not in color_mapping:
-                    logger.warning(f"Unsupported color mode: {self.color_mode}. Falling back to BGR.")
-                    cv2_code = cv2.COLOR_BGRA2BGR
+                if self.color_mode == "RGB":
+                    # BGRA to RGB: Select channels B, G, R and reverse them to R, G, B
+                    self.cvtcolor = lambda img: img[..., [2, 1, 0]]
+                elif self.color_mode == "BGR":
+                    # BGRA to BGR: Select first three channels (B, G, R)
+                    self.cvtcolor = lambda img: img[..., :3]
+                elif self.color_mode == "RGBA":
+                    # BGRA to RGBA: Make a copy (input is BGRA, effectively selecting all channels)
+                    # OpenCV's BGRA2RGBA also just copies if the alpha is to be preserved.
+                    self.cvtcolor = lambda img: img.copy()
                 else:
-                    cv2_code = color_mapping[self.color_mode]
-                
-                # Create appropriate converter function
-                if cv2_code != cv2.COLOR_BGRA2GRAY:
-                    self.cvtcolor = lambda img: cv2.cvtColor(img, cv2_code)
-                else:
-                    # Add axis for grayscale to maintain shape consistency
-                    self.cvtcolor = lambda img: cv2.cvtColor(img, cv2_code)[..., np.newaxis]
-                    
+                    # Fallback to OpenCV for other modes like GRAY or if color_mode is unexpected
+                    try:
+                        import cv2
+                        color_mapping = {
+                            # "RGB": cv2.COLOR_BGRA2RGB, # Handled by NumPy
+                            # "RGBA": cv2.COLOR_BGRA2RGBA, # Handled by NumPy
+                            # "BGR": cv2.COLOR_BGRA2BGR, # Handled by NumPy
+                            "GRAY": cv2.COLOR_BGRA2GRAY
+                            # Add other specific OpenCV conversions here if needed
+                        }
+                        
+                        if self.color_mode in color_mapping:
+                            cv2_code = color_mapping[self.color_mode]
+                            if cv2_code == cv2.COLOR_BGRA2GRAY:
+                                # Add axis for grayscale to maintain shape consistency
+                                self.cvtcolor = lambda img: cv2.cvtColor(img, cv2_code)[..., np.newaxis]
+                            else:
+                                self.cvtcolor = lambda img: cv2.cvtColor(img, cv2_code)
+                        else:
+                            logger.warning(f"Unsupported color mode: {self.color_mode} with NumPy. Falling back to OpenCV BGR conversion.")
+                            # Default to BGR via OpenCV if mode is unknown and not handled by NumPy
+                            self.cvtcolor = lambda img: cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+                    except ImportError:
+                        logger.error("OpenCV is not installed, but required for color mode: {}".format(self.color_mode))
+                        # Set a lambda that raises an error or returns image unchanged if cv2 is required but not found
+                        self.cvtcolor = lambda img: img # Or raise error
+                    except Exception as cv_err:
+                        logger.error(f"Error initializing OpenCV converter for {self.color_mode}: {cv_err}")
+                        self.cvtcolor = lambda img: img # Fallback
+
+            # Perform the conversion
             return self.cvtcolor(image)
+            
         except Exception as e:
-            logger.warning(f"Color conversion error: {e}")
-            # Return original image as fallback
-            if image.shape[2] >= 3:
-                return image[:, :, :3]  # Just take first 3 channels
-            return image
+            logger.warning(f"Color conversion error for mode '{self.color_mode}': {e}")
+            # Fallback: return BGR from BGRA if possible, or original image
+            if image.ndim == 3 and image.shape[2] == 4: # BGRA
+                return image[..., :3] # Return BGR part
+            elif image.ndim == 3 and image.shape[2] == 3: # Already 3 channels
+                return image
+            # If it's grayscale or some other format, return as is or a placeholder
+            return image # Or np.zeros(...) as per previous logic for severe errors
 
     def shot(self, image_ptr, rect, width, height):
         """
