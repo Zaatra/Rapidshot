@@ -155,3 +155,54 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           attestations: true
+
+  github-release:
+    name: Create the GitHub Release
+    needs: publish
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    # Only what creating a release needs, and nothing the publish job has:
+    # the PyPI upload never gets write access to the repository, and this job
+    # never gets an OIDC token.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Extract this version's notes from CHANGELOG.md
+        shell: python
+        run: |
+          import os, pathlib, re
+
+          version = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+
+          # Everything between this version's heading and the next one.
+          pattern = rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## \[|\Z)"
+          match = re.search(pattern, text, re.S | re.M)
+          if not match:
+              raise SystemExit(
+                  f"CHANGELOG.md has no '## [{version}]' section. Releases "
+                  "without notes are worse than no release, so this fails "
+                  "rather than publishing an empty one."
+              )
+
+          pathlib.Path("release-notes.md").write_text(
+              match.group(1).strip() + "\n", encoding="utf-8")
+          print(f"extracted {len(match.group(1).split(chr(10)))} lines of notes")
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Runs only after the PyPI upload succeeded, so a release is never
+          # announced for a version that failed to publish.
+          gh release create "$GITHUB_REF_NAME" \
+            --title "RapidShot $GITHUB_REF_NAME" \
+            --notes-file release-notes.md \
+            dist/*.whl dist/*.tar.gz dist/*.cdx.json

@@ -14,8 +14,24 @@ Nothing yet.
 
 ## [2.0.0] - 2026-08-02
 
-First release with a stable API contract, and the first to be published through
-PyPI Trusted Publishing with signed attestations.
+**Upgrade if you are on any earlier version.** rapidshot 1.1.0 does not import
+at all on Python 3.11 or newer — `cursor: Cursor = Cursor()` trips the dataclass
+mutable-default check that was broadened in 3.11 — and patching that one line
+only gets it to return all-black frames, because the processor is handed a
+texture where it expects a mapped staging surface. 2.0.0 is the first version
+that captures a frame on a current Python.
+
+**One breaking change:** `grab()` now returns a `PooledBuffer` you must
+`release()`. It indexes and converts like the array it wraps
+(`frame[y, x]`, `np.asarray(frame)`, `.shape`, `.dtype`), so migration is
+usually one added line — or pass `pool_output=False` to keep 1.x behaviour
+exactly. Details under *BREAKING* below.
+
+Also the first release published through PyPI Trusted Publishing with signed
+Sigstore attestations, so the artifacts can be verified back to the workflow
+that built them.
+
+Everything below is the detail.
 
 ### Fixed — README claimed things that were not true
 

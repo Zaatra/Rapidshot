@@ -57,7 +57,13 @@ secret, or on anyone's laptop. Nothing to leak, nothing to rotate.
    git tag v2.0.0 && git push origin v2.0.0
    ```
 
-The tag triggers `release.yml`, which builds, verifies, and publishes.
+The tag triggers `release.yml`, which builds, verifies, publishes to PyPI, and
+then creates the GitHub Release — in that order, so a release is never announced
+for a version that failed to upload.
+
+The release notes come from the matching `## [x.y.z]` section of
+`CHANGELOG.md`. If there is no such section the workflow **fails** rather than
+publishing an empty release, so write the changelog before tagging.
 
 ## What the workflow refuses to publish
 
@@ -79,6 +85,8 @@ Each of these exists because it went wrong once, or would have:
 ## After publishing
 
 - Check the Sigstore attestation appears on the PyPI project page.
+- Check the GitHub Release exists and is marked *Latest*, with the wheel, sdist
+  and SBOM attached.
 - The SBOM (CycloneDX) is attached to the workflow run as a build artifact, not
   uploaded to PyPI.
 - `pip install rapidshot==<version>` in a clean environment and import it.
