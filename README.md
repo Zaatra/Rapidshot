@@ -4,7 +4,15 @@ A high-performance screencapture library for Windows using the Desktop Duplicati
 
 ## Features
 
-- **Ultra-fast capture**: 240Hz+ capturing capability
+- **Capture at your display's refresh rate**: Desktop Duplication delivers at
+  most one frame per refresh, and RapidShot keeps up with that ceiling — about
+  240 fps on a 240 Hz monitor. No capture library can exceed it.
+- **GPU-resident frames**: `grab_frame()` hands back a frame that never leaves
+  the GPU — 21× faster than `grab()`, for consumers that feed a model directly
+- **Only process what changed**: frames carry the compositor's dirty-rect
+  metadata, typically under 1% of the screen on a normal desktop
+- **Hybrid GPU laptops**: move a frame to the discrete GPU that Desktop
+  Duplication cannot capture from
 - **Multi-backend support**: NumPy, PIL, and CUDA/CuPy backends
 - **Cursor capture**: Capture mouse cursor position and shape
 - **Direct3D support**: Capture Direct3D exclusive full-screen applications without interruption
@@ -13,6 +21,8 @@ A high-performance screencapture library for Windows using the Desktop Duplicati
 - **Flexible output formats**: RGB, RGBA, BGR, BGRA, and grayscale support
 - **Region-based capture**: Efficient capture of specific screen regions
 - **Rotation handling**: Automatic handling of rotated displays
+- **Actionable diagnostics**: headless machines and hybrid GPU setups are
+  detected and explained rather than failing opaquely
 
 ## Installation
 
@@ -583,9 +593,11 @@ The table below shows typical performance results across different libraries:
 
 ## System Requirements
 
-- **Operating System:** Windows 10 or newer
-- **Python:** 3.7+
-- **GPU:** Compatible GPU for NVIDIA acceleration (for GPU features)
+- **Operating System:** Windows 10 or newer. Windows only — Desktop Duplication
+  has no cross-platform equivalent.
+- **Python:** 3.9+ (`pip` will refuse to install on anything older)
+- **GPU:** Any GPU that drives a display. A CUDA-capable NVIDIA GPU is needed
+  only for the optional CuPy acceleration.
 - **RAM:** 8 GB+ (depending on the resolution and number of screencapture instances used)
 
 ### Troubleshooting

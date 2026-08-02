@@ -17,6 +17,21 @@ Nothing yet.
 First release with a stable API contract, and the first to be published through
 PyPI Trusted Publishing with signed attestations.
 
+### Fixed — README claimed things that were not true
+
+- **"Python: 3.7+" in System Requirements.** `requires-python` is `>=3.9`, so
+  pip refuses to install on 3.7 or 3.8 — the README was promising an install
+  that cannot happen. Now 3.9+, matching `pyproject.toml`, `setup.py`, the CI
+  matrix and the classifiers, which are all cross-checked.
+- **"Ultra-fast capture: 240Hz+ capturing capability."** Desktop Duplication
+  returns at most one frame per display refresh (ROADMAP.md section 4), so
+  exceeding the refresh rate is not possible and the `+` claimed something the
+  API cannot do. Replaced with what is actually true: RapidShot keeps up with
+  that ceiling, and no capture library can beat it.
+- The feature list omitted the headline 2.0 capabilities — GPU-resident frames,
+  dirty-rect metadata, cross-adapter transfer, topology diagnostics — which are
+  the reasons to choose this library over a plain DXcam fork.
+
 ### Added — community health files
 
 - `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), and a pull
