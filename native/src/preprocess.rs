@@ -118,8 +118,8 @@ fn compile_shader() -> windows::core::Result<ID3DBlob> {
             None,
             None,
             None,
-            PCSTR(b"CSMain\0".as_ptr()),
-            PCSTR(b"cs_5_0\0".as_ptr()),
+            PCSTR(c"CSMain".as_ptr().cast()),
+            PCSTR(c"cs_5_0".as_ptr().cast()),
             D3DCOMPILE_OPTIMIZATION_LEVEL3,
             0,
             &mut code,
@@ -127,7 +127,7 @@ fn compile_shader() -> windows::core::Result<ID3DBlob> {
         )
     };
 
-    if result.is_err() {
+    if let Err(error) = &result {
         if let Some(errors) = errors {
             let text = unsafe {
                 std::slice::from_raw_parts(
@@ -137,7 +137,7 @@ fn compile_shader() -> windows::core::Result<ID3DBlob> {
             };
             let text = String::from_utf8_lossy(text);
             return Err(windows::core::Error::new(
-                result.unwrap_err().code(),
+                error.code(),
                 format!("shader compilation failed: {text}"),
             ));
         }
@@ -204,9 +204,11 @@ impl Preprocessor {
         };
 
         let uav = unsafe {
-            let mut desc = D3D11_UNORDERED_ACCESS_VIEW_DESC::default();
-            desc.Format = windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN;
-            desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
+            let mut desc = D3D11_UNORDERED_ACCESS_VIEW_DESC {
+                Format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN,
+                ViewDimension: D3D11_UAV_DIMENSION_BUFFER,
+                ..Default::default()
+            };
             desc.Anonymous.Buffer = D3D11_BUFFER_UAV {
                 FirstElement: 0,
                 NumElements: element_count,
@@ -272,12 +274,13 @@ impl Preprocessor {
         unsafe { texture.GetDesc(&mut desc) };
 
         let srv = unsafe {
-            let mut view_desc = D3D11_SHADER_RESOURCE_VIEW_DESC::default();
-            // The duplicated surface is BGRA8_UNORM; state it explicitly so the
-            // fetch returns normalised floats rather than raw integers.
-            view_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-            view_desc.ViewDimension =
-                windows::Win32::Graphics::Direct3D::D3D_SRV_DIMENSION_TEXTURE2D;
+            let mut view_desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
+                // The duplicated surface is BGRA8_UNORM; state it explicitly so
+                // the fetch returns normalised floats rather than raw integers.
+                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                ViewDimension: windows::Win32::Graphics::Direct3D::D3D_SRV_DIMENSION_TEXTURE2D,
+                ..Default::default()
+            };
             view_desc.Anonymous.Texture2D = D3D11_TEX2D_SRV {
                 MostDetailedMip: 0,
                 MipLevels: 1,
@@ -324,8 +327,8 @@ impl Preprocessor {
                 .CSSetConstantBuffers(0, Some(&[Some(self.constants.clone())]));
 
             // 8x8 threadgroups, rounded up to cover the output.
-            let groups_x = (self.out_width + 7) / 8;
-            let groups_y = (self.out_height + 7) / 8;
+            let groups_x = self.out_width.div_ceil(8);
+            let groups_y = self.out_height.div_ceil(8);
             self.context.Dispatch(groups_x, groups_y, 1);
 
             // Unbind so the next frame's SRV creation is not blocked by a stale

@@ -479,7 +479,7 @@ fn probe_onnxruntime(py: Python<'_>, dll_path: Option<String>) -> PyResult<Py<Py
     };
     out.set_item("loaded", true)?;
 
-    let symbol = unsafe { GetProcAddress(module, PCSTR(b"OrtGetApiBase\0".as_ptr())) };
+    let symbol = unsafe { GetProcAddress(module, PCSTR(c"OrtGetApiBase".as_ptr().cast())) };
     let Some(symbol) = symbol else {
         out.set_item("ort_get_api_base", false)?;
         unsafe {

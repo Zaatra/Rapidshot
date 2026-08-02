@@ -80,15 +80,15 @@ fn compile_shader() -> windows::core::Result<ID3DBlob> {
             None,
             None,
             None,
-            PCSTR(b"CSMain\0".as_ptr()),
-            PCSTR(b"cs_5_1\0".as_ptr()),
+            PCSTR(c"CSMain".as_ptr().cast()),
+            PCSTR(c"cs_5_1".as_ptr().cast()),
             D3DCOMPILE_OPTIMIZATION_LEVEL3,
             0,
             &mut code,
             Some(&mut errors),
         )
     };
-    if result.is_err() {
+    if let Err(error) = &result {
         if let Some(errors) = errors {
             let text = unsafe {
                 std::slice::from_raw_parts(
@@ -97,7 +97,7 @@ fn compile_shader() -> windows::core::Result<ID3DBlob> {
                 )
             };
             return Err(windows::core::Error::new(
-                result.unwrap_err().code(),
+                error.code(),
                 format!(
                     "shader compilation failed: {}",
                     String::from_utf8_lossy(text)
@@ -441,8 +441,8 @@ impl Preprocessor12 {
                     self.heap.GetGPUDescriptorHandleForHeapStart(),
                 );
 
-                let groups_x = (self.out_width + 7) / 8;
-                let groups_y = (self.out_height + 7) / 8;
+                let groups_x = self.out_width.div_ceil(8);
+                let groups_y = self.out_height.div_ceil(8);
                 self.list.Dispatch(groups_x, groups_y, 1);
 
                 // Hand the texture back in the state D3D11 expects.
