@@ -17,6 +17,23 @@ Nothing yet.
 First release with a stable API contract, and the first to be published through
 PyPI Trusted Publishing with signed attestations.
 
+### Security — PyO3 upgraded 0.23.5 to 0.29.0
+
+- Clears three Dependabot advisories against the optional native extension:
+  an out-of-bounds read in `nth`/`nth_back` for `PyList`/`PyTuple` iterators,
+  a missing `Sync` bound on `PyCFunction::new_closure`, and a buffer overflow
+  risk in `PyString::from_object`.
+- **Rapidshot used none of the affected APIs**, and the iterator bug was
+  introduced in PyO3 0.24.0 — which 0.23.5 predates — so the practical exposure
+  was nil and the advisories matched on version range alone. Upgraded anyway:
+  the alerts are otherwise permanent, and the crate's API surface here is small
+  enough that staying current is cheap.
+- No source changes were needed; the crate compiles unmodified across six minor
+  versions. Verified by rebuilding, running the suite, and re-running the
+  byte-exact cross-adapter transfer check on live capture.
+- The abi3 target moves from `abi3-py38` to `abi3-py39`, matching
+  `requires-python = ">=3.9"`. Python 3.8 is end-of-life.
+
 ### BREAKING — `grab()` returns a pooled buffer (2.0.0)
 
 `grab()` now returns a `PooledBuffer` for every colour mode, not a freshly
@@ -598,7 +615,7 @@ If demand appears, a separate `rapidshot-directml` package or a Python-side
   and refuse a released one, so a dangling pointer can never reach native code.
 - `native/install_dev.py` copies the built artifact into the package and
   verifies it imports, rather than reporting success on a copy Python cannot load.
-- Built with `abi3-py38`, so one wheel will cover every supported Python version.
+- Built with `abi3-py39`, so one wheel will cover every supported Python version.
 
   **Finding that shapes milestone 2:** the duplicated desktop surface already
   carries `SHARED_NTHANDLE | SHARED_KEYEDMUTEX | RESTRICT_SHARED_RESOURCE`
