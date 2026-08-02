@@ -895,6 +895,7 @@ fn probe_shareable_buffers(py: Python<'_>) -> PyResult<Py<PyDict>> {
 /// on machines with no GPU — CI runners in particular. WARP is slow but
 /// functionally complete for compute, which is all the correctness tests need.
 fn create_test_device() -> windows::core::Result<ID3D11Device> {
+    use windows::Win32::Foundation::HMODULE;
     use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP};
     use windows::Win32::Graphics::Direct3D11::{D3D11CreateDevice, D3D11_SDK_VERSION};
 
@@ -905,7 +906,11 @@ fn create_test_device() -> windows::core::Result<ID3D11Device> {
             D3D11CreateDevice(
                 None,
                 driver,
-                None,
+                // Software rasteriser module. windows-rs 0.59 changed this
+                // from Option<HMODULE> to a bare HMODULE; the default is the
+                // null handle, meaning "no software module", which is what
+                // passing None meant before.
+                HMODULE::default(),
                 Default::default(),
                 None,
                 D3D11_SDK_VERSION,

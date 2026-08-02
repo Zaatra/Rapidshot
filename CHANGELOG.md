@@ -17,6 +17,31 @@ Nothing yet.
 First release with a stable API contract, and the first to be published through
 PyPI Trusted Publishing with signed attestations.
 
+### Changed — dependencies brought to current
+
+- **`windows` crate 0.58 -> 0.62.2.** One breaking change across four minor
+  versions: `D3D11CreateDevice`'s software-rasteriser parameter went from
+  `Option<HMODULE>` to a bare `HMODULE`, so `None` becomes `HMODULE::default()`
+  — the same null handle, meaning "no software module".
+- **Build requirements trimmed** to `setuptools>=64`. `setuptools_scm` was
+  declared but never configured; the version is static in `pyproject.toml`, so
+  it was downloaded on every build and did nothing. `wheel` has not been needed
+  since PEP 517 builds became the default.
+- **`pip install rapidshot[all]` no longer forces CUDA 11.** The `all` extra
+  pulled `cupy-cuda11x`, which conflicts with `cupy-cuda12x` and cannot be
+  installed alongside it — so a CUDA 12 user asking for "everything" got the
+  wrong CuPy. `all` now covers only what is not CUDA-version-specific; `gpu`
+  and `gpu_cuda12` remain the explicit choices.
+- Runtime dependency lower bounds are unchanged. `numpy>=1.19`,
+  `comtypes>=1.1`, `pillow>=8.0` and `opencv-python>=4.5` are minimums, not
+  pins: raising them without a reason would force every downstream user to
+  upgrade for nothing. The only OpenCV API used is a handful of colour-code
+  constants, which are stable from 4.5 through 5.0.
+- **No measurable performance change.** The full suite reports `~ same` on
+  every benchmark against the 2026-07-30 baseline, which is the expected
+  result: PyO3 and windows-rs are compile-time bindings and do not sit in the
+  per-frame path.
+
 ### Security — PyO3 upgraded 0.23.5 to 0.29.0
 
 - Clears three Dependabot advisories against the optional native extension:
