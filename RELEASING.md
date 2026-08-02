@@ -36,7 +36,13 @@ secret, or on anyone's laptop. Nothing to leak, nothing to rotate.
    - `rapidshot/__init__.py` (`__version__`)
 2. Move `CHANGELOG.md`'s `[Unreleased]` content under a new
    `## [x.y.z] - YYYY-MM-DD` heading.
-3. Run the full local gate:
+3. If `benchmarks/baseline.json` was re-recorded, regenerate the README badges
+   so they cannot disagree with it — CI fails otherwise:
+
+   ```bash
+   python benchmarks/make_badges.py
+   ```
+4. Run the full local gate:
 
    ```bash
    python -m pytest tests/ -q
@@ -44,14 +50,14 @@ secret, or on anyone's laptop. Nothing to leak, nothing to rotate.
    python benchmarks/perf_suite.py --rounds 5 --reps 25 --compare benchmarks/baseline.json
    ```
 
-4. **Run the live suites on real hardware.** CI runners have no desktop session,
+5. **Run the live suites on real hardware.** CI runners have no desktop session,
    so every live test skips there. At minimum:
 
    ```bash
    python examples/verify_cross_adapter.py
    ```
 
-5. Tag and push:
+6. Tag and push:
 
    ```bash
    git tag v2.0.0 && git push origin v2.0.0

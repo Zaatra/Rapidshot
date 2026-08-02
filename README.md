@@ -1,5 +1,14 @@
 # RapidShot
 
+[![CI](https://github.com/Zaatra/Rapidshot/actions/workflows/ci.yml/badge.svg)](https://github.com/Zaatra/Rapidshot/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/rapidshot)](https://pypi.org/project/rapidshot/)
+[![Python](https://img.shields.io/pypi/pyversions/rapidshot)](https://pypi.org/project/rapidshot/)
+[![License](https://img.shields.io/pypi/l/rapidshot)](LICENSE)
+
+[![grab_frame](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Zaatra/Rapidshot/main/.github/badges/grab-frame.json)](ROADMAP.md#3-measured-baseline)
+[![grab](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Zaatra/Rapidshot/main/.github/badges/grab.json)](ROADMAP.md#3-measured-baseline)
+[![measured on](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Zaatra/Rapidshot/main/.github/badges/measured-on.json)](benchmarks/baseline.json)
+
 A high-performance screencapture library for Windows using the Desktop Duplication API. This is a merged version combining features from multiple DXCam forks, designed to deliver ultra-fast capture capabilities with advanced functionality.
 
 ## Features

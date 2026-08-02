@@ -33,6 +33,25 @@ that built them.
 
 Everything below is the detail.
 
+### Added — performance badges that cannot drift
+
+- README now carries CI status, PyPI version, supported Python versions and
+  licence badges (all live from their own sources), plus per-frame cost badges
+  for `grab()` and `grab_frame()` and one naming the hardware they were
+  measured on.
+- **The performance badges are generated from `benchmarks/baseline.json`, and
+  CI fails if they disagree with it** (`benchmarks/make_badges.py --check`).
+  Re-recording the baseline without regenerating them breaks the build rather
+  than leaving the front page quietly wrong — which is exactly how "240Hz+" and
+  "Python 3.7+" survived in the README long after both stopped being true.
+- **They are deliberately not measured in CI.** GitHub runners have no desktop
+  session, so Desktop Duplication does not run and the two figures worth
+  showing do not exist there; what a runner *can* time is synthetic conversion
+  work on a shared VM of unknown generation. A badge fed from that would report
+  the runner rather than the library, and this project has recorded 1.9x swings
+  on identical code even on dedicated hardware. The source of truth is a
+  measurement on stated hardware, committed and re-recorded deliberately.
+
 ### Fixed — README claimed things that were not true
 
 - **The cross-library FPS table is gone.** It reported RapidShot at "240+" and

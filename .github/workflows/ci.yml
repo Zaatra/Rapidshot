@@ -145,6 +145,14 @@ jobs:
         run: python benchmarks/perf_suite.py --synthetic-only --rounds 3 --reps 20 --compare benchmarks/baseline.json
         continue-on-error: true
 
+      - name: Performance badges must match the baseline
+        # The README's numbers drifted from reality once already ("240Hz+",
+        # "Python 3.7+"). Anything quoting a measurement is generated from
+        # benchmarks/baseline.json and checked here, so re-recording the
+        # baseline without regenerating the badges fails rather than leaving
+        # the front page quietly wrong.
+        run: python benchmarks/make_badges.py --check
+
       - name: Verify the old and new conversions still agree
         # This one is a correctness check wearing a benchmark's clothes: it fails
         # if the optimised conversions stop matching the originals bit for bit.
