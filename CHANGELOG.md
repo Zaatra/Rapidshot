@@ -17,6 +17,21 @@ Nothing yet.
 First release with a stable API contract, and the first to be published through
 PyPI Trusted Publishing with signed attestations.
 
+### Added — community health files
+
+- `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), and a pull
+  request template, completing GitHub's community standards checklist.
+- `CONTRIBUTING.md` is deliberately specific rather than boilerplate. It leads
+  with the traps that have each cost someone a session — live tests need
+  something moving on screen, synthetic textures cannot exercise the D3D12 path,
+  two Python interpreters are often on PATH — and with the measurement rules:
+  run `--self-test` before trusting a comparison, never benchmark per-frame work
+  back-to-back, interleave when comparing two implementations.
+- The PR template asks for the things that are expensive to catch in review:
+  whether live capture was checked on real hardware (CI cannot), the benchmark
+  comparison table when performance is touched, and what keeps the buffer
+  lifetime sound when `frame.py` or `memory_pool.py` is touched.
+
 ### Security — CI workflow now runs with least-privilege permissions
 
 - `ci.yml` set no `permissions:` block, so its `GITHUB_TOKEN` inherited the
