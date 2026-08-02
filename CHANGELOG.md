@@ -17,6 +17,17 @@ Nothing yet.
 First release with a stable API contract, and the first to be published through
 PyPI Trusted Publishing with signed attestations.
 
+### Security — CI workflow now runs with least-privilege permissions
+
+- `ci.yml` set no `permissions:` block, so its `GITHUB_TOKEN` inherited the
+  repository default — which for repositories created before February 2023 is
+  **read-write**. Every step in all four jobs could therefore have pushed
+  commits or opened issues on the strength of a checkout. Now scoped to
+  `contents: read`, which is all any of them need;
+  `actions/upload-artifact` uses its own artifact service rather than this
+  token. Found by CodeQL (`actions/missing-workflow-permissions`), four alerts,
+  one per job. `release.yml` already set it.
+
 ### Changed — dependencies brought to current
 
 - **`windows` crate 0.58 -> 0.62.2.** One breaking change across four minor

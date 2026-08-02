@@ -24,6 +24,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege for GITHUB_TOKEN. Without this block the token inherits the
+# repository default, which for repositories created before February 2023 is
+# read-write -- so every step in every job could push commits or open issues on
+# the strength of a checkout. Nothing here needs more than reading the code:
+# actions/upload-artifact uses its own artifact service rather than this token.
+permissions:
+  contents: read
+
 jobs:
   # The library must install and work with no Rust toolchain. If this job ever
   # needs the native extension, the "optional extension" promise has been broken.
