@@ -71,8 +71,16 @@ instance/
 # Sphinx documentation
 docs/_build/
 
-# PyBuilder
+# PyBuilder / Rust
 target/
+
+# Native extension build artifacts, produced by
+#   cd native && cargo build --release && python native/install_dev.py
+# Platform- and ABI-specific, so never committed.
+*.pyd
+*.dll
+*.dylib
+native/Cargo.lock
 
 # Jupyter Notebook
 .ipynb_checkpoints
@@ -130,3 +138,7 @@ dmypy.json
 
 # Local tests
 .test/
+# Benchmark run outputs. baseline.json and baseline-<date>.json are the tracked
+# references (see ROADMAP.md section 3); everything else is a one-off comparison
+# from a single run and means nothing to anyone else.
+benchmarks/after_*.json

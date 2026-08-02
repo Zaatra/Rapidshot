@@ -1,0 +1,175 @@
+{
+  "machine": {
+    "timestamp": "2026-07-27T09:23:52.976506+00:00",
+    "python": "3.13.14",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 198 Stepping 2, GenuineIntel",
+    "numpy": "2.5.1",
+    "frame": "1920x1080",
+    "rapidshot": "1.1.0",
+    "gpu": "Intel(R) Graphics"
+  },
+  "results": [
+    {
+      "name": "convert.BGRA",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 0.3011,
+      "min_ms": 0.1736,
+      "p95_ms": 0.3641,
+      "stdev_ms": 0.050325,
+      "gb_per_s": 27.547
+    },
+    {
+      "name": "convert.RGBA",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 2.71,
+      "min_ms": 2.0316,
+      "p95_ms": 3.8155,
+      "stdev_ms": 0.525726,
+      "gb_per_s": 3.061
+    },
+    {
+      "name": "convert.RGB",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 1.9518,
+      "min_ms": 1.4508,
+      "p95_ms": 2.7744,
+      "stdev_ms": 0.41072,
+      "gb_per_s": 4.25
+    },
+    {
+      "name": "convert.BGR",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 1.9529,
+      "min_ms": 1.5675,
+      "p95_ms": 2.8022,
+      "stdev_ms": 0.424772,
+      "gb_per_s": 4.247
+    },
+    {
+      "name": "convert.GRAY",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 11.2494,
+      "min_ms": 9.1587,
+      "p95_ms": 17.3348,
+      "stdev_ms": 3.37475,
+      "gb_per_s": 0.737
+    },
+    {
+      "name": "shot.BGRA",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 0.2349,
+      "min_ms": 0.2065,
+      "p95_ms": 0.4323,
+      "stdev_ms": 0.083132,
+      "gb_per_s": 35.31
+    },
+    {
+      "name": "shot.RGBA",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 2.5779,
+      "min_ms": 1.9864,
+      "p95_ms": 3.3565,
+      "stdev_ms": 0.443499,
+      "gb_per_s": 3.218
+    },
+    {
+      "name": "shot.RGB",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 1.7257,
+      "min_ms": 1.4339,
+      "p95_ms": 2.5335,
+      "stdev_ms": 0.370859,
+      "gb_per_s": 4.806
+    },
+    {
+      "name": "shot.BGR",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 1.7943,
+      "min_ms": 1.4112,
+      "p95_ms": 2.8269,
+      "stdev_ms": 0.483876,
+      "gb_per_s": 4.623
+    },
+    {
+      "name": "shot.GRAY",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 10.0106,
+      "min_ms": 9.1994,
+      "p95_ms": 17.2909,
+      "stdev_ms": 2.959345,
+      "gb_per_s": 0.829
+    },
+    {
+      "name": "process.BGRA",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 0.3139,
+      "min_ms": 0.2395,
+      "p95_ms": 0.3558,
+      "stdev_ms": 0.024558,
+      "gb_per_s": 26.424
+    },
+    {
+      "name": "process.RGB",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 3.1683,
+      "min_ms": 2.8195,
+      "p95_ms": 3.8228,
+      "stdev_ms": 0.279268,
+      "gb_per_s": 2.618
+    },
+    {
+      "name": "control.memcopy",
+      "kind": "control",
+      "samples": 125,
+      "median_ms": 0.3046,
+      "min_ms": 0.2096,
+      "p95_ms": 0.379,
+      "stdev_ms": 0.057021,
+      "gb_per_s": 27.23,
+      "note": "CONTROL: a plain memory copy whose implementation never changes. Its movement between runs measures machine drift (background load, thermal state), which is used to normalise the other comparisons."
+    },
+    {
+      "name": "com.get_desc_call",
+      "kind": "live",
+      "samples": 5000,
+      "median_ms": 0.0005,
+      "min_ms": 0.0004,
+      "p95_ms": 0.0005,
+      "stdev_ms": 0.000162,
+      "note": "trivial COM method; approximates pure binding overhead"
+    },
+    {
+      "name": "live.grab_with_frame",
+      "kind": "live",
+      "samples": 501,
+      "median_ms": 9.9653,
+      "min_ms": 4.8166,
+      "p95_ms": 11.1465,
+      "stdev_ms": 0.845988,
+      "note": "501 frame-producing calls (4 returned no new content) in 5s. DDA only reports changed content, so this depends on screen activity \u2014 compare across runs with caution."
+    },
+    {
+      "name": "live.grab_frame_gpu",
+      "kind": "live",
+      "samples": 502,
+      "median_ms": 9.961,
+      "min_ms": 0.1701,
+      "p95_ms": 10.6698,
+      "stdev_ms": 1.45103,
+      "note": "502 frame-producing calls (10 empty) in 5s; GPU-resident, no CPU round-trip"
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+# Review is required from these owners before a pull request can merge.
+# Enforce it with a branch protection rule ("Require review from Code Owners"),
+# otherwise this file is only a routing hint.
+
+*                       @Zaatra
+
+# The paths where a mistake is expensive or hard to see in review.
+
+# Raw D3D11/D3D12 pointer handling. A wrong lifetime here is a crash or a
+# silent corruption, and neither shows up in a diff.
+/native/                @Zaatra
+/rapidshot/_libs/       @Zaatra
+/rapidshot/core/        @Zaatra
+
+# Frame and buffer lifetime. Returning a view into a recycled buffer has
+# already caused data corruption in this project once.
+/rapidshot/frame.py     @Zaatra
+/rapidshot/memory_pool.py @Zaatra
+
+# Measurement. Roadmap decisions are made from these numbers, so a harness
+# change quietly invalidates the baseline it is compared against.
+/benchmarks/            @Zaatra
+
+# Anything that can publish or gain permissions.
+/.github/workflows/     @Zaatra
+/pyproject.toml         @Zaatra
+/setup.py               @Zaatra

@@ -2,7 +2,7 @@ import ctypes
 import logging
 from typing import List
 from collections import defaultdict
-import comtypes
+import comtypes  # type: ignore[import-untyped]
 from rapidshot._libs.dxgi import (
     IDXGIFactory1,
     IDXGIFactory6,  # Added this import

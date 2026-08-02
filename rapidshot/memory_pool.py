@@ -7,9 +7,29 @@ class PoolExhaustedError(RuntimeError):
     """Raised when no buffers are available in the pool."""
     pass
 
+class BufferReleasedError(RuntimeError):
+    """Raised when a buffer is used after being returned to its pool."""
+    pass
+
+
 class PooledBuffer:
     """
     A wrapper around a NumPy or CuPy array managed by a memory pool.
+
+    Behaves like the array it wraps for the operations frames are actually put
+    through — indexing, slicing, ``np.asarray``, ``len``, ``shape``, ``dtype``
+    — so a caller can treat it as the frame. This matters because ``grab()``
+    returns one of these: without it, every consumer would need to know about
+    pooling just to read a pixel.
+
+    What it deliberately does *not* do is pretend to be an ``ndarray`` subclass.
+    The buffer goes back to the pool on :meth:`release` and is then handed to
+    the next capture, so anything still holding it would silently see the wrong
+    frame. Use after release raises instead — the same bargain
+    :class:`rapidshot.frame.Frame` makes for GPU textures.
+
+    ``np.asarray(buffer)`` is a **view**, not a copy: zero-cost, and invalid
+    once released. Call ``.copy()`` to outlive the release.
     """
     def __init__(self, array, pool_ref):
         self.array = array
@@ -20,8 +40,44 @@ class PooledBuffer:
         """Releases the buffer back to its pool."""
         self._pool.checkin(self)
 
+    def _live(self):
+        """The wrapped array, or an error naming the mistake."""
+        if self.state != 'IN_USE':
+            raise BufferReleasedError(
+                "This frame's buffer has been returned to the pool and may "
+                "already hold a different frame. Copy the data before calling "
+                "release() if it needs to outlive the frame."
+            )
+        return self.array
+
     def __repr__(self):
         return f"<PooledBuffer state='{self.state}' data_ptr=0x{self.array.ctypes.data:X} pool='{self._pool.__class__.__name__}'>"
+
+    # -- array-like surface -------------------------------------------------
+
+    def __array__(self, dtype=None, copy=None):
+        """Hand the underlying array to NumPy, OpenCV, PIL and friends.
+
+        A view, so `np.asarray(frame)` costs nothing — which is the entire
+        point of pooling — and dies with the release.
+        """
+        array = self._live()
+        if dtype is not None and array.dtype != dtype:
+            return array.astype(dtype)
+        return array
+
+    def __getitem__(self, key):
+        return self._live()[key]
+
+    def __setitem__(self, key, value):
+        self._live()[key] = value
+
+    def __len__(self):
+        return len(self._live())
+
+    def copy(self):
+        """An independent array that survives release()."""
+        return self._live().copy()
 
     # For convenience, allow direct access to the array's shape and dtype
     @property
@@ -31,6 +87,18 @@ class PooledBuffer:
     @property
     def dtype(self):
         return self.array.dtype
+
+    @property
+    def ndim(self):
+        return self.array.ndim
+
+    @property
+    def size(self):
+        return self.array.size
+
+    @property
+    def nbytes(self):
+        return self.array.nbytes
 
 class BaseMemoryPool:
     """

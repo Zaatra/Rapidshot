@@ -47,6 +47,7 @@ pip install rapidshot[all]
 ### Basic Screencapture
 
 ```python
+import numpy as np
 import rapidshot
 
 # Create a ScreenCapture instance on the primary monitor
@@ -57,8 +58,15 @@ frame = screencapture.grab()
 
 # Display the screencapture
 from PIL import Image
-Image.fromarray(frame).show()
+Image.fromarray(np.asarray(frame)).show()
+
+# Hand the buffer back when done (see "Frame buffers" below)
+frame.release()
 ```
+
+> **New in 2.0:** `grab()` returns a pooled buffer that you `release()` when
+> done. It indexes and converts like the array it wraps, so most code needs only
+> the added `release()`. See [Frame buffers](#frame-buffers).
 
 ### Region-based Capture
 
@@ -69,7 +77,7 @@ right, bottom = left + 640, top + 640
 region = (left, top, right, bottom)
 
 # Capture only this region
-frame = screencapture.grab(region=region)  # 640x640x3 numpy.ndarray
+frame = screencapture.grab(region=region)  # 640x640x3 frame; release() when done
 ```
 
 ### Continuous Capture
@@ -121,6 +129,7 @@ screencapture = rapidshot.create(nvidia_gpu=True)
 
 # Screenshots will be processed on the GPU for improved performance
 frame = screencapture.grab()
+frame.release()
 ```
 
 ### Cursor Capture
@@ -169,14 +178,11 @@ def overlay_cursor(frame, cursor):
     
     # Different processing based on cursor type (monochrome, color, or masked)
     if shape_type & DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME:
-        # Process monochrome cursor
-        # ...
+        pass  # Process monochrome cursor
     elif shape_type & DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR:
-        # Process color cursor
-        # ...
+        pass  # Process color cursor
     elif shape_type & DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR:
-        # Process masked color cursor
-        # ...
+        pass  # Process masked color cursor
     
     # Position the cursor on the frame at its current coordinates
     x, y = cursor.PointerPositionInfo.Position.x, cursor.PointerPositionInfo.Position.y
@@ -231,6 +237,121 @@ capture2 = rapidshot.create(device_idx=0, output_idx=1)  # Second monitor on fir
 capture3 = rapidshot.create(device_idx=1, output_idx=0)  # First monitor on second GPU
 ```
 
+### Frame buffers
+
+`grab()` returns a `PooledBuffer` — a reused buffer rather than a freshly
+allocated array. Allocating one per frame costs ~1.6 ms on a 1080p RGB frame,
+because the page faults on first touch cost more than the conversion itself;
+reusing buffers makes `grab()` **1.3–2.1× faster**.
+
+It behaves like the array it wraps, so most code is unchanged:
+
+```python
+frame = camera.grab()
+if frame is not None:
+    frame.shape, frame.dtype, frame.ndim   # as before
+    pixel = frame[y, x]                    # indexing works
+    arr = np.asarray(frame)                # zero-copy, for cv2 / PIL / models
+    frame.release()                        # the one new line
+```
+
+**Release when done.** The buffer goes back to the pool and is handed to the
+next capture, so anything still holding it would see the wrong frame. Reading it
+after release raises `BufferReleasedError` rather than returning stale pixels.
+To keep data beyond the release, `frame.copy()`.
+
+Forgetting to release is not fatal: the pool runs dry and capture falls back to
+allocating, which is slower but always correct. It will never hand you a buffer
+another caller is reading.
+
+**Migrating from 1.x.** Add `release()`, and wrap in `np.asarray()` anywhere a
+true `ndarray` is required (`isinstance` checks, `Image.fromarray`). Or keep the
+old behaviour outright:
+
+```python
+camera = rapidshot.create(pool_output=False)   # returns plain ndarrays
+```
+
+BGRA already worked this way before 2.0 — it does no conversion, so its staging
+buffer was always returned pooled.
+
+### Only process what changed
+
+`grab_frame()` frames carry the compositor's own dirty-rect metadata, so a
+consumer can skip regions that did not change:
+
+```python
+with camera.grab_frame() as frame:
+    if frame.dirty_rects is None or not frame.dirty_rects:
+        process_everything(frame)          # unknown, or no metadata reported
+    else:
+        for left, top, right, bottom in frame.dirty_rects:
+            process_region(frame, left, top, right, bottom)
+```
+
+Coordinates are relative to the frame, so they index straight into the captured
+image even when `region=` is in use.
+
+Two things to get right. An **empty list does not mean nothing changed** — it
+means no rects were reported, which a mode change or a coalescing driver can
+also produce while the image differs completely; treat it as "assume everything
+changed". And `None` means the metadata could not be read at all. Check
+`frame.rects_coalesced` too: when true the driver merged rects, so they
+over-estimate what actually changed.
+
+### Hybrid GPU laptops and headless machines
+
+`device_info()` only lists adapters that drive a display, because only those can
+capture. `topology_info()` lists every adapter and says what that means:
+
+```python
+print(rapidshot.topology_info())
+```
+
+```
+Topology: hybrid
+  Adapter[0] (Intel(R) UHD Graphics) (Intel) (128MB VRAM) (1 output)
+  Adapter[1] (NVIDIA GeForce RTX 4070 Laptop GPU) (NVIDIA) (8192MB VRAM) (0 outputs)
+
+  Hybrid GPU system detected. Capture runs on Intel(R) UHD Graphics, which
+  drives the display. NVIDIA GeForce RTX 4070 Laptop GPU has no outputs, so
+  Desktop Duplication cannot run against it at all (DXGI_ERROR_UNSUPPORTED).
+  ...
+```
+
+On an Optimus/switchable laptop the discrete GPU has no outputs, so Desktop
+Duplication cannot run against it — capture is always bound to the adapter that
+drives the display. `grab()` is unaffected. A GPU-resident frame is: it lives on
+the capture adapter, so feeding it to a model on the *other* adapter needs a
+cross-adapter copy. `rapidshot.native` provides one:
+
+```python
+from rapidshot import native
+
+with camera.grab_frame() as frame:
+    transfer = native.cross_adapter_transfer(frame)   # build once, reuse
+
+with camera.grab_frame() as frame:
+    transfer.transfer(frame)
+    # Now bind transfer.destination_resource_address on the other adapter.
+    print(transfer.source, "->", transfer.destination)
+```
+
+Costs about 0.87 ms per 1080p frame — roughly a third of what reading the same
+frame to the CPU costs, so crossing adapters beats leaving the GPU. The shared
+heap lives in **system memory**, not either adapter's VRAM; this is not
+peer-to-peer VRAM-to-VRAM DMA, and the win is that a GPU copy engine moves the
+bytes instead of CPU cores.
+
+On a machine with no monitor attached there is no desktop to duplicate at all,
+and `rapidshot.create()` raises `HeadlessError` explaining that a virtual
+display driver (IDD) is needed. `topology_info()` still works there — it probes
+DXGI directly rather than going through capture.
+
+> A virtual display's advertised refresh rate does **not** raise capture rate.
+> Desktop Duplication is driven by presents, not by refresh: a 500 Hz virtual
+> display does not make an application render 500 fps.
+
 ## Advanced Usage
 
 ### Custom Buffer Size
@@ -243,18 +364,162 @@ screencapture = rapidshot.create(max_buffer_len=256)
 ### Different Color Formats
 
 ```python
-# RGB (default)
+# RGB (default)                      -> (H, W, 3)
 screencapture_rgb = rapidshot.create(output_color="RGB")
 
-# RGBA (with alpha channel)
+# RGBA (with alpha channel)          -> (H, W, 4)
 screencapture_rgba = rapidshot.create(output_color="RGBA")
 
-# BGR (OpenCV format)
+# BGR (OpenCV format)                -> (H, W, 3)
 screencapture_bgr = rapidshot.create(output_color="BGR")
 
-# Grayscale
+# BGRA (raw, no conversion)          -> (H, W, 4)
+screencapture_bgra = rapidshot.create(output_color="BGRA")
+
+# Grayscale (Rec. 601 luma)          -> (H, W, 1)
 screencapture_gray = rapidshot.create(output_color="GRAY")
 ```
+
+All conversions are pure NumPy — OpenCV is not required. An unsupported
+`output_color` raises `ValueError` at creation time.
+
+### Capturing Into Your Own Buffer
+
+`shot()` writes straight into a buffer you own, avoiding a per-frame
+allocation. The buffer receives pixels in the instance's `output_color`, so
+size it with `bytes_per_frame()`:
+
+```python
+import numpy as np
+
+screencapture = rapidshot.create(output_color="RGB", region=(0, 0, 640, 480))
+
+buffer = np.zeros((480, 640, screencapture.channels), dtype=np.uint8)
+if screencapture.shot(buffer):
+    print("captured", buffer.shape)   # (480, 640, 3)
+```
+
+The destination size is checked before anything is written, so an undersized
+buffer raises `ValueError` instead of corrupting memory. NumPy arrays,
+`ctypes` arrays, `bytearray` and `memoryview` all report their own size. A raw
+pointer cannot, so it must be paired with an explicit `buffer_size`:
+
+```python
+import ctypes
+
+screencapture.shot(
+    ctypes.c_void_p(buffer.ctypes.data),
+    buffer_size=buffer.nbytes,
+)
+```
+
+### GPU-Resident Capture (no CPU round-trip)
+
+`grab()` brings every frame down to the CPU — a staging read plus a color
+conversion, about 4.5 ms per 1080p frame. If you are handing the pixels to a GPU
+consumer (an inference runtime, a hardware encoder), `grab_frame()` skips all of
+that and gives you the Direct3D texture directly:
+
+```python
+with screencapture.grab_frame() as frame:
+    texture = frame.d3d11_texture        # ID3D11Texture2D, valid in here only
+    print(frame.timestamp, frame.accumulated_frames)
+```
+
+Measured at 1920x1080: **0.21 ms/frame versus 4.53 ms — about 21x faster.**
+Numbers come from `benchmarks/baseline.json`; see ROADMAP.md section 3 for how
+they are measured and why they moved.
+
+> **The `with` block is not optional.** Direct3D cannot capture the next frame
+> while a reference to the previous one is outstanding, so an unreleased `Frame`
+> stalls capture entirely. Use the context manager (or call `frame.release()`),
+> and copy anything you need out before the block ends. `grab()`, `shot()` and
+> `grab_frame()` all raise a clear error if a frame is still outstanding.
+
+Frame metadata stays readable after release: `timestamp` / `timestamp_qpc` (when
+the compositor presented the frame), `accumulated_frames` (greater than 1 means
+the OS dropped frames because your loop fell behind), `protected_content`,
+`cursor_visible`, `region`, `width`, `height`, `rotation_angle`.
+
+### GPU Inference: Handing Frames to DirectML
+
+Rapidshot can convert a captured frame into a **model-ready NCHW float32 tensor
+that never leaves the GPU** — no staging read, no colour conversion, no
+resize on the CPU. This needs the optional native extension (see below).
+
+```python
+from rapidshot import native
+
+with screencapture.grab_frame() as frame:
+    pre = native.GpuPreprocessor12(frame, 640, 640)   # build once, reuse
+    pre.process(frame)                                 # one GPU dispatch
+
+    print(pre.shape)                        # (1, 3, 640, 640)
+    resource = pre.output_resource_address  # ID3D12Resource*
+    gpu_va = pre.output_gpu_address         # GPU virtual address
+```
+
+`process()` resizes, normalises, converts BGRA→RGB and transposes to NCHW in a
+single compute shader. On the CPU that same work costs about **8 ms per 1080p
+frame**; here it is one dispatch and the result stays in VRAM. Optional
+arguments cover the usual normalisation ranges (`scale=2.0, bias=-1.0` for
+−1..1) and channel order (`bgr=True`).
+
+**Where Rapidshot stops.** The output is an `ID3D12Resource` on the DirectML
+device — exactly what ONNX Runtime's DirectML provider consumes. Rapidshot
+deliberately does **not** bind it to a session: that would couple this library
+to ONNX Runtime's ABI and release cadence for the sake of an optional feature.
+Consuming it is a few lines on your side:
+
+```cpp
+const OrtDmlApi* dml = nullptr;
+Ort::GetApi().GetExecutionProviderApi(
+    "DML", ORT_API_VERSION, reinterpret_cast<const void**>(&dml));
+
+void* allocation = nullptr;
+dml->CreateGPUAllocationFromD3DResource(d3d12_resource, &allocation);
+
+Ort::MemoryInfo info("DML", OrtDeviceAllocator, 0, OrtMemTypeDefault);
+auto tensor = Ort::Value::CreateTensor(
+    info, allocation, byte_size,
+    shape.data(), shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
+
+// bind with Ort::IoBinding, run, then:
+dml->FreeGPUAllocation(allocation);
+```
+
+> **Note for Python users:** `OrtDmlApi` has no Python binding — it is reachable
+> only from C/C++. That is a gap in ONNX Runtime, not in Rapidshot. If you need
+> this from Python today you will need a small native shim of your own;
+> `native.probe_onnxruntime()` and `native.onnxruntime_dll_path()` are provided
+> to help locate and validate the runtime.
+
+### Building the Optional Native Extension
+
+Everything above except GPU-tensor interop works with no toolchain.
+`pip install rapidshot` never requires Rust.
+
+```bash
+cd native && cargo build --release
+```
+
+```bash
+python native/install_dev.py
+```
+
+Requires [Rust](https://rustup.rs) and the MSVC C++ build tools. Check
+availability at runtime with `rapidshot.native.is_available()`.
+
+### Benchmarking Your Changes
+
+```bash
+python benchmarks/perf_suite.py --out baseline.json
+python benchmarks/perf_suite.py --out after.json --compare baseline.json
+```
+
+The suite compares minimum samples, calibrates against a control benchmark to
+divide out machine drift, and pools samples across rounds. Run
+`--self-test` to measure your machine's noise floor before trusting a result.
 
 ### Resource Management
 

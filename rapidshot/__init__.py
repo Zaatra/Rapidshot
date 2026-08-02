@@ -30,15 +30,22 @@ except ImportError as exc:
     enum_dxgi_adapters = get_output_metadata = None
     _io_import_error = exc
 from rapidshot.util.logging import setup_logging, get_logger
+from rapidshot.util.topology import (
+    AdapterInfo,
+    GpuTopology,
+    classify,
+    probe_topology,
+)
 
 # Initialize logging
 logger = get_logger("init")
 
 # Define explicitly what's exposed from this module
 __all__ = [
-    "create", "device_info", "output_info", 
+    "create", "device_info", "output_info", "topology_info",
     "clean_up", "reset", "ScreenCapture",
-    "RapidshotError", "get_version_info"
+    "RapidshotError", "HeadlessError", "get_version_info",
+    "probe_topology", "GpuTopology", "AdapterInfo",
 ]
 
 class RapidshotError(Exception):
@@ -48,6 +55,18 @@ class RapidshotError(Exception):
 class DeviceError(RapidshotError):
     """Exception raised for errors related to device operations."""
     pass
+
+class HeadlessError(DeviceError):
+    """Raised when no adapter drives a display, so there is nothing to duplicate.
+
+    Carries the probed topology so a caller can report which adapters exist.
+    Subclasses DeviceError: code that already handles "no usable device" keeps
+    working, it just gets a message it can act on.
+    """
+    def __init__(self, message, topology=None):
+        super().__init__(message)
+        self.topology = topology
+
 
 class OutputError(RapidshotError):
     """Exception raised for errors related to output operations."""
@@ -87,14 +106,20 @@ class RapidshotFactory(metaclass=Singleton):
                 "DXGI device enumeration is not available on this platform."
             ) from (_core_import_error or _io_import_error)
         try:
+            # Probe the topology before opening any device. An adapter with no
+            # outputs is dropped below, but it is exactly the signal that
+            # distinguishes a headless machine from a hybrid GPU one — so the
+            # classification has to happen while that information still exists.
+            self.topology = probe_topology()
+
             p_adapters = enum_dxgi_adapters()
             if not p_adapters:
-                error_msg = "No DXGI adapters found. Make sure your system has a compatible graphics card."
-                logger.error(error_msg)
-                raise DeviceError(error_msg)
-                
+                logger.error("No DXGI adapters found")
+                raise HeadlessError(self.topology.help_text(), topology=self.topology)
+
             self.devices, self.outputs = [], []
-            
+            self.device_failures = []
+
             for p_adapter in p_adapters:
                 try:
                     device = Device(p_adapter)
@@ -104,18 +129,45 @@ class RapidshotFactory(metaclass=Singleton):
                         self.outputs.append([Output(p_output) for p_output in p_outputs])
                 except Exception as e:
                     logger.warning(f"Failed to initialize device: {e}")
-                    
+                    self.device_failures.append(str(e))
+
             if not self.devices:
-                error_msg = "No usable graphics devices found. Check your display configuration."
-                logger.error(error_msg)
-                raise DeviceError(error_msg)
-                
+                # Every adapter either has no output or refused to open. The
+                # topology says which, and only one of the two is fixable by
+                # the user.
+                logger.error(f"No capture-capable device ({self.topology.kind})")
+                raise HeadlessError(
+                    self._no_device_message(), topology=self.topology
+                )
+
             self.output_metadata = get_output_metadata()
+            if self.topology.is_hybrid:
+                logger.warning(
+                    "Hybrid GPU system: capture is bound to the display adapter. "
+                    "See rapidshot.topology_info() for detail."
+                )
             logger.info(f"RapidshotFactory initialized with {len(self.devices)} devices")
+        except RapidshotError:
+            raise
         except Exception as e:
             error_msg = f"Failed to initialize RapidshotFactory: {e}"
             logger.error(error_msg)
             raise RapidshotError(error_msg) from e
+
+    def _no_device_message(self) -> str:
+        """Explain why no adapter could be used, without guessing."""
+        help_text = self.topology.help_text()
+        if not help_text:
+            # Outputs exist, so this is not a headless machine: every device
+            # creation failed instead. Report that, not a display problem.
+            help_text = (
+                "No usable graphics device. Adapters with displays attached were "
+                "found, but none could be opened as a Direct3D 11 device."
+            )
+        if self.device_failures:
+            failures = "\n".join(f"  {f}" for f in self.device_failures)
+            help_text += f"\n\nDevice creation errors:\n{failures}"
+        return help_text
 
     def create(
         self,
@@ -125,8 +177,9 @@ class RapidshotFactory(metaclass=Singleton):
         output_color: str = "RGB",
         nvidia_gpu: bool = False,
         max_buffer_len: int = 64,
-        prefer_integrated: bool = False  # New parameter to force integrated GPU
-    ):
+        prefer_integrated: bool = False,  # New parameter to force integrated GPU
+        pool_output: bool = True,
+    ) -> "ScreenCapture":
         """
         Create a ScreenCapture instance.
 
@@ -138,6 +191,10 @@ class RapidshotFactory(metaclass=Singleton):
             nvidia_gpu: Whether to use NVIDIA GPU acceleration
             max_buffer_len: Maximum buffer length for capture
             prefer_integrated: If True, will search for an integrated GPU (e.g., Intel) and select it.
+            pool_output: Reuse converted-frame buffers instead of allocating one
+                per frame (default since 2.0). grab() then returns a
+                PooledBuffer the caller must release. Pass False for the
+                pre-2.0 behaviour.
 
         Returns:
             ScreenCapture instance
@@ -204,7 +261,7 @@ class RapidshotFactory(metaclass=Singleton):
             
             if nvidia_gpu:
                 try:
-                    import cupy
+                    import cupy  # type: ignore[import-not-found]
                     logger.info("Using NVIDIA GPU acceleration with CuPy")
                 except ImportError:
                     nvidia_gpu = False
@@ -217,6 +274,7 @@ class RapidshotFactory(metaclass=Singleton):
                 output_color=output_color,
                 nvidia_gpu=nvidia_gpu,
                 max_buffer_len=max_buffer_len,
+                pool_output=pool_output,
             )
             self._screencapture_instances[instance_key] = screencapture
             
@@ -239,7 +297,21 @@ class RapidshotFactory(metaclass=Singleton):
         ret = ""
         for idx, device in enumerate(self.devices):
             ret += f"Device[{idx}]:{device}\n"
+        # Devices only cover adapters that drive a display. Adapters that do
+        # not are invisible here otherwise, which is what makes a hybrid
+        # system look like a plain single-GPU one.
+        ret += self.topology.describe() + "\n"
         return ret
+
+    def topology_info(self) -> str:
+        """
+        Get the GPU/display topology: which adapters exist, which drive a
+        display, and what that implies for capture.
+
+        Returns:
+            Multi-line string
+        """
+        return self.topology.describe()
 
     def output_info(self) -> str:
         """
@@ -256,7 +328,7 @@ class RapidshotFactory(metaclass=Singleton):
                 ret += f"Primary:{self.output_metadata.get(output.devicename)[1]}\n"
         return ret
 
-    def clean_up(self):
+    def clean_up(self) -> None:
         """
         Release all created screencapture instances.
         """
@@ -267,7 +339,7 @@ class RapidshotFactory(metaclass=Singleton):
             except Exception as e:
                 logger.warning(f"Error releasing ScreenCapture instance: {e}")
 
-    def reset(self):
+    def reset(self) -> None:
         """
         Reset the factory, releasing all resources.
         """
@@ -280,7 +352,7 @@ class RapidshotFactory(metaclass=Singleton):
 # Global factory instance
 __factory = None
 
-def get_factory():
+def get_factory() -> "RapidshotFactory":
     """
     Get the global factory instance, initializing it if necessary.
     
@@ -303,8 +375,9 @@ def create(
     output_color: str = "RGB",
     nvidia_gpu: bool = False,
     max_buffer_len: int = 64,
-    prefer_integrated: bool = False  # New parameter passed to factory
-):
+    prefer_integrated: bool = False,  # New parameter passed to factory
+    pool_output: bool = True,
+) -> "ScreenCapture":
     """
     Create a ScreenCapture instance.
     
@@ -316,6 +389,9 @@ def create(
         nvidia_gpu: Whether to use NVIDIA GPU acceleration
         max_buffer_len: Maximum buffer length for capture
         prefer_integrated: If True, forces selection of an integrated GPU if available.
+        pool_output: Reuse converted-frame buffers (default since 2.0); grab()
+            then returns a PooledBuffer the caller must release. Pass False
+            for the pre-2.0 behaviour of a freshly allocated array.
         
     Returns:
         ScreenCapture instance
@@ -329,9 +405,10 @@ def create(
         nvidia_gpu=nvidia_gpu,
         max_buffer_len=max_buffer_len,
         prefer_integrated=prefer_integrated,
+        pool_output=pool_output,
     )
 
-def device_info():
+def device_info() -> str:
     """
     Get information about available devices.
     
@@ -341,17 +418,34 @@ def device_info():
     factory = get_factory()
     return factory.device_info()
 
-def output_info():
+def output_info() -> str:
     """
     Get information about available outputs.
-    
+
     Returns:
         String with output information
     """
     factory = get_factory()
     return factory.output_info()
 
-def clean_up():
+def topology_info() -> str:
+    """
+    Get the GPU/display topology.
+
+    Unlike device_info(), this reports adapters that cannot capture too — a
+    render-only dGPU on a hybrid laptop, or a software adapter. Safe to call on
+    a machine where capture itself is unavailable: it probes DXGI directly
+    rather than going through the factory.
+
+    Returns:
+        String describing the topology
+    """
+    global __factory
+    if __factory is not None:
+        return __factory.topology_info()
+    return probe_topology().describe()
+
+def clean_up() -> None:
     """
     Release all created screencapture instances.
     """
@@ -359,7 +453,7 @@ def clean_up():
     if __factory is not None:
         __factory.clean_up()
 
-def reset():
+def reset() -> None:
     """
     Reset the library, releasing all resources.
     """
@@ -398,28 +492,28 @@ def get_version_info() -> Dict[str, Any]:
     
     # Check cupy
     try:
-        import cupy
+        import cupy  # type: ignore[import-not-found]
         info["dependencies"]["cupy"] = cupy.__version__
     except ImportError:
         info["dependencies"]["cupy"] = "not installed"
     
     # Check pillow
     try:
-        from PIL import __version__ as pil_version
+        from PIL import __version__ as pil_version  # type: ignore[import-not-found]
         info["dependencies"]["pillow"] = pil_version
     except ImportError:
         info["dependencies"]["pillow"] = "not installed"
     
     # Check opencv
     try:
-        import cv2
+        import cv2  # type: ignore[import-not-found]
         info["dependencies"]["opencv"] = cv2.__version__
     except ImportError:
         info["dependencies"]["opencv"] = "not installed"
     
     # Check comtypes
     try:
-        import comtypes
+        import comtypes  # type: ignore[import-untyped]
         info["dependencies"]["comtypes"] = comtypes.__version__
     except (ImportError, AttributeError):
         info["dependencies"]["comtypes"] = "version unknown"
@@ -427,7 +521,7 @@ def get_version_info() -> Dict[str, Any]:
     return info
 
 # Version information
-__version__ = "1.1.0"
+__version__ = "2.0.0"
 __author__ = "Rapidshot Contributors"
 __description__ = "High-performance screencapture library for Windows using Desktop Duplication API"
 

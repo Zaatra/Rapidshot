@@ -1,0 +1,36 @@
+[package]
+name = "rapidshot-native"
+version = "0.1.0"
+edition = "2021"
+description = "Native GPU interop shim for Rapidshot (Stage 6)"
+license = "MIT"
+
+[lib]
+name = "_rapidshot_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+# abi3-py38 builds one wheel that works on every supported Python version,
+# matching the project's requires-python = ">=3.8", instead of one wheel per
+# minor version.
+pyo3 = { version = "0.23", features = ["abi3-py38", "extension-module"] }
+
+[dependencies.windows]
+version = "0.58"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D_Fxc",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_System_LibraryLoader",
+]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

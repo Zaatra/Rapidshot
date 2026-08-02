@@ -29,7 +29,7 @@ class CupyProcessor:
         """
         # Import CuPy in constructor to delay import until needed
         try:
-            import cupy as cp
+            import cupy as cp  # type: ignore[import-not-found]
             self.cp = cp
             
             # Check version compatibility
@@ -155,10 +155,10 @@ class CupyProcessor:
                 import cucv.cv2 as cv2
             except ImportError as e:
                 logger.warning(f"Failed to import cuCV, falling back to regular OpenCV: {e}")
-                import cv2
+                import cv2  # type: ignore[import-not-found]
         else:
             try:
-                import cv2
+                import cv2  # type: ignore[import-not-found]
             except ImportError as e:
                 error_msg = (
                     f"OpenCV is required for color conversion. Error: {e}\n"

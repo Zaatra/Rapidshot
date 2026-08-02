@@ -1,0 +1,157 @@
+name: Release
+
+# Publishes to PyPI via Trusted Publishing (OIDC): no API token is stored
+# anywhere, so there is no long-lived credential to leak or rotate. Configure
+# the publisher once at
+# https://pypi.org/manage/project/rapidshot/settings/publishing/
+#   owner: Zaatra   repo: Rapidshot   workflow: release.yml   environment: pypi
+#
+# Cutting a release:
+#   1. version bumped in pyproject.toml, setup.py and rapidshot/__init__.py
+#   2. CHANGELOG.md has a section for it
+#   3. tag v<version> and push
+#
+# The tag is what triggers this, and `verify` refuses to publish if the tag and
+# the packaged version disagree.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish to PyPI (unchecked = build and verify only)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build sdist and wheel
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade build twine
+
+      - name: Build
+        run: python -m build
+
+      - name: Check metadata renders on PyPI
+        run: python -m twine check dist/*
+
+      - name: Verify the wheel actually contains the package
+        shell: python
+        run: |
+          import glob, sys, zipfile
+
+          # This project shipped a wheel with 5 modules instead of 25, because
+          # pyproject listed `packages = ["rapidshot"]` -- which names only the
+          # top level. `pip install rapidshot` then raised ModuleNotFoundError
+          # on import, and nothing caught it because a source checkout has the
+          # subpackages on sys.path anyway. Never again without a gate.
+          wheel = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(wheel).namelist()
+          modules = [n for n in names if n.endswith(".py")]
+
+          required = [
+              "rapidshot/__init__.py",
+              "rapidshot/capture.py",
+              "rapidshot/frame.py",
+              "rapidshot/memory_pool.py",
+              "rapidshot/core/duplicator.py",
+              "rapidshot/processor/numpy_processor.py",
+              "rapidshot/util/topology.py",
+              "rapidshot/_libs/dxgi.py",
+          ]
+          missing = [r for r in required if r not in names]
+          if missing:
+              sys.exit(f"wheel is missing: {missing}")
+
+          if "rapidshot/py.typed" not in names:
+              sys.exit("wheel has no py.typed; annotations would be invisible downstream")
+
+          if len(modules) < 20:
+              sys.exit(f"wheel has only {len(modules)} modules, expected 25+")
+
+          # The native extension is optional and built by the consumer, never
+          # shipped. A package-data glob once swept a locally built .pyd into
+          # this wheel -- which is tagged py3-none-any, so it would have
+          # delivered a Windows-only binary from the release machine to every
+          # platform.
+          binaries = [n for n in names if n.endswith((".pyd", ".so", ".dylib", ".dll"))]
+          if binaries:
+              sys.exit(f"wheel contains compiled artifacts: {binaries}")
+
+          print(f"{wheel}: {len(modules)} modules, py.typed present, no binaries")
+
+      - name: Install the wheel and import it from outside the source tree
+        shell: pwsh
+        run: |
+          # From the repo root the subpackages are importable regardless of
+          # what the wheel contains, which is exactly how the broken wheel got
+          # published. Import from elsewhere.
+          python -m venv "$env:RUNNER_TEMP\relcheck"
+          & "$env:RUNNER_TEMP\relcheck\Scripts\python.exe" -m pip install --quiet (Get-ChildItem dist\*.whl)[0].FullName
+          Push-Location $env:RUNNER_TEMP
+          & "$env:RUNNER_TEMP\relcheck\Scripts\python.exe" -c "import rapidshot, rapidshot.util.topology, rapidshot.processor.numpy_processor, rapidshot.core.duplicator; print('import ok', rapidshot.__version__)"
+          Pop-Location
+
+      - name: Check the tag matches the packaged version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: python
+        run: |
+          import glob, os, re, sys
+
+          tag = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          wheel = os.path.basename(glob.glob("dist/*.whl")[0])
+          packaged = wheel.split("-")[1]
+          if tag != packaged:
+              sys.exit(f"tag v{tag} does not match packaged version {packaged}")
+          print(f"tag and package agree on {packaged}")
+
+      - name: Generate SBOM
+        run: |
+          python -m pip install cyclonedx-bom
+          python -m cyclonedx_py environment --output-format JSON --outfile dist/rapidshot-sbom.cdx.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/rapidshot
+    permissions:
+      # Trusted Publishing mints a short-lived OIDC token instead of using a
+      # stored API token, and signs the artifacts with Sigstore so a consumer
+      # can verify they came from this workflow in this repository.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Remove non-distributable files
+        run: rm -f dist/*.cdx.json
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          attestations: true

@@ -4,23 +4,28 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rapidshot"
-version = "1.1.0"
+version = "2.0.0"
 description = "A high-performance screencapture library for Windows using Desktop Duplication API"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [
-    { name = "RapidShot Contributors", email = "example@example.com" }
+    { name = "RapidShot Contributors", email = "imzaatra@gmail.com" }
+]
+maintainers = [
+    { name = "Zaatra", email = "imzaatra@gmail.com" }
 ]
 keywords = ["screencapture", "desktop-duplication", "screen-recorder", "windows"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
     "License :: OSI Approved :: MIT License",
     "Operating System :: Microsoft :: Windows",
     "Operating System :: Microsoft :: Windows :: Windows 10",
@@ -67,19 +72,36 @@ docs = [
 "Source" = "https://github.com/Zaatra/Rapidshot"
 "Documentation" = "https://github.com/Zaatra/Rapidshot"
 
-[tool.setuptools]
-packages = ["rapidshot"]
+[tool.setuptools.packages.find]
+# Must be discovery, not an explicit list. `packages = ["rapidshot"]` names only
+# the top-level package, so the built wheel shipped five modules and none of
+# rapidshot.core / .processor / .util / ._libs -- `pip install rapidshot`
+# produced a package that raised ModuleNotFoundError on import. The failure was
+# invisible from a source checkout, where the subpackages are simply on the path.
+include = ["rapidshot*"]
+
+[tool.setuptools.package-data]
+# py.typed is what makes the annotations visible to type checkers downstream;
+# without it PEP 561 says to ignore them, and every rapidshot symbol resolves
+# to Any in the caller's editor.
+#
+# Deliberately NOT "*.pyd"/"*.so": a developer who has run
+# native/install_dev.py has a compiled extension sitting in this directory, and
+# that glob swept it into the wheel -- producing a py3-none-any wheel carrying a
+# Windows-only binary built on whichever machine happened to cut the release.
+# The extension is optional by design (see ROADMAP.md section 11) and is built
+# by the consumer, never shipped. The release workflow fails if one appears.
+rapidshot = ["py.typed"]
 
 [tool.black]
 line-length = 100
-target-version = ["py38", "py39", "py310"]
+target-version = ["py39", "py310", "py311"]
 
 [tool.isort]
 profile = "black"
 line_length = 100
 
 [tool.mypy]
-python_version = "3.8"
 warn_return_any = true
 warn_unused_configs = true
 

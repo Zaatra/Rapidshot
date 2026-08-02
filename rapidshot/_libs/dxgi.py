@@ -1,22 +1,97 @@
 import ctypes
 import ctypes.wintypes as wintypes
-import comtypes
+import comtypes  # type: ignore[import-untyped]
 import logging
 from .d3d11 import ID3D11Device
 
 # Set up logger
 logger = logging.getLogger("rapidshot._libs.dxgi")
 
-# DXGI error codes
-DXGI_ERROR_ACCESS_LOST = 0x887A0026
-DXGI_ERROR_NOT_FOUND = 0x887A0002
-DXGI_ERROR_WAIT_TIMEOUT = 0x887A0027
+def _hresult(code: int) -> int:
+    """
+    Normalize an HRESULT literal to the signed 32-bit form comtypes reports.
+
+    comtypes surfaces failure codes through ``COMError.args[0]`` as a *signed*
+    C long, so a constant written as ``0x887A0026`` never compares equal to the
+    value seen at runtime (``-2005270522``). Every constant below goes through
+    this helper so equality checks against ``COMError.args[0]`` actually match.
+    """
+    return ctypes.c_int32(code).value
+
+
+# DXGI error codes (stored signed, see _hresult above)
+DXGI_ERROR_INVALID_CALL = _hresult(0x887A0001)
+DXGI_ERROR_NOT_FOUND = _hresult(0x887A0002)
+DXGI_ERROR_MORE_DATA = _hresult(0x887A0003)
+DXGI_ERROR_UNSUPPORTED = _hresult(0x887A0004)
+DXGI_ERROR_DEVICE_REMOVED = _hresult(0x887A0005)
+DXGI_ERROR_DEVICE_HUNG = _hresult(0x887A0006)
+DXGI_ERROR_DEVICE_RESET = _hresult(0x887A0007)
+DXGI_ERROR_DRIVER_INTERNAL_ERROR = _hresult(0x887A0020)
+DXGI_ERROR_MODE_CHANGE_IN_PROGRESS = _hresult(0x887A0025)
+DXGI_ERROR_ACCESS_LOST = _hresult(0x887A0026)
+DXGI_ERROR_WAIT_TIMEOUT = _hresult(0x887A0027)
+DXGI_ERROR_SESSION_DISCONNECTED = _hresult(0x887A0028)
+DXGI_ERROR_RESTRICT_TO_OUTPUT_STALE = _hresult(0x887A0029)
+DXGI_ERROR_CANNOT_PROTECT_CONTENT = _hresult(0x887A002A)
+DXGI_ERROR_ACCESS_DENIED = _hresult(0x887A002B)
+DXGI_ERROR_NAME_ALREADY_EXISTS = _hresult(0x887A002C)
+DXGI_ERROR_SDK_COMPONENT_MISSING = _hresult(0x887A002D)
+
+# Generic COM/Win32 codes that the duplication path can surface
+E_ACCESSDENIED = _hresult(0x80070005)
+E_INVALIDARG = _hresult(0x80070057)
+E_OUTOFMEMORY = _hresult(0x8007000E)
+E_NOTIMPL = _hresult(0x80004001)
+E_NOINTERFACE = _hresult(0x80004002)
+
 ABANDONED_MUTEX_EXCEPTION = -0x7785ffda  # -2005270490
+
+# Errors that mean "the duplication object is dead, rebuild it"
+DXGI_RECOVERABLE_ERRORS = frozenset(
+    {
+        DXGI_ERROR_ACCESS_LOST,
+        DXGI_ERROR_SESSION_DISCONNECTED,
+        DXGI_ERROR_MODE_CHANGE_IN_PROGRESS,
+        ABANDONED_MUTEX_EXCEPTION,
+    }
+)
+
+# Errors that mean the D3D device itself is gone and must be recreated
+DXGI_DEVICE_ERRORS = frozenset(
+    {
+        DXGI_ERROR_DEVICE_REMOVED,
+        DXGI_ERROR_DEVICE_RESET,
+        DXGI_ERROR_DEVICE_HUNG,
+        DXGI_ERROR_DRIVER_INTERNAL_ERROR,
+    }
+)
+
+# Errors raised when protected (HDCP/DRM) content blocks duplication
+DXGI_PROTECTED_CONTENT_ERRORS = frozenset(
+    {
+        DXGI_ERROR_ACCESS_DENIED,
+        DXGI_ERROR_CANNOT_PROTECT_CONTENT,
+        E_ACCESSDENIED,
+    }
+)
+
+# DXGI formats accepted by DuplicateOutput1. Order is a preference order:
+# the runtime picks the first entry the desktop can be presented as.
+DXGI_FORMAT_R8G8B8A8_UNORM = 28
+DXGI_FORMAT_B8G8R8A8_UNORM = 87
+DXGI_FORMAT_R16G16B16A16_FLOAT = 10
+DXGI_FORMAT_R10G10B10A2_UNORM = 24
 
 # Pointer shape type constants
 DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME = 0x00000001
 DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR = 0x00000002
 DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR = 0x00000004
+
+# DXGI_ADAPTER_FLAG values, as reported in DXGI_ADAPTER_DESC1.Flags
+DXGI_ADAPTER_FLAG_NONE = 0
+DXGI_ADAPTER_FLAG_REMOTE = 1
+DXGI_ADAPTER_FLAG_SOFTWARE = 2
 
 # DXGI 1.2-1.6 Definitions
 DXGI_GPU_PREFERENCE_UNSPECIFIED = 0
@@ -138,6 +213,28 @@ class DXGI_OUTDUPL_FRAME_INFO(ctypes.Structure):
     ]
 
 
+# Re-exported so callers of the dirty/move-rect APIs get the rectangle type
+# from the same module as the calls that produce it.
+RECT = wintypes.RECT
+
+
+class POINT(ctypes.Structure):
+    """A point, as GDI defines it."""
+    _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
+
+
+class DXGI_OUTDUPL_MOVE_RECT(ctypes.Structure):
+    """A region the compositor moved rather than redrew.
+
+    ``SourcePoint`` is where the content came from; ``DestinationRect`` is
+    where it ended up. Both are in desktop coordinates.
+    """
+    _fields_ = [
+        ("SourcePoint", POINT),
+        ("DestinationRect", wintypes.RECT),
+    ]
+
+
 class DXGI_MAPPED_RECT(ctypes.Structure):
     """
     DXGI mapped rectangle.
@@ -211,8 +308,27 @@ class IDXGIOutputDuplication(IDXGIObject):
                 ctypes.POINTER(ctypes.POINTER(IDXGIResource)),
             ],
         ),
-        comtypes.STDMETHOD(comtypes.HRESULT, "GetFrameDirtyRects"),
-        comtypes.STDMETHOD(comtypes.HRESULT, "GetFrameMoveRects"),
+        # Both take a caller-allocated buffer and report how much room they
+        # actually needed. Declared without argtypes they are callable but
+        # unusable: comtypes cannot marshal the out-parameters.
+        comtypes.STDMETHOD(
+            comtypes.HRESULT,
+            "GetFrameDirtyRects",
+            [
+                wintypes.UINT,                    # DirtyRectsBufferSize, bytes
+                ctypes.POINTER(wintypes.RECT),    # pDirtyRectsBuffer
+                ctypes.POINTER(wintypes.UINT),    # pDirtyRectsBufferSizeRequired
+            ],
+        ),
+        comtypes.STDMETHOD(
+            comtypes.HRESULT,
+            "GetFrameMoveRects",
+            [
+                wintypes.UINT,                                  # buffer size, bytes
+                ctypes.POINTER(DXGI_OUTDUPL_MOVE_RECT),         # pMoveRectBuffer
+                ctypes.POINTER(wintypes.UINT),                  # size required
+            ],
+        ),
         comtypes.STDMETHOD(
             comtypes.HRESULT, 
             "GetFramePointerShape", 
@@ -266,6 +382,62 @@ class IDXGIOutput1(IDXGIOutput):
             "DuplicateOutput",
             [
                 ctypes.POINTER(ID3D11Device),
+                ctypes.POINTER(ctypes.POINTER(IDXGIOutputDuplication)),
+            ],
+        ),
+    ]
+
+
+class IDXGIOutput2(IDXGIOutput1):
+    """
+    DXGI output interface version 2 (DXGI 1.3).
+    """
+    _iid_ = comtypes.GUID("{595e39d1-2724-4663-99b1-da969de28364}")
+    _methods_ = [
+        comtypes.STDMETHOD(wintypes.BOOL, "SupportsOverlays"),
+    ]
+
+
+class IDXGIOutput3(IDXGIOutput2):
+    """
+    DXGI output interface version 3 (DXGI 1.3).
+    """
+    _iid_ = comtypes.GUID("{8a6bb301-7e7e-41F4-a8e0-5b32f7f477b8}")
+    _methods_ = [
+        comtypes.STDMETHOD(comtypes.HRESULT, "CheckOverlaySupport"),
+    ]
+
+
+class IDXGIOutput4(IDXGIOutput3):
+    """
+    DXGI output interface version 4 (DXGI 1.4).
+    """
+    _iid_ = comtypes.GUID("{dc7dca35-2196-414d-9F53-617884032a60}")
+    _methods_ = [
+        comtypes.STDMETHOD(comtypes.HRESULT, "CheckOverlayColorSpaceSupport"),
+    ]
+
+
+class IDXGIOutput5(IDXGIOutput4):
+    """
+    DXGI output interface version 5 (DXGI 1.5).
+
+    Exposes ``DuplicateOutput1``, which unlike the legacy ``DuplicateOutput``
+    lets the caller state which surface formats it can consume. This is what
+    allows HDR (``R16G16B16A16_FLOAT``) desktops to be duplicated without the
+    runtime silently tone-mapping, and it is the path that reports protected
+    content via a distinguishable HRESULT rather than an opaque failure.
+    """
+    _iid_ = comtypes.GUID("{80A07424-AB52-42EB-833C-0C42FD282D98}")
+    _methods_ = [
+        comtypes.STDMETHOD(
+            comtypes.HRESULT,
+            "DuplicateOutput1",
+            [
+                ctypes.POINTER(ID3D11Device),
+                wintypes.UINT,                                       # Flags (reserved, must be 0)
+                wintypes.UINT,                                       # SupportedFormatsCount
+                ctypes.POINTER(wintypes.UINT),                       # pSupportedFormats
                 ctypes.POINTER(ctypes.POINTER(IDXGIOutputDuplication)),
             ],
         ),

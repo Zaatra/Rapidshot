@@ -35,11 +35,25 @@ class RapidShotDeviceError(RapidShotDXGIError):
     """
     pass
 
+class RapidShotProtectedContentError(RapidShotDXGIError):
+    """
+    Indicates the desktop could not be duplicated because protected
+    (HDCP/DRM) content is on screen.
+
+    This is a refusal by the OS, not a transient fault: retrying with the same
+    content on screen will fail identically, so callers should surface it to the
+    user (or skip/blank the affected region) rather than entering a re-init loop.
+    """
+    pass
+
 class RapidShotConfigError(RapidShotError):
     """
     Indicates a configuration error or invalid API call.
     """
-    pass
+    def __init__(self, message, hresult=None):
+        super().__init__(message)
+        self.hresult = hresult
+        self.message = message
 
 class RapidShotTimeoutError(RapidShotError):
     """

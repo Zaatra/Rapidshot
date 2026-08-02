@@ -1,0 +1,227 @@
+name: CI
+
+# Rapidshot is a Windows/DXGI library, so everything runs on windows-latest.
+#
+# What CI can and cannot check, stated plainly so results are read correctly:
+#
+#   * Pure-Python and processor logic  -> fully verified here.
+#   * GPU compute shaders              -> verified via WARP, Microsoft's software
+#                                         rasteriser. Functionally complete, so
+#                                         correctness holds; timings are useless.
+#   * Live desktop capture             -> NOT verifiable. GitHub runners have no
+#                                         desktop session, so Desktop Duplication
+#                                         has nothing to duplicate. Those tests
+#                                         skip themselves; they must be run on a
+#                                         real machine before a release.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The library must install and work with no Rust toolchain. If this job ever
+  # needs the native extension, the "optional extension" promise has been broken.
+  tests:
+    name: Tests (Python ${{ matrix.python }}, no native extension)
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.11", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest
+
+      - name: Import without a display or toolchain
+        run: |
+          python -c "import rapidshot; print('version', rapidshot.__version__)"
+          python -c "from rapidshot import native; assert not native.is_available(); print('native correctly reported unavailable')"
+
+      - name: Run tests
+        run: python -m pytest tests/ -v --tb=short
+
+  # Builds the optional extension and runs the tests it unlocks. Kept separate so
+  # a Rust or D3D failure cannot be mistaken for a core library failure.
+  native:
+    name: Native extension (Rust + D3D)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest
+
+      - name: Check formatting
+        working-directory: native
+        run: cargo fmt --check
+        continue-on-error: true
+
+      - name: Clippy
+        working-directory: native
+        run: cargo clippy --release -- -D warnings
+        continue-on-error: true
+
+      - name: Build
+        working-directory: native
+        run: cargo build --release
+
+      - name: Install into the package
+        run: python native/install_dev.py
+
+      - name: Run tests
+        # The GPU tests fall back to WARP when no adapter is present, so shader
+        # correctness is genuinely checked even on a GPU-less runner.
+        run: python -m pytest tests/ -v --tb=short
+
+  # Performance numbers, published so a regression is visible rather than argued
+  # about. Synthetic benchmarks only: the live ones need a desktop session.
+  benchmarks:
+    name: Benchmarks
+    runs-on: windows-latest
+    needs: tests
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Measure the noise floor
+        # Establishes what this runner can actually resolve. A shared CI runner
+        # is noisy, and a threshold that is not justified by a measured floor
+        # produces false regressions -- which is how benchmark suites get ignored.
+        run: python benchmarks/perf_suite.py --synthetic-only --rounds 3 --reps 20 --self-test
+
+      - name: Run benchmarks
+        run: python benchmarks/perf_suite.py --synthetic-only --rounds 5 --reps 25 --out benchmarks/ci-results.json
+
+      - name: Compare against the committed baseline
+        # Informational. CI hardware differs from the machine the baseline was
+        # recorded on, so a "regression" here is a prompt to look, not a failure.
+        run: python benchmarks/perf_suite.py --synthetic-only --rounds 3 --reps 20 --compare benchmarks/baseline.json
+        continue-on-error: true
+
+      - name: Verify the old and new conversions still agree
+        # This one is a correctness check wearing a benchmark's clothes: it fails
+        # if the optimised conversions stop matching the originals bit for bit.
+        run: python benchmarks/ab_conversion.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: benchmarks/ci-results.json
+
+  # Cheap checks that catch the kind of breakage nobody notices until a user hits it.
+  quality:
+    name: Docs and packaging
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: README code blocks must parse
+        shell: python
+        run: |
+          import ast, re, pathlib, sys
+          md = pathlib.Path("README.md").read_text(encoding="utf-8")
+          blocks = re.findall(r"```python\n(.*?)```", md, re.S)
+          bad = []
+          for i, block in enumerate(blocks, 1):
+              try:
+                  ast.parse(block)
+              except SyntaxError as exc:
+                  bad.append(f"block {i}: {exc}")
+          print(f"{len(blocks) - len(bad)}/{len(blocks)} python blocks parse")
+          if bad:
+              print("\n".join(bad))
+              sys.exit(1)
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Check package metadata
+        run: twine check dist/*
+
+      - name: Installed package must actually work
+        # This is the check that matters, and it must run from OUTSIDE the source
+        # tree. A `pyproject.toml` listing `packages = ["rapidshot"]` shipped a
+        # wheel containing five modules and none of the subpackages; from a
+        # checkout everything still imported off the local path, so the breakage
+        # was invisible until someone did a real `pip install`.
+        shell: pwsh
+        run: |
+          $whl = (Get-ChildItem dist/*.whl | Select-Object -First 1).FullName
+          python -m venv "$env:RUNNER_TEMP/verify"
+          & "$env:RUNNER_TEMP/verify/Scripts/python.exe" -m pip install --quiet $whl
+          Push-Location $env:RUNNER_TEMP
+          & "$env:RUNNER_TEMP/verify/Scripts/python.exe" -c @'
+          import os, rapidshot
+          print("loaded from:", os.path.dirname(rapidshot.__file__))
+          import rapidshot.core, rapidshot.processor, rapidshot.util, rapidshot._libs
+          from rapidshot import native
+          print("all subpackages import; native available:", native.is_available())
+          '@
+          if ($LASTEXITCODE -ne 0) { throw "installed package failed to import" }
+          Pop-Location
+
+      - name: Every module must be importable
+        # Guards against a subpackage being added but not shipped.
+        shell: python
+        run: |
+          import pathlib, sys
+          pkg = pathlib.Path("rapidshot")
+          missing = [
+              str(p) for p in pkg.rglob("__init__.py")
+              if "__pycache__" not in str(p)
+          ]
+          print(f"{len(missing)} packages in the source tree:")
+          for path in sorted(missing):
+              print("  ", path)
+          if len(missing) < 5:
+              print("expected at least 5 (rapidshot, core, processor, util, _libs)")
+              sys.exit(1)

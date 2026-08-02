@@ -3,7 +3,7 @@ import logging
 import sys
 from dataclasses import dataclass
 from typing import List, Optional
-import comtypes
+import comtypes  # type: ignore[import-untyped]
 from rapidshot._libs.d3d11 import *
 from rapidshot._libs.dxgi import *
 

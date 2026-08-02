@@ -5,13 +5,14 @@ with open("README.md", "r", encoding='utf-8') as f:
 
 setup(
     name="rapidshot",
-    version="1.1.0",
+    version="2.0.0",
     description="A high-performance screencapture library for Windows using Desktop Duplication API",
     packages=find_packages(),
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/Zaatra/Rapidshot",
     author="Rapidshot Contributors",
+    author_email="imzaatra@gmail.com",
     license="MIT",
     classifiers=[
         "Development Status :: 4 - Beta",
@@ -42,5 +43,5 @@ setup(
             "pillow>=8.0.0"
         ]
     },
-    python_requires=">=3.8",
+    python_requires=">=3.9",
 )

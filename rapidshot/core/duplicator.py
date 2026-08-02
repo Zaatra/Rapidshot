@@ -1,32 +1,47 @@
 import ctypes
+import logging
+import os
+import comtypes  # type: ignore[import-untyped]
 from rapidshot.util.logging import get_logger
 from time import sleep
-from dataclasses import dataclass, InitVar
-from typing import Tuple, Optional, Union
+from dataclasses import dataclass, field, InitVar
+from typing import List, Tuple, Optional, Union
 from rapidshot._libs.d3d11 import *
 from rapidshot._libs.dxgi import (
     DXGI_ERROR_ACCESS_LOST,
+    DXGI_ERROR_MORE_DATA,
     DXGI_ERROR_WAIT_TIMEOUT,
     DXGI_ERROR_DEVICE_REMOVED,
     DXGI_ERROR_DEVICE_RESET,
     DXGI_ERROR_INVALID_CALL,
     DXGI_ERROR_UNSUPPORTED,
     DXGI_ERROR_NOT_FOUND, # For cursor shape
+    DXGI_ERROR_SESSION_DISCONNECTED,
+    DXGI_RECOVERABLE_ERRORS,
+    DXGI_DEVICE_ERRORS,
+    DXGI_PROTECTED_CONTENT_ERRORS,
+    DXGI_FORMAT_B8G8R8A8_UNORM,
+    DXGI_FORMAT_R8G8B8A8_UNORM,
+    DXGI_FORMAT_R10G10B10A2_UNORM,
+    DXGI_FORMAT_R16G16B16A16_FLOAT,
     ABANDONED_MUTEX_EXCEPTION, # Already used
     IDXGIOutputDuplication,
+    IDXGIOutput5,
     DXGI_OUTDUPL_POINTER_POSITION,
     DXGI_OUTDUPL_POINTER_SHAPE_INFO,
     DXGI_OUTDUPL_FRAME_INFO,
     IDXGIResource,
-    ID3D11Texture2D,
+    RECT,
 )
 from rapidshot.core.device import Device
 from rapidshot.core.output import Output
 from rapidshot.util.errors import (
+    RapidShotError,
     RapidShotDXGIError,
     RapidShotReinitError,
     RapidShotDeviceError,
     RapidShotConfigError,
+    RapidShotProtectedContentError,
     RapidShotTimeoutError # Though timeout is handled locally, good to have if needed
 )
 
@@ -42,15 +57,50 @@ CURSOR_ERRORS = {
     "INTERFACE_ERROR": "Failed to access cursor interface"
 }
 
+# Formats offered to DuplicateOutput1, in preference order. The desktop is
+# normally BGRA8; the wider formats are listed so an HDR or 10-bit desktop
+# duplicates instead of failing outright.
+DUPLICATE_OUTPUT1_FORMATS = (
+    DXGI_FORMAT_B8G8R8A8_UNORM,
+    DXGI_FORMAT_R8G8B8A8_UNORM,
+    DXGI_FORMAT_R10G10B10A2_UNORM,
+    DXGI_FORMAT_R16G16B16A16_FLOAT,
+)
+
+# Env var escape hatch: set RAPIDSHOT_DUPLICATE_OUTPUT=legacy to force the
+# pre-1.5 DuplicateOutput path if a driver misbehaves on DuplicateOutput1.
+_DUPLICATE_OUTPUT_ENV = "RAPIDSHOT_DUPLICATE_OUTPUT"
+
+
+def _format_hresult(hresult) -> str:
+    """Render an HRESULT as 0x-prefixed hex, tolerating non-integer values."""
+    if isinstance(hresult, int):
+        return f"{hresult & 0xFFFFFFFF:#010x}"
+    return str(hresult)
+
+
+def _legacy_duplication_forced() -> bool:
+    """True if the env var asks for the pre-DuplicateOutput1 code path."""
+    return os.environ.get(_DUPLICATE_OUTPUT_ENV, "").strip().lower() in (
+        "legacy",
+        "0",
+        "duplicateoutput",
+    )
+
+
 @dataclass
 class Cursor:
     """
     Dataclass for cursor information.
     """
-    PointerPositionInfo: DXGI_OUTDUPL_POINTER_POSITION = DXGI_OUTDUPL_POINTER_POSITION()
-    PointerShapeInfo: DXGI_OUTDUPL_POINTER_SHAPE_INFO = DXGI_OUTDUPL_POINTER_SHAPE_INFO()
+    PointerPositionInfo: DXGI_OUTDUPL_POINTER_POSITION = field(
+        default_factory=DXGI_OUTDUPL_POINTER_POSITION
+    )
+    PointerShapeInfo: DXGI_OUTDUPL_POINTER_SHAPE_INFO = field(
+        default_factory=DXGI_OUTDUPL_POINTER_SHAPE_INFO
+    )
     Shape: bytes = None
-    
+
 
 @dataclass
 class Duplicator:
@@ -58,54 +108,172 @@ class Duplicator:
     Desktop Duplicator implementation.
     Handles frame and cursor acquisition from the Desktop Duplication API.
     """
-    texture: ctypes.POINTER(ID3D11Texture2D) = ctypes.POINTER(ID3D11Texture2D)()
+    texture: ctypes.POINTER(ID3D11Texture2D) = None
     duplicator: ctypes.POINTER(IDXGIOutputDuplication) = None
     updated: bool = False
     output: InitVar[Output] = None
     device: InitVar[Device] = None
     timeout_ms: int = 10  # Timeout for AcquireNextFrame in milliseconds
-    cursor: Cursor = Cursor()
+    cursor: Cursor = field(default_factory=Cursor)
     last_error: str = ""
     cursor_visible: bool = False
+    protected_content_detected: bool = False
+    used_duplicate_output1: bool = False
+    # QPC timestamp of the most recent frame with new content, and how many
+    # display updates DXGI coalesced into it. Both come straight from
+    # DXGI_OUTDUPL_FRAME_INFO and are what Stage 3's Frame metadata is built on.
+    last_present_time: int = 0
+    accumulated_frames: int = 0
+    # Regions the compositor redrew, in desktop coordinates. None means the
+    # metadata could not be read, which is not the same as an empty list.
+    dirty_rects: Optional[List[Tuple[int, int, int, int]]] = None
+    # True when the driver merged rects rather than reporting them individually,
+    # so the regions are an over-estimate of what actually changed.
+    rects_coalesced: bool = False
     _frame_acquired: bool = False
 
     def __post_init__(self, output: Output, device: Device) -> None:
         """
         Initialize the duplicator.
-        
+
         Args:
             output: Output to duplicate
             device: Device to use
         """
+        self.output = output
+        self.device = device
+        self.texture = ctypes.POINTER(ID3D11Texture2D)()
+
         try:
-            self.output = output
-            self.device = device
-            self.duplicator = ctypes.POINTER(IDXGIOutputDuplication)()
-            output.output.DuplicateOutput(device.device, ctypes.byref(self.duplicator))
-            logger.info(f"Duplicator initialized for output: {output.devicename}")
-            
+            self.duplicator, self.used_duplicate_output1 = self._create_duplication(
+                output, device
+            )
+            logger.info(
+                f"Duplicator initialized for output: {output.devicename} "
+                f"(DuplicateOutput1={self.used_duplicate_output1})"
+            )
+
             # Store output dimensions and rotation
             self._output_width, self._output_height = self.output.resolution
             self._rotation_angle = self.output.rotation_angle
-            
+
         except comtypes.COMError as ce:
             error_msg = f"Failed to initialize duplicator: {ce}"
             logger.error(error_msg)
             self.last_error = error_msg
-            # Map COMError to custom exceptions
-            hresult = ce.args[0] if ce.args else None
-            if hresult in (DXGI_ERROR_INVALID_CALL, DXGI_ERROR_UNSUPPORTED):
-                raise RapidShotConfigError(f"Failed to initialize duplicator due to configuration or invalid call: {ce}", hresult=hresult) from ce
-            elif hresult in (DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET):
-                raise RapidShotDeviceError(f"Failed to initialize duplicator due to device error: {ce}", hresult=hresult) from ce
-            else:
-                raise RapidShotDXGIError(f"Failed to initialize duplicator: {ce}", hresult=hresult) from ce
+            raise self._map_com_error(ce, "Failed to initialize duplicator") from ce
 
-    def update_frame(self) -> None:
+    def _create_duplication(
+        self, output: Output, device: Device
+    ) -> Tuple[ctypes.POINTER(IDXGIOutputDuplication), bool]:
+        """
+        Create the output duplication object.
+
+        Prefers ``IDXGIOutput5.DuplicateOutput1``, which accepts an explicit
+        list of formats the caller can consume (needed for HDR/10-bit desktops)
+        and reports protected-content refusals distinguishably. Falls back to
+        the legacy ``IDXGIOutput1.DuplicateOutput`` when IDXGIOutput5 is not
+        available (pre-Windows 10 1607 / older drivers) or when
+        ``RAPIDSHOT_DUPLICATE_OUTPUT=legacy`` is set.
+
+        Returns:
+            Tuple of (duplication interface, whether DuplicateOutput1 was used)
+        """
+        if _legacy_duplication_forced():
+            logger.info(
+                f"{_DUPLICATE_OUTPUT_ENV} requests the legacy path; "
+                "skipping DuplicateOutput1."
+            )
+        else:
+            try:
+                output5 = output.output.QueryInterface(IDXGIOutput5)
+            except comtypes.COMError as ce:
+                logger.info(
+                    "IDXGIOutput5 unavailable "
+                    f"(HRESULT {_format_hresult(ce.args[0] if ce.args else None)}); "
+                    "falling back to legacy DuplicateOutput."
+                )
+            else:
+                formats = (ctypes.c_uint * len(DUPLICATE_OUTPUT1_FORMATS))(
+                    *DUPLICATE_OUTPUT1_FORMATS
+                )
+                duplicator = ctypes.POINTER(IDXGIOutputDuplication)()
+                try:
+                    output5.DuplicateOutput1(
+                        device.device,
+                        0,  # Flags: reserved, must be zero
+                        len(DUPLICATE_OUTPUT1_FORMATS),
+                        formats,
+                        ctypes.byref(duplicator),
+                    )
+                    return duplicator, True
+                except comtypes.COMError as ce:
+                    hresult = ce.args[0] if ce.args else None
+                    if hresult in DXGI_PROTECTED_CONTENT_ERRORS:
+                        # Protected surfaces are a permanent refusal for this
+                        # output, not something the legacy path can work around.
+                        self.protected_content_detected = True
+                        raise RapidShotProtectedContentError(
+                            "Desktop duplication was denied because protected "
+                            "(HDCP/DRM) content is on screen. Close or move the "
+                            "protected player window and retry.",
+                            hresult=hresult,
+                        ) from ce
+                    logger.warning(
+                        "DuplicateOutput1 failed (HRESULT "
+                        f"{_format_hresult(hresult)}); falling back to legacy "
+                        "DuplicateOutput."
+                    )
+
+        duplicator = ctypes.POINTER(IDXGIOutputDuplication)()
+        output.output.DuplicateOutput(device.device, ctypes.byref(duplicator))
+        return duplicator, False
+
+    def _map_com_error(self, ce: "comtypes.COMError", context: str) -> RapidShotError:
+        """
+        Translate a COMError into the matching RapidShot exception type.
+
+        Centralised so every DXGI entry point classifies the same HRESULT the
+        same way: recoverable (rebuild duplication), device (rebuild device),
+        protected content, or configuration.
+        """
+        hresult = ce.args[0] if ce.args else None
+        detail = f"{context}: {ce}"
+
+        if hresult in DXGI_PROTECTED_CONTENT_ERRORS:
+            self.protected_content_detected = True
+            return RapidShotProtectedContentError(
+                f"{detail} (protected/HDCP content is blocking duplication)",
+                hresult=hresult,
+            )
+        if hresult in DXGI_DEVICE_ERRORS:
+            return RapidShotDeviceError(detail, hresult=hresult)
+        if hresult in DXGI_RECOVERABLE_ERRORS:
+            return RapidShotReinitError(detail, hresult=hresult)
+        if hresult in (DXGI_ERROR_INVALID_CALL, DXGI_ERROR_UNSUPPORTED):
+            return RapidShotConfigError(detail)
+        return RapidShotDXGIError(detail, hresult=hresult)
+
+    def update_frame(self) -> bool:
         """
         Update the frame and cursor state.
-        Sets self.updated to True if a new frame is available, False otherwise.
-        Raises exceptions for critical errors.
+
+        Sets ``self.updated`` to True if new frame content is available, False
+        otherwise (timeout, or an acquire that carried only a cursor move).
+
+        Returns:
+            True if the duplication object is still healthy — including the
+            timeout case, which is normal on a static desktop. Callers must read
+            ``self.updated`` to know whether a frame is actually present; a
+            False return means duplication is degraded and the frame path should
+            be skipped.
+
+        Raises:
+            RapidShotReinitError: duplication must be rebuilt (access lost,
+                session disconnected, display mode change).
+            RapidShotDeviceError: the D3D device is gone and must be recreated.
+            RapidShotProtectedContentError: protected content blocks capture.
+            RapidShotDXGIError: any other unexpected DXGI failure.
         """
         # Reset state for this update attempt
         self.updated = False
@@ -115,7 +283,12 @@ class Duplicator:
         info = DXGI_OUTDUPL_FRAME_INFO()
         res = ctypes.POINTER(IDXGIResource)()
         frame_acquired = False
-        
+
+        if self.duplicator is None:
+            self.last_error = "update_frame called on a released duplicator"
+            logger.debug(self.last_error)
+            return False
+
         try:
             # Acquire the next frame with a short timeout
             self.duplicator.AcquireNextFrame(
@@ -126,7 +299,20 @@ class Duplicator:
             frame_acquired = True
             self._frame_acquired = True
             logger.debug("Frame acquired successfully")
-            
+
+            # Protected (HDCP/DRM) content is blanked out by the compositor
+            # rather than failing the acquire. Surface it once so callers can
+            # tell "black frame" apart from "protected content was masked out".
+            if info.ProtectedContentMaskedOut:
+                if not self.protected_content_detected:
+                    logger.warning(
+                        "Protected (HDCP/DRM) content is on screen; the affected "
+                        "region is blanked out by the OS in captured frames."
+                    )
+                self.protected_content_detected = True
+            else:
+                self.protected_content_detected = False
+
             # FIX: Handle both LARGE_INTEGER and int types for LastMouseUpdateTime
             # Get the mouse update time safely
             if hasattr(info.LastMouseUpdateTime, 'QuadPart'):
@@ -162,10 +348,22 @@ class Duplicator:
                 self.updated = False
                 return True
 
+            self.last_present_time = last_present_time
+            self.accumulated_frames = info.AccumulatedFrames
+            # Read while the frame is still acquired: the metadata belongs to
+            # this frame and is gone after ReleaseFrame.
+            self.dirty_rects = self.get_frame_dirty_rects(info)
+            self.rects_coalesced = bool(info.RectsCoalesced)
+
             # Process the frame
             try:
-                queried_texture = res.QueryInterface(ID3D11Texture2D)
-                self.texture = queried_texture
+                # Drop the previous desktop image before taking a new reference.
+                # DXGI refuses the next AcquireNextFrame with
+                # DXGI_ERROR_INVALID_CALL while any reference to the prior
+                # frame's surface is still outstanding, so a stale self.texture
+                # stalls capture after the first couple of frames.
+                self.texture = None
+                self.texture = res.QueryInterface(ID3D11Texture2D)
                 self.updated = True
                 return True
             except comtypes.COMError as ce:
@@ -174,27 +372,44 @@ class Duplicator:
                 self.last_error = error_msg
                 self.updated = False
                 return True
-                
+
         except comtypes.COMError as ce:
             hresult = ce.args[0] if ce.args else None
-            self.last_error = f"COMError in update_frame: {ce} (HRESULT: {hresult:#010x if isinstance(hresult, int) else hresult})"
-            logger.warning(self.last_error)
+            self.last_error = (
+                f"COMError in update_frame: {ce} "
+                f"(HRESULT: {_format_hresult(hresult)})"
+            )
 
             if hresult == DXGI_ERROR_WAIT_TIMEOUT:
+                # Normal on a static desktop, not an error worth warning about.
                 logger.debug("Frame acquisition timed out.")
-                self.updated = False # No new frame
-                # Do not return here, finally block must execute
-            elif hresult == DXGI_ERROR_ACCESS_LOST or hresult == ABANDONED_MUTEX_EXCEPTION:
-                # ABANDONED_MUTEX_EXCEPTION (0x000002E8) can also indicate a state requiring reinitialization.
-                # self.release() # Release current resources, might be part of reinit logic higher up
-                raise RapidShotReinitError(f"Access lost, re-initialization needed: {ce}", hresult=hresult) from ce
-            elif hresult == DXGI_ERROR_DEVICE_REMOVED or hresult == DXGI_ERROR_DEVICE_RESET:
-                # self.release() # Release current resources
-                raise RapidShotDeviceError(f"Device error, re-initialization needed: {ce}", hresult=hresult) from ce
-            else:
-                # Other COM errors
-                raise RapidShotDXGIError(f"Unexpected DXGI error in update_frame: {ce}", hresult=hresult) from ce
-        
+                self.updated = False  # No new frame
+                return True  # finally: still runs and releases the resource
+
+            logger.warning(self.last_error)
+
+            if hresult in DXGI_RECOVERABLE_ERRORS:
+                # Access lost / session disconnected / mode change in progress.
+                # The duplication object is dead: drop it here so the caller
+                # cannot keep issuing calls against a stale interface, and so a
+                # rebuild starts from a clean slate.
+                if hresult == DXGI_ERROR_SESSION_DISCONNECTED:
+                    reason = "Session disconnected (RDP/fast user switch)"
+                else:
+                    reason = "Access lost"
+                self._release_duplication()
+                raise RapidShotReinitError(
+                    f"{reason}, re-initialization needed: {ce}", hresult=hresult
+                ) from ce
+
+            if hresult in DXGI_DEVICE_ERRORS:
+                self._release_duplication()
+                raise RapidShotDeviceError(
+                    f"Device error, re-initialization needed: {ce}", hresult=hresult
+                ) from ce
+
+            raise self._map_com_error(ce, "Unexpected DXGI error in update_frame") from ce
+
         except Exception as e:
             # Catch any other unexpected Python exceptions to ensure cleanup
             self.last_error = f"Python exception in update_frame: {e}"
@@ -203,12 +418,11 @@ class Duplicator:
             raise RapidShotError(f"Unhandled Python exception in update_frame: {e}") from e # Wrap in RapidShotError
         
         finally:
-            # Release the intermediate IDXGIResource reference created by AcquireNextFrame
-            if frame_acquired and res:
-                try:
-                    res.Release()
-                except Exception as e:
-                    logger.warning(f"Failed to release resource: {e}")
+            # The intermediate IDXGIResource is a comtypes COM pointer, so its
+            # reference is dropped automatically when `res` goes out of scope.
+            # Calling Release() by hand here (as this used to) decremented the
+            # count a second time and corrupted the desktop surface's refcount.
+            res = None
 
     # Add this method to provide compatibility with capture.py
     def get_frame(self):
@@ -269,23 +483,57 @@ class Duplicator:
             logger.debug("ReleaseFrame called with no active frame")
             return
 
-        if self.duplicator is not None:
-            try:
-                self.duplicator.ReleaseFrame()
-                self._frame_acquired = False
-                logger.debug("Frame released")
-            except comtypes.COMError as ce:
-                # Don't log as warning for specific known error code
-                if ce.args and ce.args[0] == -2005270527:
-                    logger.debug(f"Frame already released: {ce}")
-                else:
-                    logger.warning(f"Failed to release frame: {ce} (HRESULT: {ce.args[0]:#010x if ce.args else 'N/A'})")
-                    # Not raising custom error here as it's a cleanup step, but logging is important.
-                    # If specific HRESULTs here are critical, they could be mapped.
-                    self.last_error = f"Failed to release frame: {ce}" # Keep last_error for simple errors
-            except Exception as e: # Catch non-COM errors during ReleaseFrame
-                logger.warning(f"Unexpected Python error releasing frame: {e}")
-                self.last_error = f"Unexpected Python error releasing frame: {e}"
+        # The acquired texture is only valid between AcquireNextFrame and
+        # ReleaseFrame. Drop our reference first so DXGI sees no outstanding
+        # references to the desktop image; comtypes issues the COM Release.
+        self.texture = None
+
+        if self.duplicator is None:
+            self._frame_acquired = False
+            return
+
+        try:
+            self.duplicator.ReleaseFrame()
+            logger.debug("Frame released")
+        except comtypes.COMError as ce:
+            hresult = ce.args[0] if ce.args else None
+            # Don't log as warning for specific known error code
+            if hresult == DXGI_ERROR_INVALID_CALL:
+                logger.debug(f"Frame already released: {ce}")
+            else:
+                logger.warning(
+                    f"Failed to release frame: {ce} "
+                    f"(HRESULT: {_format_hresult(hresult)})"
+                )
+                # Not raising custom error here as it's a cleanup step, but logging is important.
+                # If specific HRESULTs here are critical, they could be mapped.
+                self.last_error = f"Failed to release frame: {ce}" # Keep last_error for simple errors
+        except Exception as e: # Catch non-COM errors during ReleaseFrame
+            logger.warning(f"Unexpected Python error releasing frame: {e}")
+            self.last_error = f"Unexpected Python error releasing frame: {e}"
+        finally:
+            # Always clear the flag: if ReleaseFrame failed we must not retry it
+            # against the same frame, and holding the flag would make every
+            # later acquire look like a leak.
+            self._frame_acquired = False
+
+    def _release_duplication(self) -> None:
+        """
+        Drop the duplication interface without touching device/output state.
+
+        Used on access-lost style failures so no further calls are issued
+        against an interface DXGI has already invalidated.
+        """
+        duplicator, self.duplicator = self.duplicator, None
+        self._frame_acquired = False
+        self.updated = False
+        self.texture = None
+        if duplicator is None:
+            return
+        try:
+            duplicator.Release()
+        except Exception as e:
+            logger.debug(f"Ignoring error releasing invalidated duplication: {e}")
 
 
     def release(self) -> None:
@@ -293,12 +541,19 @@ class Duplicator:
         Release all duplicator resources.
         """
         if self.duplicator is not None:
+            # Drop any frame still held, otherwise DXGI can keep the desktop
+            # surface pinned after the duplication object goes away.
+            if self._frame_acquired:
+                self.release_frame()
             try:
                 self.duplicator.Release()
                 logger.info("Duplicator resources released.")
             except comtypes.COMError as ce:
                 hresult = ce.args[0] if ce.args else None
-                error_msg = f"Failed to release duplicator: {ce} (HRESULT: {hresult:#010x if isinstance(hresult, int) else hresult})"
+                error_msg = (
+                    f"Failed to release duplicator: {ce} "
+                    f"(HRESULT: {_format_hresult(hresult)})"
+                )
                 logger.warning(error_msg)
                 # Set last_error but don't necessarily raise; this is a cleanup.
                 # If this fails, often the parent (ScreenCapture) will try to release Device too.
@@ -310,6 +565,74 @@ class Duplicator:
             finally: # Ensure self.duplicator is set to None even if Release() fails somehow
                 self.duplicator = None
                 self._frame_acquired = False
+
+    def get_frame_dirty_rects(self, frame_info) -> Optional[List[Tuple[int, int, int, int]]]:
+        """
+        Regions the compositor redrew in this frame, in desktop coordinates.
+
+        Must be called while the frame is acquired — between AcquireNextFrame
+        and ReleaseFrame — because the metadata belongs to that frame.
+
+        ``TotalMetadataBufferSize`` is an upper bound covering move rects *and*
+        dirty rects together, so sizing the buffer from it is always safe; DXGI
+        reports how much it actually used.
+
+        Returns:
+            A list of ``(left, top, right, bottom)`` tuples. Empty means the
+            frame carried no dirty-rect metadata, which is not the same as
+            "nothing changed": a mode change or a driver that coalesces
+            aggressively can report none while the whole screen differs. None is
+            returned when the metadata could not be read at all, so callers can
+            tell "no rects" from "unknown".
+        """
+        if self.duplicator is None or not self._frame_acquired:
+            return None
+
+        capacity = getattr(frame_info, "TotalMetadataBufferSize", 0)
+        if not capacity:
+            return []
+
+        rect_size = ctypes.sizeof(RECT)
+
+        try:
+            for _ in range(2):
+                count = max(1, capacity // rect_size)
+                buffer = (RECT * count)()
+                used = ctypes.c_uint(0)
+                try:
+                    self.duplicator.GetFrameDirtyRects(
+                        count * rect_size,
+                        ctypes.cast(buffer, ctypes.POINTER(RECT)),
+                        ctypes.byref(used),
+                    )
+                except comtypes.COMError as ce:
+                    hresult = ce.args[0] if ce.args else None
+                    if hresult == DXGI_ERROR_MORE_DATA:
+                        # DXGI wrote nothing and told us the size it needs.
+                        # Retry once at that size rather than looping blindly.
+                        capacity = used.value
+                        if capacity == 0:
+                            return None
+                        continue
+                    raise
+
+                return [
+                    (r.left, r.top, r.right, r.bottom)
+                    for r in buffer[: used.value // rect_size]
+                ]
+            return None
+        except comtypes.COMError as ce:
+            hresult = ce.args[0] if ce.args else None
+            self.last_error = (
+                f"COMError in get_frame_dirty_rects: {ce} "
+                f"(HRESULT: {_format_hresult(hresult)})"
+            )
+            logger.debug(self.last_error)
+            if hresult in DXGI_RECOVERABLE_ERRORS or hresult in DXGI_DEVICE_ERRORS:
+                # These mean the duplicator is dead; update_frame's handler owns
+                # the recovery, so do not swallow them here.
+                raise
+            return None
 
     def get_frame_pointer_shape(self, frame_info) -> Union[Tuple[DXGI_OUTDUPL_POINTER_SHAPE_INFO, bytes, str], Tuple[bool, bool, str]]:
         """
@@ -356,7 +679,10 @@ class Duplicator:
                 
         except comtypes.COMError as ce:
             hresult = ce.args[0] if ce.args else None
-            self.last_error = f"COMError in get_frame_pointer_shape: {ce} (HRESULT: {hresult:#010x if isinstance(hresult, int) else hresult})"
+            self.last_error = (
+                f"COMError in get_frame_pointer_shape: {ce} "
+                f"(HRESULT: {_format_hresult(hresult)})"
+            )
             logger.warning(self.last_error)
 
             if hresult == DXGI_ERROR_ACCESS_LOST:
@@ -366,7 +692,9 @@ class Duplicator:
                 raise # Re-raise to be caught by update_frame's COMError handler
             elif hresult == DXGI_ERROR_NOT_FOUND:
                 # This is a common case, not necessarily a critical error for the duplicator itself.
-                return False, False, f"Cursor shape not found (HRESULT: {hresult:#010x})"
+                return False, False, (
+                    f"Cursor shape not found (HRESULT: {_format_hresult(hresult)})"
+                )
             # Other errors are logged and returned as failure.
             return False, False, self.last_error
             

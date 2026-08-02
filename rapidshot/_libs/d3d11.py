@@ -1,6 +1,6 @@
 import ctypes
 import ctypes.wintypes as wintypes
-import comtypes
+import comtypes  # type: ignore[import-untyped]
 
 
 D3D11_CPU_ACCESS_WRITE = 0x10000

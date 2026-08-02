@@ -2,17 +2,23 @@ import time
 import ctypes
 from typing import Tuple, Optional, Union, List, Any
 from threading import Thread, Event, Lock, current_thread
-import comtypes
+import comtypes  # type: ignore[import-untyped]
 import numpy as np
 import logging
 from rapidshot.util.logging import get_logger
-from rapidshot.memory_pool import NumpyMemoryPool, CupyMemoryPool, PoolExhaustedError
+from rapidshot.memory_pool import (
+    NumpyMemoryPool,
+    CupyMemoryPool,
+    PooledBuffer,
+    PoolExhaustedError,
+)
 from rapidshot.util.errors import ( # Added for Phase 2
     RapidShotError,
     RapidShotDXGIError,
     RapidShotReinitError,
     RapidShotDeviceError,
-    RapidShotConfigError
+    RapidShotConfigError,
+    RapidShotProtectedContentError,
 )
 from rapidshot.core.device import Device
 from rapidshot.core.output import Output
@@ -20,6 +26,7 @@ from rapidshot.core.stagesurf import StageSurface
 from rapidshot.core.duplicator import Duplicator
 from rapidshot._libs.d3d11 import D3D11_BOX
 from rapidshot.processor import Processor
+from rapidshot.util.ctypes_helpers import describe_destination
 import collections # Added for deque
 from rapidshot.util.timer import (
     create_high_resolution_timer,
@@ -36,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 # Try to import CuPy for GPU acceleration
 try:
-    import cupy as cp
+    import cupy as cp  # type: ignore[import-not-found]
     CUPY_AVAILABLE = True
 except ImportError:
     CUPY_AVAILABLE = False
@@ -51,10 +58,11 @@ class ScreenCapture:
         nvidia_gpu: bool = False,
         max_buffer_len: int = 64, # This is for the continuous mode ring buffer
         pool_size_frames: int = 10, # New parameter for memory pool
+        pool_output: bool = True,
     ) -> None:
         """
         Initialize a ScreenCapture instance.
-        
+
         Args:
             output: Output device to capture from
             device: Device interface
@@ -63,8 +71,27 @@ class ScreenCapture:
             nvidia_gpu: Whether to use NVIDIA GPU acceleration
             max_buffer_len: Maximum buffer length for continuous mode capture
             pool_size_frames: Number of buffers in the memory pool for grab()
+            pool_output: Reuse buffers for the converted frame instead of
+                allocating one per frame. Saves ~1.6 ms on a 1080p RGB frame --
+                the page faults on first touch cost more than the conversion.
+                ``grab()`` then returns a ``PooledBuffer``, which behaves like
+                the array for indexing and ``np.asarray`` but **must** be
+                released when done. Pass False for the pre-2.0 behaviour of
+                returning a freshly allocated array that needs no release.
         """
         # Initialize basic attributes first to prevent errors during cleanup if initialization fails
+        self._output = output
+        self._device = device
+        self._duplicator = None
+        self._stagesurf = None
+        self._processor = None
+        self._pool_output = pool_output
+        self._output_pool = None
+        self._output_pool_size = pool_size_frames
+        # Outstanding GPU frame handed out by grab_frame(). Capture cannot
+        # acquire again until it is released, so this is tracked explicitly to
+        # give a clear error instead of an opaque DXGI_ERROR_INVALID_CALL.
+        self._live_frame = None
         self.is_capturing = False
         self._capture_thread = None 
         self._capture_lock = Lock() 
@@ -99,6 +126,10 @@ class ScreenCapture:
         self._reinit_attempts = 0
         self._max_reinit_attempts = 5
         self._reinit_backoff_seconds = [0.5, 1.0, 2.0, 3.0, 5.0] # Or generate dynamically
+        # Exclusive-fullscreen / mode-switch transitions can refuse duplication
+        # for a few hundred ms. Bound the retries so a permanent refusal fails
+        # loudly instead of spinning forever.
+        self._max_output_change_retries = 12
         self._capture_permanently_failed = False
         self._last_capture_error_message = ""
         
@@ -240,13 +271,13 @@ class ScreenCapture:
             if self.is_capturing and self.continuous_mode:
                 if self._pooled_frames_deque is not None:
                     logger.debug("Clearing continuous mode frame deque due to re-initialization.")
-                    # Buffers should be released by memory_pool.destroy_pool if they were checked out.
-                    # If they are still in the deque, they need explicit release.
+                    # Buffers must go back to the old pool before it is destroyed,
+                    # otherwise their release() targets a pool that no longer exists.
                     with self._capture_lock:
-                        while self._pooled_frames_deque:
-                            buf_wrapper = self._pooled_frames_deque.popleft()
-                            buf_wrapper.release() # Ensure they are returned to the (old) pool before it's gone
-                    self._pooled_frames_deque = collections.deque(maxlen=self.max_buffer_len)
+                        stale_frames = list(self._pooled_frames_deque)
+                        self._pooled_frames_deque = collections.deque(maxlen=self.max_buffer_len)
+                    for frame in stale_frames:
+                        self._discard_frame(frame)
                 self._frame_available_event.clear()
 
 
@@ -361,6 +392,11 @@ class ScreenCapture:
             a NumPy/CuPy array (if pool was bypassed or buffer became invalid), 
             or None if no update or error.
         """
+        # Checked here rather than inside _grab(): that method has a catch-all
+        # handler which would swallow this into a None return, hiding a caller
+        # bug that stalls capture.
+        self._ensure_no_live_frame("grab()")
+
         # Continuous mode grabbing is handled by __capture thread and get_latest_frame
         if self.is_capturing and self.continuous_mode:
              logger.warning("grab() called in continuous mode. Use get_latest_frame() instead.")
@@ -374,6 +410,177 @@ class ScreenCapture:
 
         return self._grab(current_region_tuple)
 
+    def _checkout_output_buffer(self, width: int, height: int):
+        """A pooled buffer for the converted frame, or None if not in use.
+
+        On by default since 2.0. The buffer must be released by whoever receives
+        it; ``rapidshot.create(pool_output=False)`` restores the pre-2.0
+        behaviour of allocating a fresh array per frame, which costs ~1.6 ms on
+        a 1080p RGB frame but needs no release.
+        """
+        if not self._pool_output or not self._processor.converts_output:
+            return None
+
+        shape = (height, width, self._processor.output_channels)
+        pool = self._output_pool
+        if pool is None or tuple(pool.buffer_shape) != shape:
+            if pool is not None:
+                pool.destroy_pool()
+            from rapidshot.memory_pool import NumpyMemoryPool
+            pool = NumpyMemoryPool(shape, np.uint8, self._output_pool_size)
+            self._output_pool = pool
+        try:
+            return pool.checkout()
+        except PoolExhaustedError:
+            # Every buffer is still out with a caller. Fall back to allocating,
+            # which is slower but always correct -- far better than blocking
+            # capture or recycling a buffer somebody is still reading.
+            logger.debug("Output pool exhausted; allocating for this frame.")
+            return None
+
+    def _sync_accumulator_region(self, memory_region) -> None:
+        """Drop the accumulated frame when the captured region moves.
+
+        Shape alone is not identity. Alternating between two same-sized regions
+        would otherwise patch one region's dirty rects onto the other region's
+        pixels — the accumulator would look the right size and hold a blend of
+        two places on screen.
+        """
+        if getattr(self, "_accumulator_region", None) != memory_region:
+            invalidate = getattr(self._processor, "invalidate_accumulator", None)
+            if invalidate is not None:
+                invalidate()
+            self._accumulator_region = memory_region
+
+    def _dirty_rects_for(self, memory_region) -> Optional[list]:
+        """This frame's dirty rects, translated into the staging surface.
+
+        DXGI reports them in desktop coordinates, but the staging surface holds
+        only ``memory_region`` — ``CopySubresourceRegion`` already cropped it.
+        So the rects have to be clipped to that region and rebased to its
+        top-left, or they would address the wrong pixels whenever a region is in
+        use, and outside the buffer entirely when it is off-origin.
+
+        Returns None when the metadata is unavailable, which the processor
+        reads as "convert everything".
+        """
+        rects = getattr(self._duplicator, "dirty_rects", None)
+        if not rects:
+            return rects if rects is None else []
+
+        left, top, right, bottom = memory_region
+        clipped = []
+        for rl, rt, rr, rb in rects:
+            nl, nt = max(rl, left), max(rt, top)
+            nr, nb = min(rr, right), min(rb, bottom)
+            if nl < nr and nt < nb:
+                clipped.append((nl - left, nt - top, nr - left, nb - top))
+        return clipped
+
+    def _ensure_no_live_frame(self, caller: str) -> None:
+        """
+        Refuse to start a capture while a Frame still holds the desktop texture.
+
+        DXGI would fail the acquire with DXGI_ERROR_INVALID_CALL, which gives no
+        hint about the actual cause. Failing here names the problem instead.
+        """
+        live = self._live_frame
+        if live is not None and not live.released:
+            raise RuntimeError(
+                f"{caller} cannot start: a Frame from grab_frame() has not been "
+                "released. DXGI cannot acquire the next frame while a reference "
+                "to the previous desktop surface is outstanding. Use `with "
+                "camera.grab_frame() as frame:` so release happens automatically."
+            )
+        self._live_frame = None
+
+    def grab_frame(self, region: Optional[Tuple[int, int, int, int]] = None):
+        """
+        Capture a frame and hand back its GPU texture, skipping the CPU copy.
+
+        This is the GPU-resident path. Unlike :meth:`grab`, no staging read and
+        no color conversion happen — the caller receives the ``ID3D11Texture2D``
+        DXGI produced, ready to pass to a GPU consumer (inference runtime,
+        hardware encoder).
+
+        The returned :class:`~rapidshot.frame.Frame` owns that texture for a
+        bounded window and **must be released**. DXGI cannot acquire the next
+        frame while a reference to the previous surface is outstanding, so a
+        frame that is never released stalls capture completely. Use it as a
+        context manager::
+
+            with camera.grab_frame() as frame:
+                do_gpu_work(frame.d3d11_texture)
+
+        Args:
+            region: Region metadata for the frame (left, top, right, bottom).
+                Note the texture is the full desktop surface; the region is
+                recorded on the frame rather than applied to the texture, since
+                cropping would require a GPU copy this path exists to avoid.
+
+        Returns:
+            A Frame, or None if no new content was available.
+
+        Raises:
+            RuntimeError: If a previous Frame has not been released yet.
+        """
+        from rapidshot.frame import Frame
+
+        self._ensure_no_live_frame("grab_frame()")
+
+        if region is None:
+            region = self.region
+        else:
+            region = self._normalize_region(region)
+
+        if self._capture_permanently_failed:
+            logger.error(f"Capture permanently failed: {self._last_capture_error_message}")
+            return None
+
+        if self._needs_reinit and not self._attempt_reinitialization():
+            return None
+
+        if not self._is_initialized or self._duplicator is None:
+            logger.error("grab_frame() called but capture resources are not initialized.")
+            self._needs_reinit = True
+            return None
+
+        try:
+            self._duplicator.update_frame()
+        except RapidShotProtectedContentError as e:
+            logger.error(f"Protected content blocks capture: {e}")
+            self._last_capture_error_message = str(e)
+            return None
+        except (RapidShotReinitError, RapidShotDeviceError) as e:
+            logger.warning(f"grab_frame(): {e}. Flagging for re-initialization.")
+            self._needs_reinit = True
+            return None
+        except RapidShotError as e:
+            logger.error(f"grab_frame(): {e}")
+            return None
+
+        if not self._duplicator.updated:
+            # No new content. Any frame that was acquired still has to go back.
+            if self._duplicator._frame_acquired:
+                self._duplicator.release_frame()
+            return None
+
+        duplicator = self._duplicator
+        frame = Frame(
+            texture=duplicator.texture,
+            on_release=duplicator.release_frame,
+            region=region,
+            rotation_angle=self.rotation_angle,
+            present_time_qpc=duplicator.last_present_time,
+            accumulated_frames=duplicator.accumulated_frames,
+            protected_content=duplicator.protected_content_detected,
+            cursor_visible=duplicator.cursor_visible,
+            dirty_rects=duplicator.dirty_rects,
+            rects_coalesced=duplicator.rects_coalesced,
+        )
+        self._live_frame = frame
+        return frame
+
     def grab_cursor(self):
         """
         Get cursor information.
@@ -383,43 +590,153 @@ class ScreenCapture:
         """
         return self._duplicator.cursor
 
-    def shot(self, image_ptr: Any, region: Optional[Tuple[int, int, int, int]] = None) -> bool:
+    def shot(
+        self,
+        image_ptr: Any,
+        region: Optional[Tuple[int, int, int, int]] = None,
+        buffer_size: Optional[int] = None,
+    ) -> bool:
         """
-        Capture directly to a provided memory buffer.
-        
+        Capture directly into a caller-provided memory buffer.
+
+        The buffer receives pixels in this instance's ``output_color`` format,
+        matching what :meth:`grab` returns. Size it as
+        ``width * height * channels`` where ``channels`` is 4 for BGRA/RGBA,
+        3 for RGB/BGR and 1 for GRAY -- :attr:`bytes_per_frame` computes this
+        for you.
+
+        Prefer passing a NumPy array (or any sized buffer object): its size is
+        read directly and validated before anything is written. A bare pointer
+        carries no size, so one is only accepted together with ``buffer_size``.
+
         Args:
-            image_ptr: Pointer to image buffer (must be properly sized for the region)
+            image_ptr: Destination buffer -- a NumPy array, ctypes array,
+                bytearray/memoryview, or a raw pointer plus ``buffer_size``
             region: Region to capture (left, top, right, bottom)
-            
+            buffer_size: Destination size in bytes; required only for raw pointers
+
         Returns:
-            True if successful, False otherwise
+            True if a new frame was written, False if there was no new content
+            or the capture failed
+
+        Raises:
+            ValueError: If the destination is too small or its size is unknowable
         """
         if image_ptr is None:
             raise ValueError("image_ptr cannot be None")
-            
+
         if region is None:
             region = self.region
         else:
             self._validate_region(region)
-            
-        return self._shot(image_ptr, region)
 
-    def _shot(self, image_ptr, region: Tuple[int, int, int, int]) -> bool:
+        # Validate the destination up front, before any capture work. Deferring
+        # this to the processor would make it fire only on the calls that
+        # actually receive new frame content -- so an undersized buffer would
+        # quietly return False on a static desktop and only raise later, once
+        # something on screen happened to change.
+        self._validate_destination(image_ptr, region, buffer_size)
+
+        return self._shot(image_ptr, region, buffer_size)
+
+    def _validate_destination(self, image_ptr, region, buffer_size) -> int:
+        """
+        Check that a shot() destination is large enough, before capturing.
+
+        Args:
+            image_ptr: Destination buffer or pointer
+            region: Region that will be captured
+            buffer_size: Caller-declared size in bytes, if any
+
+        Returns:
+            The required size in bytes
+
+        Raises:
+            ValueError: If the destination is too small, or its size is unknown
+        """
+        required = self.bytes_per_frame(region)
+        _, detected_size = describe_destination(image_ptr)
+
+        known_sizes = [s for s in (detected_size, buffer_size) if s is not None]
+        if not known_sizes:
+            raise ValueError(
+                f"Cannot verify destination size for shot(): {region[2] - region[0]}x"
+                f"{region[3] - region[1]} in {self.output_color} needs {required} "
+                "bytes. Pass a NumPy array (or any sized buffer), or supply "
+                "buffer_size explicitly -- writing through an unsized pointer "
+                "risks corrupting memory."
+            )
+
+        smallest = min(known_sizes)
+        if smallest < required:
+            raise ValueError(
+                f"Destination buffer is too small for shot(): {smallest} bytes "
+                f"provided, {required} needed for {region[2] - region[0]}x"
+                f"{region[3] - region[1]} in {self.output_color} "
+                f"({self.channels} channel(s))."
+            )
+        return required
+
+    @property
+    def channels(self) -> int:
+        """Number of channels frames from this instance carry."""
+        return self._processor.output_channels
+
+    def bytes_per_frame(self, region: Optional[Tuple[int, int, int, int]] = None) -> int:
+        """
+        Size in bytes that :meth:`shot` writes for *region*.
+
+        Use this to allocate a destination buffer that is guaranteed to fit.
+
+        Args:
+            region: Region to measure; defaults to this instance's region
+
+        Returns:
+            Required buffer size in bytes
+        """
+        if region is None:
+            region = self.region
+        else:
+            region = self._normalize_region(region)
+        width = region[2] - region[0]
+        height = region[3] - region[1]
+        return width * height * self.channels
+
+    def _shot(
+        self,
+        image_ptr,
+        region: Tuple[int, int, int, int],
+        buffer_size: Optional[int] = None,
+    ) -> bool:
         """
         Internal implementation of shot.
-        
+
         Args:
-            image_ptr: Pointer to image buffer
+            image_ptr: Destination buffer or pointer to one
             region: Region to capture (left, top, right, bottom)
-            
+            buffer_size: Destination size in bytes, if known
+
         Returns:
             True if successful, False otherwise
         """
-        if self._duplicator.update_frame():
+        self._ensure_no_live_frame("shot()")
+
+        try:
+            duplication_healthy = self._duplicator.update_frame()
+        except (RapidShotReinitError, RapidShotDeviceError) as e:
+            # Access lost / device reset: rebuild, then let the caller retry.
+            logger.warning(f"shot(): {e}. Rebuilding capture resources.")
+            self._on_output_change()
+            return False
+
+        if duplication_healthy:
             frame_needs_release = self._duplicator._frame_acquired
             mapped_rect = None
             try:
                 if not self._duplicator.updated:
+                    # No new content within the acquire timeout. That is the
+                    # normal state of a static desktop, not an output change --
+                    # rebuilding here used to stall every idle shot() call.
                     return False
 
                 _region = self.region_to_memory_region(region, self.rotation_angle, self._output)
@@ -456,7 +773,13 @@ class ScreenCapture:
 
                 mapped_rect = self._stagesurf.map()
                 try:
-                    self._processor.process2(image_ptr, mapped_rect, self.shot_w, self.shot_h)
+                    self._processor.process2(
+                        image_ptr,
+                        mapped_rect,
+                        _width,
+                        _height,
+                        buffer_size,
+                    )
                 finally:
                     self._stagesurf.unmap()
                 return True
@@ -496,6 +819,7 @@ class ScreenCapture:
                 return None
 
             pooled_buffer_wrapper = None
+            output_wrapper = None
             output_array_for_region = None
             can_use_pool = False
 
@@ -537,6 +861,16 @@ class ScreenCapture:
             except RapidShotDeviceError as e:
                 logger.error(f"DXGI Device error during update_frame: {e}. Flagging for re-initialization.")
                 self._needs_reinit = True
+                if self._duplicator._frame_acquired:
+                    self._duplicator.release_frame()
+                if pooled_buffer_wrapper:
+                    pooled_buffer_wrapper.release()
+                return None
+            except RapidShotProtectedContentError as e:
+                # Not recoverable by retrying: the OS is refusing while the
+                # protected surface is on screen. Do not enter the re-init loop.
+                logger.error(f"Protected content blocks capture: {e}")
+                self._last_capture_error_message = str(e)
                 if self._duplicator._frame_acquired:
                     self._duplicator.release_frame()
                 if pooled_buffer_wrapper:
@@ -618,6 +952,8 @@ class ScreenCapture:
                     self._duplicator.release_frame()
                     frame_needs_release = False
 
+                self._sync_accumulator_region(memory_region)
+                output_wrapper = self._checkout_output_buffer(region_width, region_height)
                 mapped_rect = self._stagesurf.map()
                 final_array, is_pooled_buffer_still_valid = self._processor.process(
                     mapped_rect,
@@ -626,12 +962,28 @@ class ScreenCapture:
                     (0, 0, region_width, region_height),
                     self.rotation_angle,
                     output_array_for_region,
+                    dirty_rects=self._dirty_rects_for(memory_region),
+                    output_target=None if output_wrapper is None else output_wrapper.array,
                 )
             finally:
                 if mapped_rect is not None:
                     self._stagesurf.unmap()
                 if frame_needs_release and self._duplicator._frame_acquired:
                     self._duplicator.release_frame()
+
+            if output_wrapper is not None:
+                # The converted frame went into a pooled output buffer. The BGRA
+                # staging buffer is finished with either way; the output buffer
+                # is the caller's until they release it.
+                if pooled_buffer_wrapper:
+                    pooled_buffer_wrapper.release()
+                if is_pooled_buffer_still_valid and final_array is output_wrapper.array:
+                    return output_wrapper
+                # The processor declined the target (rotation, or a shape it
+                # would not write). Hand the buffer straight back rather than
+                # leaking it, and return whatever was actually produced.
+                output_wrapper.release()
+                return final_array
 
             if can_use_pool and pooled_buffer_wrapper:
                 if is_pooled_buffer_still_valid:
@@ -658,28 +1010,73 @@ class ScreenCapture:
             self._last_capture_error_message = f"Unexpected error in _grab: {str(e)}"
             return None
 
-    def _on_output_change(self):
+    def _on_output_change(self) -> bool:
         """
-        Handle display mode changes.
+        Rebuild duplication after a display mode change or access loss.
+
+        This is the exclusive-fullscreen path: when a game takes or releases
+        exclusive fullscreen, DXGI invalidates the duplication object and
+        refuses to hand out a new one until the mode switch settles. Retrying
+        immediately in a tight loop (the previous behaviour) either spins the
+        CPU or hangs the caller forever, and the surviving stale stage surface
+        is what surfaced as the "black screen in fullscreen" symptom.
+
+        Returns:
+            True if duplication was rebuilt, False if it could not be within
+            the retry budget (caller should treat capture as degraded).
         """
         time.sleep(0.1)  # Wait for Display mode change (Access Lost)
-        self._duplicator.release()
-        self._stagesurf.release()
+
+        if self._duplicator is not None:
+            self._duplicator.release()
+            self._duplicator = None
+        if self._stagesurf is not None:
+            # Must be released, not just rebuilt: after a mode switch the old
+            # staging texture is still sized for the previous resolution, and
+            # StageSurface.rebuild() keeps an existing texture as-is.
+            self._stagesurf.release()
+
         self._output.update_desc()
         self.width, self.height = self._output.resolution
         if self.region is None or not self._region_set_by_user:
             self.region = (0, 0, self.width, self.height)
         self._validate_region(self.region)
+        self.rotation_angle = self._output.rotation_angle
         if self.is_capturing:
             self._rebuild_frame_buffer(self.region)
-        self.rotation_angle = self._output.rotation_angle
-        while True:
+
+        for attempt in range(self._max_output_change_retries):
             try:
                 self._stagesurf.rebuild(output=self._output, device=self._device)
                 self._duplicator = Duplicator(output=self._output, device=self._device)
-                break
-            except comtypes.COMError:
-                continue
+                logger.info(
+                    f"Duplication rebuilt after output change "
+                    f"(attempt {attempt + 1}, resolution {self.width}x{self.height})."
+                )
+                return True
+            except RapidShotProtectedContentError as e:
+                # Retrying cannot help while the protected surface is on screen.
+                logger.error(f"Cannot rebuild duplication: {e}")
+                self._last_capture_error_message = str(e)
+                return False
+            except (comtypes.COMError, RapidShotError) as e:
+                # DXGI commonly reports UNSUPPORTED/ACCESS_DENIED for a short
+                # window while the mode switch is in flight. Back off instead of
+                # busy-waiting, and give up rather than hang if it persists.
+                wait = min(0.05 * (2 ** attempt), 1.0)
+                logger.debug(
+                    f"Duplication rebuild attempt {attempt + 1} failed ({e}); "
+                    f"retrying in {wait:.2f}s."
+                )
+                time.sleep(wait)
+
+        self._last_capture_error_message = (
+            f"Failed to rebuild duplication after {self._max_output_change_retries} "
+            "attempts following an output change."
+        )
+        logger.error(self._last_capture_error_message)
+        self._needs_reinit = True
+        return False
 
     def start(
         self,
@@ -756,14 +1153,12 @@ class ScreenCapture:
         # Phase 4/5: Release any remaining buffers in the deque
         if hasattr(self, '_pooled_frames_deque') and self._pooled_frames_deque is not None:
             with self._capture_lock:
-                # Iterating and releasing like this is safer if deque operations are complex inside loop
-                temp_deque_copy = list(self._pooled_frames_deque) # Copy pointers/references
-                self._pooled_frames_deque.clear() # Clear original deque
-                for buffer_wrapper in temp_deque_copy:
-                    try:
-                        buffer_wrapper.release()
-                    except Exception as e:
-                        logger.warning(f"Error releasing buffer from deque during stop: {e}")
+                # Copy then clear under the lock; the actual pool check-ins
+                # happen outside it so a slow pool cannot block the producer.
+                temp_deque_copy = list(self._pooled_frames_deque)
+                self._pooled_frames_deque.clear()
+            for buffer_wrapper in temp_deque_copy:
+                self._discard_frame(buffer_wrapper)
             self._pooled_frames_deque = None
         
     def get_latest_frame(self, as_numpy: bool = True):
@@ -786,11 +1181,11 @@ class ScreenCapture:
             if not self._pooled_frames_deque:
                 self._frame_available_event.clear() # Clear if deque is empty after wait
                 return None
-            
-            # Get the most recent PooledBuffer wrapper (without removing it)
-            latest_pooled_buffer = self._pooled_frames_deque[-1]
-            frame_array = latest_pooled_buffer.array
-            
+
+            # Get the most recent frame (without removing it). Entries are
+            # PooledBuffer wrappers for BGRA output and plain arrays otherwise.
+            frame_array = self._frame_array(self._pooled_frames_deque[-1])
+
             # self._frame_available_event.clear() # Do not clear here, new frames might arrive.
             # Event should be cleared only if no frames are in buffer after waiting.
             # Or, it's a signal that *at least one* frame is ready.
@@ -852,16 +1247,24 @@ class ScreenCapture:
 
                 if grab_result is not None:
                     self._frame_count += 1
-                    if isinstance(grab_result, PooledBuffer): 
-                        with self._capture_lock:
-                            if len(self._pooled_frames_deque) == self.max_buffer_len:
-                                oldest_buffer = self._pooled_frames_deque[0] 
-                                oldest_buffer.release()
-                            self._pooled_frames_deque.append(grab_result)
-                            last_successful_pooled_buffer = grab_result 
-                        self._frame_available_event.set()
-                    else: 
-                        logger.warning("Continuous mode: Frame processed but not pool-compatible, cannot add to deque.")
+                    # grab_result is a PooledBuffer only when the processor could
+                    # write the result in place, i.e. BGRA output. Every other
+                    # color mode changes the channel count and yields a freshly
+                    # allocated array -- which is equally valid to queue, and
+                    # rejecting it (as this used to) left the deque permanently
+                    # empty for RGB/BGR/RGBA/GRAY consumers.
+                    evicted_buffer = None
+                    with self._capture_lock:
+                        if len(self._pooled_frames_deque) == self.max_buffer_len:
+                            evicted_buffer = self._pooled_frames_deque[0]
+                        self._pooled_frames_deque.append(grab_result)
+                        last_successful_pooled_buffer = grab_result
+                    # Check the evicted buffer back in outside the capture
+                    # lock: release() takes the pool's own lock, and holding
+                    # both here stalls every get_latest_frame() consumer for
+                    # the duration of the pool round-trip.
+                    self._discard_frame(evicted_buffer)
+                    self._frame_available_event.set()
                 
                 elif self._needs_reinit: # _grab returned None and might have set _needs_reinit
                     logger.info("Continuous mode: Grab failed, re-initialization pending or in progress.")
@@ -869,33 +1272,40 @@ class ScreenCapture:
                     time.sleep(0.1) # Avoid tight loop if _grab keeps failing due to re-init
                     continue # Try again, _grab will attempt re-init
 
-                elif video_mode and last_successful_pooled_buffer:
-                    new_pooled_buffer_for_duplicate = None
+                elif video_mode and last_successful_pooled_buffer is not None:
+                    # No new content this tick: re-queue a copy of the last frame
+                    # so the output stream keeps a constant frame rate.
+                    duplicate_frame = None
                     try:
-                        if self.memory_pool: # Ensure pool exists
-                            new_pooled_buffer_for_duplicate = self.memory_pool.checkout()
+                        source_array = self._frame_array(last_successful_pooled_buffer)
+                        if isinstance(last_successful_pooled_buffer, PooledBuffer):
+                            if self.memory_pool is None:
+                                logger.warning("Video_mode: Memory pool not available for duplicating frame.")
+                                raise PoolExhaustedError("no pool")
+                            duplicate_frame = self.memory_pool.checkout()
                             if self.nvidia_gpu: # cp array
-                                new_pooled_buffer_for_duplicate.array[:] = last_successful_pooled_buffer.array 
+                                duplicate_frame.array[:] = source_array
                             else: # np array
-                                np.copyto(new_pooled_buffer_for_duplicate.array, last_successful_pooled_buffer.array)
-                            
-                            with self._capture_lock:
-                                if len(self._pooled_frames_deque) == self.max_buffer_len:
-                                    oldest_buffer = self._pooled_frames_deque[0]
-                                    oldest_buffer.release()
-                                self._pooled_frames_deque.append(new_pooled_buffer_for_duplicate)
-                            self._frame_available_event.set()
-                            self._frame_count += 1
+                                np.copyto(duplicate_frame.array, source_array)
                         else:
-                            logger.warning("Video_mode: Memory pool not available for duplicating frame.")
+                            # Plain array (non-BGRA output): copy directly, the
+                            # pool's BGRA buffers are the wrong shape for it.
+                            duplicate_frame = source_array.copy()
+
+                        evicted_buffer = None
+                        with self._capture_lock:
+                            if len(self._pooled_frames_deque) == self.max_buffer_len:
+                                evicted_buffer = self._pooled_frames_deque[0]
+                            self._pooled_frames_deque.append(duplicate_frame)
+                        self._discard_frame(evicted_buffer)  # Outside the lock, see above
+                        self._frame_available_event.set()
+                        self._frame_count += 1
                     except PoolExhaustedError:
                         logger.warning("Video_mode: Pool exhausted, cannot duplicate frame.")
-                        if new_pooled_buffer_for_duplicate: 
-                            new_pooled_buffer_for_duplicate.release()
+                        self._discard_frame(duplicate_frame)
                     except Exception as dup_e:
                         logger.error(f"Video_mode: Error duplicating frame: {dup_e}")
-                        if new_pooled_buffer_for_duplicate:
-                            new_pooled_buffer_for_duplicate.release()
+                        self._discard_frame(duplicate_frame)
             
             except RapidShotReinitError as e: # Should be caught by _grab now
                 logger.warning(f"Capture thread: Re-init error caught: {e}. _needs_reinit should be True.")
@@ -932,33 +1342,67 @@ class ScreenCapture:
         else:
             logger.info(f"ScreenCapture continuous mode stopped. No frames captured or capture time was zero.")
 
+    @staticmethod
+    def _discard_frame(frame) -> None:
+        """
+        Drop a queued frame, returning it to the pool if it came from one.
+
+        The continuous-mode deque holds PooledBuffer wrappers for BGRA output
+        and plain arrays for every other color mode, so callers must not assume
+        a ``release()`` method exists.
+        """
+        if frame is None:
+            return
+        release = getattr(frame, "release", None)
+        if release is None:
+            return  # Plain array: ordinary garbage collection owns it
+        try:
+            release()
+        except Exception as e:
+            logger.debug(f"Ignoring error releasing pooled frame: {e}")
+
+    @staticmethod
+    def _frame_array(frame):
+        """Return the underlying array for a queued frame (pooled or plain)."""
+        return getattr(frame, "array", frame)
+
     def _rebuild_frame_buffer(self, region: Tuple[int, int, int, int]):
         """
-        Rebuild the frame buffer, e.g., after resolution change.
-        
+        Rebuild the continuous-mode frame buffer after a resolution change.
+
+        Drops every buffer still queued (they are sized for the old resolution)
+        and rebuilds the memory pool to the new region shape.
+
         Args:
             region: Region to capture (left, top, right, bottom)
         """
         if region is None:
             region = self.region
-        frame_shape = (
-            region[3] - region[1],
-            region[2] - region[0],
-            self.channel_size,
-        )
-        with self.__lock:
-            if self.nvidia_gpu and CUPY_AVAILABLE:
-                self.__frame_buffer = cp.ndarray(
-                    (self.max_buffer_len, *frame_shape), dtype=cp.uint8
-                )
-            else:
-                self.__frame_buffer = np.ndarray(
-                    (self.max_buffer_len, *frame_shape), dtype=np.uint8
-                )
-            self.__head = 0
-            self.__tail = 0
-            self.__full = False
-            self.__has_frame = False  # Reset frame status
+
+        frame_shape = (region[3] - region[1], region[2] - region[0], 4)  # BGRA
+
+        # Return queued buffers to the pool before it is torn down, otherwise
+        # the wrappers outlive their pool and their release() targets a dead one.
+        with self._capture_lock:
+            stale_buffers = list(self._pooled_frames_deque or ())
+            if self._pooled_frames_deque is not None:
+                self._pooled_frames_deque.clear()
+        for buffer_wrapper in stale_buffers:
+            self._discard_frame(buffer_wrapper)
+        self._frame_available_event.clear()
+
+        pool_size = self._init_args.get("pool_size_frames", 10)
+        if self.memory_pool is not None:
+            if tuple(self.memory_pool.buffer_shape) == frame_shape:
+                return  # Shape unchanged, existing pool is still correct
+            self.memory_pool.destroy_pool()
+            self.memory_pool = None
+
+        logger.debug(f"Rebuilding memory pool for new frame shape {frame_shape}.")
+        if self.nvidia_gpu and CUPY_AVAILABLE:
+            self.memory_pool = CupyMemoryPool(frame_shape, np.uint8, pool_size)
+        else:
+            self.memory_pool = NumpyMemoryPool(frame_shape, np.uint8, pool_size)
 
     def _normalize_region(self, region: Tuple[int, int, int, int]) -> Tuple[int, int, int, int]:
         """Validate *region* without mutating capture state."""
@@ -1015,7 +1459,14 @@ class ScreenCapture:
         try:
             if hasattr(self, 'is_capturing') and self.is_capturing: # Check is_capturing before calling stop
                 self.stop()
-            
+
+            # A Frame still holding the desktop texture would keep DXGI's
+            # surface pinned past the duplicator's own teardown.
+            live = getattr(self, '_live_frame', None)
+            if live is not None and not live.released:
+                live.release()
+            self._live_frame = None
+
             if hasattr(self, '_duplicator') and self._duplicator:
                 self._duplicator.release()
                 
