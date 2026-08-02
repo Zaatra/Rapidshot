@@ -19,6 +19,20 @@ PyPI Trusted Publishing with signed attestations.
 
 ### Fixed — README claimed things that were not true
 
+- **The cross-library FPS table is gone.** It reported RapidShot at "240+" and
+  "300+ GPU-accelerated" against DXCam 210, MSS 75 and D3DShot 118, with no
+  hardware, method or date attached. Both RapidShot figures were unsupportable:
+  Desktop Duplication returns at most one frame per display refresh, so 300 fps
+  needs a 300 Hz monitor, and CuPy acceleration changes the conversion cost
+  rather than the rate frames arrive. ROADMAP.md section 4 already records that
+  published FPS claims in this space contradict each other — the README was
+  producing exactly that. Replaced with the reproducible per-frame costs from
+  `benchmarks/baseline.json`, the hardware they were measured on, and a note
+  that `grab_frame()`'s 0.21 ms is what the calling thread pays, not a capture
+  rate.
+- The Contributing section now links `CONTRIBUTING.md` instead of saying
+  "feel free to submit a Pull Request".
+
 - **"Python: 3.7+" in System Requirements.** `requires-python` is `>=3.9`, so
   pip refuses to install on 3.7 or 3.8 — the README was promising an install
   that cannot happen. Now 3.9+, matching `pyproject.toml`, `setup.py`, the CI

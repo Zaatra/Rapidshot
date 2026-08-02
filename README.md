@@ -582,14 +582,31 @@ python benchmarks/rapidshot_max_fps.py --color BGRA
 
 ### Benchmark Results
 
-The table below shows typical performance results across different libraries:
+**Run them yourself.** This README used to carry a table of cross-library FPS
+figures with no hardware, method or date attached, claiming 240+ for RapidShot
+and 300+ with GPU acceleration. Both were unsupportable: Desktop Duplication
+returns at most one frame per display refresh, so 300 fps needs a 300 Hz
+monitor, and CuPy acceleration changes the *conversion* cost, not the rate at
+which frames arrive.
 
-| Library         | Average FPS | GPU-accelerated FPS |
-|-----------------|-------------|---------------------|
-| RapidShot       | 240+        | 300+                |
-| Original DXCam  | 210         | N/A                 |
-| Python-MSS      | 75          | N/A                 |
-| D3DShot         | 118         | N/A                 |
+Published FPS claims in this space contradict each other badly — DXcam's README
+reports DXcam at 239 fps, BetterCam's reports the same library at 39 — because
+they come from different hardware with no shared harness. A number measured on
+someone else's machine tells you nothing about yours.
+
+What is measured, reproducibly, is the per-frame cost of RapidShot's own paths
+(1920×1080, Intel iGPU, from `benchmarks/baseline.json`):
+
+| Path | Per frame | Implied ceiling |
+| --- | --- | --- |
+| `grab()` — staging read + colour conversion | 4.53 ms | ~220 fps |
+| `grab_frame()` — texture stays on the GPU | **0.21 ms** | far above any display |
+
+The `grab_frame()` figure is not a capture rate. It is what the *calling thread*
+pays per frame; the display still delivers only one frame per refresh. What it
+means is that capture stops being your bottleneck.
+
+See `ROADMAP.md` section 3 for the full breakdown and how these are measured.
 
 ## System Requirements
 
@@ -608,7 +625,11 @@ The table below shows typical performance results across different libraries:
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). It is mostly
+a list of the things that will waste your time otherwise: live capture tests
+need something moving on screen, CI cannot verify them at all, and a naive
+benchmark comparison here once produced eleven false regressions on identical
+code.
 
 
 ## License
