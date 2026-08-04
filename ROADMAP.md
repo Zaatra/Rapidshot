@@ -10,7 +10,21 @@ This document is written to be read cold. It states where the project actually i
 
 **Current state.** Rapidshot captures the desktop via DXGI Desktop Duplication and can hand a frame to a GPU consumer as a **model-ready NCHW float32 tensor that never touches the CPU**. The CPU path for the same work costs ~8 ms per 1080p frame. Core capture is pure Python; an *optional* Rust extension provides GPU interop only.
 
-**Next task:** § 6.3 — finish Stage 3 (Frame metadata). § 6.1 is now complete: hybrid and headless systems are reported clearly, a captured frame crosses to a second adapter at **0.70–0.98 ms per 1080p frame** verified byte-exact, and the convert-first-or-transfer-first question has been measured and settled in favour of transferring the frame. What § 6.1 still lacks is validation on real hybrid hardware and an asynchronous shared fence, both noted there.
+### Release status — read this before anything else
+
+**2.0.0 is finished and verified, but not yet published.** The version on PyPI is 1.1.0 from April 2025, and it **does not work**: it fails to import on Python 3.11+ (`cursor: Cursor = Cursor()` trips the dataclass mutable-default check broadened in 3.11), and patching that one line only gets it to return all-black frames, because the processor is handed a texture where it expects a mapped staging surface. Every current-Python user is broken today. Shipping 2.0.0 is therefore the highest-value action available, ahead of any feature work below.
+
+What remains, in order — the full procedure is in `RELEASING.md`:
+
+1. `git push origin main` (commits may be outstanding; check `git log origin/main..HEAD`)
+2. Repo settings that files alone cannot enable: **Settings → Security → private vulnerability reporting** (or the link in `SECURITY.md` 404s), and a branch protection rule with *Require review from Code Owners* (or `CODEOWNERS` is only a routing hint)
+3. `git tag -a v2.0.0 -m "RapidShot 2.0.0"` and push the tag — that triggers `release.yml`, which builds, runs four wheel gates, publishes to PyPI via Trusted Publishing, then creates the GitHub Release
+4. Approve the `pypi` deployment when the workflow pauses for it
+5. Afterwards, consider **yanking 1.1.0** so nobody new lands on a version that returns black frames
+
+PyPI Trusted Publishing and the `pypi` GitHub environment are already configured, restricted to `v*` tags.
+
+**Next feature task once released:** § 6.3 — finish Stage 3 (Frame metadata). § 6.1 is complete: hybrid and headless systems are reported clearly, a captured frame crosses to a second adapter at **0.70–0.98 ms per 1080p frame** verified byte-exact, and the convert-first-or-transfer-first question has been measured and settled in favour of transferring the frame. What § 6.1 still lacks is validation on real hybrid hardware and an asynchronous shared fence, both noted there.
 
 **Before changing anything performance-related**, read § 3 (measured baseline) and § 4 (settled questions). Several intuitive-sounding optimisations have already been measured and rejected.
 
@@ -120,6 +134,10 @@ For scale: this is about a third of what reading the same frame to the CPU costs
 | **6 + 6b — GPU tensor** ✅ | `GpuPreprocessor12` produces an `ID3D12Resource` on the DirectML device: BGRA→NCHW float32 with resize and normalisation in one dispatch. Verified exact against a NumPy reference and against real capture |
 | **6.2 — Headless diagnostics** ✅ | `HeadlessError` replaces `"No usable graphics devices found. Check your display configuration."` with the actual fix (install an IDD virtual display), and distinguishes *no display* from *every device refused to open* — previously the same message |
 | **6.1 (detect + measure)** ✅ | `rapidshot.topology_info()` classifies headless / single / hybrid / multi-adapter and says what a hybrid system means for the GPU tensor path. `native.probe_cross_adapter()` verifies the whole `SHARED_CROSS_ADAPTER` chain (heap → shared handle → open on the second device → placed resource on both) and times the capture-side copy |
+| **6.3 (dirty rects)** ✅ | `frame.dirty_rects` in frame coordinates, plus `rects_coalesced`. The compositor already computed this and Rapidshot was discarding it — `GetFrameDirtyRects` was declared without argtypes, making it callable but unusable. Live capture reports **0.7–0.8% of the frame** dirty for a moving window |
+| **6.3 (region-limited conversion)** ✅ | `grab()` converts only the dirty regions into a persistent accumulator, **12–15× faster** at the dirty fraction live capture produces. Falls back to a full conversion when metadata is missing, the area exceeds 90%, rotation is in play, or the mode is BGRA |
+| **Pooled output (2.0 breaking change)** ✅ | `grab()` returns a `PooledBuffer` the caller releases. Allocating per frame cost ~1.6 ms in page faults — more than the conversion — so reuse is **1.3–2.1× on `grab()`**. See § 10 |
+| **Stage 0 — release infrastructure** ✅ | PyPI Trusted Publishing with Sigstore attestations, SBOM, four wheel gates, GitHub Release automation, `py.typed` with the public API annotated, `SECURITY.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `CODEOWNERS`, PR template, least-privilege CI tokens, performance badges generated from `baseline.json` with a drift guard |
 | **6.1 (frame transfer)** ✅ | `native.cross_adapter_transfer(frame)` carries a captured frame to a second adapter and exposes the `ID3D12Resource` it lands in. Heap and placed resources are allocated once; only the copy is per-frame. Verified byte-exact on real capture by `examples/verify_cross_adapter.py` — 8,294,400 bytes per frame, against a source-side readback of the same snapshot |
 
 **Also fixed:** `pip install rapidshot` shipped a broken package — `pyproject.toml` listed `packages = ["rapidshot"]`, so the wheel contained 5 modules instead of 25 and failed with `ModuleNotFoundError: No module named 'rapidshot.util'`. Invisible from a source checkout. Now guarded by CI.
@@ -179,7 +197,7 @@ Not yet exercised on a genuinely headless machine — the logic is tested by des
 
 ### 6.3 — Finish Stage 3 (Frame metadata)
 
-The lifetime slice is done. `dirty_rects` is now done too; `move_rects`, cursor data on `Frame`, normalised timestamps, and a `Protocol`-typed / `py.typed` public API are not.
+The lifetime slice is done, `dirty_rects` is done, and `py.typed` now ships with the module-level API annotated. **Still missing:** `move_rects` (the COM signature is declared and ready — see § 6.3's settled notes), cursor data on `Frame`, normalised timestamps, and `Protocol`-typed interfaces for the public surface.
 
 Design this **before** a second backend exists — retrofitting a DXGI-shaped API to fit WGC later is more expensive than designing one abstraction all backends fill.
 
