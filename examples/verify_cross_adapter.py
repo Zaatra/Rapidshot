@@ -22,12 +22,20 @@ so the first success is conclusive.
 
 import ctypes
 import logging
+import sys
 import time
+from pathlib import Path
 
 import numpy as np
 
-import rapidshot
-from rapidshot import native
+# Running `python examples/verify_cross_adapter.py` puts *examples/* on the
+# path, not the repo root, so the import below fails on a source checkout even
+# though the package is right there. RELEASING.md tells you to run it exactly
+# that way, so the script has to cope -- the same line the benchmark scripts use.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import rapidshot  # noqa: E402
+from rapidshot import native  # noqa: E402
 
 
 def cpu_frame(camera, attempts=300):
