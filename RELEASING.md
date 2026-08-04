@@ -87,6 +87,9 @@ Each of these exists because it went wrong once, or would have:
 - **A wheel without `py.typed`.** Without it, PEP 561 says to ignore the
   annotations and every `rapidshot` symbol resolves to `Any` downstream.
 - **A tag that disagrees with the packaged version.**
+- **An SBOM describing the build environment instead of the package.** It is
+  generated against the verification venv, which holds the wheel and its runtime
+  dependencies and nothing else; a check rejects it if build tooling leaks in.
 
 ## After publishing
 

@@ -121,9 +121,36 @@ jobs:
           print(f"tag and package agree on {packaged}")
 
       - name: Generate SBOM
+        shell: pwsh
         run: |
           python -m pip install cyclonedx-bom
-          python -m cyclonedx_py environment --output-format JSON --outfile dist/rapidshot-sbom.cdx.json
+          # Point at the verification venv from the step above, which holds the
+          # built wheel and its runtime dependencies and nothing else. Run
+          # against the build environment instead and the SBOM documents build,
+          # twine, cyclonedx and its ~30 dependencies -- lxml, jsonschema,
+          # arrow -- as though rapidshot depended on them.
+          python -m cyclonedx_py environment `
+            --of JSON `
+            -o dist/rapidshot-sbom.cdx.json `
+            "$env:RUNNER_TEMP\relcheck"
+
+      - name: SBOM must describe the package, not the build environment
+        shell: python
+        run: |
+          import json, sys
+
+          with open("dist/rapidshot-sbom.cdx.json", encoding="utf-8") as handle:
+              sbom = json.load(handle)
+          names = sorted(c["name"] for c in sbom.get("components", []))
+          print("components:", names)
+
+          if "rapidshot" not in names:
+              sys.exit("SBOM does not contain rapidshot itself")
+          # Build tooling leaking in means it was generated against the wrong
+          # environment, which is how an SBOM ends up actively misleading.
+          leaked = {"twine", "build", "cyclonedx-bom", "lxml", "jsonschema"} & set(names)
+          if leaked:
+              sys.exit(f"SBOM contains build tooling: {sorted(leaked)}")
 
       - uses: actions/upload-artifact@v5
         with:
