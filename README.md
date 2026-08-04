@@ -621,7 +621,7 @@ See `ROADMAP.md` section 3 for the full breakdown and how these are measured.
 
 - **Operating System:** Windows 10 or newer. Windows only — Desktop Duplication
   has no cross-platform equivalent.
-- **Python:** 3.9+ (`pip` will refuse to install on anything older)
+- **Python:** 3.9 through 3.14 (`pip` will refuse to install on anything older)
 - **GPU:** Any GPU that drives a display. A CUDA-capable NVIDIA GPU is needed
   only for the optional CuPy acceleration.
 - **RAM:** 8 GB+ (depending on the resolution and number of screencapture instances used)
