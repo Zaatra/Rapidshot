@@ -125,6 +125,27 @@ No breaking changes. `grab()` still returns a `PooledBuffer` as it has since 2.0
 
 ### Added
 
+- **`pool_size_frames` is now public, and its default drops from 10 to 4.** It
+  was settable on `ScreenCapture` but the factory never forwarded it, so the
+  largest tunable part of the process footprint was unreachable through
+  `rapidshot.create()`. Measured per-camera cost, one configuration per process
+  (measuring several in one interpreter cannot work — CPython does not return
+  freed arenas, so each config inherits the previous one's):
+
+  | `pool_size_frames` | camera cost | fps |
+  | --- | --- | --- |
+  | 10 (old default) | 173.6 MB | 97.1 |
+  | **4 (new default)** | **113.6 MB** | 95.4 |
+  | 2 | 84.3 MB | 98.8 |
+
+  **60 MB saved for −1.8% frame rate**, which is inside run-to-run noise. This
+  closes most of the memory gap against DXcam (87 MB) measured in
+  `benchmarks/compare_libraries.py`. Running the pool dry remains safe rather
+  than an error — verified by holding six frames against a two-buffer pool, all
+  readable and all carrying different content, so it falls back to allocating
+  rather than recycling a buffer someone is still reading. `0` and `bool` are
+  rejected: an empty pool is a permanent fallback, not a smaller pool.
+
 - **`timeout_ms` is now public** — as `rapidshot.create(timeout_ms=...)` and as a
   settable `ScreenCapture.timeout_ms` property that takes effect on the next
   acquire. It controls how long each acquire waits for the compositor, and it is

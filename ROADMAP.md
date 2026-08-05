@@ -429,7 +429,21 @@ Realistic cost is roughly six months with a native-graphics-fluent co-maintainer
   **Conversion is finished as an optimisation target.** All five modes sit at 69–100% of the 33.2 GB/s the memory system delivers; RGBA at 69% is the weakest and worth ~0.1 ms. `benchmarks/baseline.json` and the badges were re-recorded after this landed. GRAY's *NumPy* path remains duty-cycle sensitive (6.9–10.5 ms across runs in one session), so the suite flags it informational rather than gating on it — quote a range for that one.
 - **CuPy/CUDA paths untested** — no NVIDIA GPU available. Worth a spike: `gfx2cuda` + CuPy may give a **pure-Python** D3D11→CUDA tensor path, which would mean CUDA users get GPU tensors with no build step at all.
 - **`shot()` writes BGRA regardless of `output_color`**, and overruns an undersized buffer without bounds checks. Documented; not yet fixed.
-- **`pipeline.cpu_to_nchw` is now the largest CPU cost in the baseline at 6.4–6.8 ms**, and it is untouched — bigger than any single colour conversion now that the native kernels have landed (§ 3). Stage 6's GPU path bypasses it, but every CPU-only consumer still pays it in full. The staging read at 2.27 ms is the second, and § 6.3 records why dirty rects could not shrink it: the read scales with dirty *rows*, not area.
+- **`pipeline.cpu_to_nchw` is now the largest CPU cost in the baseline at 6.4–6.8 ms**, and it is untouched — bigger than any single colour conversion now that the native kernels have landed (§ 3). Stage 6's GPU path bypasses it, but every CPU-only consumer still pays it in full.
+- **The staging map is 2.1 ms and it is pure GPU-wait, not work.** Re-profiled 2026-08-05, because the old stage table predates the native kernels and no longer ranks anything correctly. A `grab()` returning a frame is p50 **9.86 ms**, split: acquire + GPU copy 6.44 ms (mostly the 10 ms blocking timeout — its *min* is 0.12 ms), **map staging surface 2.17 ms**, read + convert 0.58 ms (BGRA) / 1.14 ms (RGB), unmap 0.006 ms. Conversion is now 6–11% of a frame; the map is 3.6× it.
+
+  Inserting a delay between `CopySubresourceRegion` and `Map` collapses the map, which identifies the cost exactly:
+
+  | delay before map | map p50 | fps |
+  | --- | --- | --- |
+  | 0 ms | 2.199 ms | 99.7 |
+  | 1 ms | 0.805 ms | 99.5 |
+  | 2 ms | **0.022 ms** | 99.8 |
+  | 5 ms | 0.018 ms | 99.5 |
+
+  Given 2 ms the GPU finishes the copy and `Map` returns in 22 µs — 100× faster. **But look at the fps column: it does not move.** The loop is already bounded by the compositor at ~100 Hz, so the map's 2.1 ms is absorbed by time the thread would otherwise spend blocked in acquire. Pipelining it away — double-buffered staging surfaces, mapping frame N-1 while the GPU fills N — would therefore buy **no throughput on this display**. It would buy back 2.1 ms of *calling-thread time per frame* (21% of the budget) for the consumer to use, and it would matter on a faster panel where 9.86 ms no longer fits the frame period.
+
+  **Not built, deliberately.** The obvious implementation returns the previous frame, which is a semantic change to `grab()`, and the honest version needs a fence plus a restructured acquire/copy/map order that collides with the live-frame guard in § 5. Revisit when either a >144 Hz panel or a profile showing consumer starvation makes the 2.1 ms actually cost something.
 - **No hosted docs.** Release automation exists as of 2.0.0 (§ 5); `GOVERNANCE.md` and OpenSSF Scorecard remain outstanding (§ 7).
 
 ---

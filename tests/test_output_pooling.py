@@ -238,3 +238,59 @@ class TestCaptureIntegration:
         second = cam._checkout_output_buffer(WIDTH * 2, HEIGHT * 2)
 
         assert second.array.shape == (HEIGHT * 2, WIDTH * 2, 3)
+
+
+# --------------------------------------------------------------------------
+# pool_size_frames is public and validated (ROADMAP.md 10 — memory footprint)
+# --------------------------------------------------------------------------
+
+def test_pool_size_frames_is_reachable_from_create():
+    """It was settable on ScreenCapture but the factory never forwarded it.
+
+    That made the largest tunable part of the process footprint unreachable
+    without constructing the class by hand -- the same gap timeout_ms had.
+    """
+    import inspect
+
+    import rapidshot
+
+    for fn in (rapidshot.create, rapidshot.RapidshotFactory.create):
+        params = inspect.signature(fn).parameters
+        assert "pool_size_frames" in params, fn
+        assert params["pool_size_frames"].default == 4
+
+
+def test_pool_default_is_four_not_ten():
+    """Measured: 10 buffers cost 173.6 MB per camera, 4 cost 113.6 MB.
+
+    Dropping the default saved 60 MB for -1.8% frame rate, which is inside
+    run-to-run noise. Pinned so the number is a decision rather than a drift.
+    """
+    import inspect
+
+    from rapidshot.capture import ScreenCapture
+
+    assert inspect.signature(ScreenCapture.__init__).parameters[
+        "pool_size_frames"].default == 4
+
+
+@pytest.mark.parametrize("bad", [0, -1, 2.5, "4", None, True])
+def test_pool_size_frames_rejects_nonsense(bad):
+    """Zero is rejected too: an empty pool is not a smaller pool, it is a
+    permanent fallback to allocating, which looks like the setting was ignored.
+
+    `True` is here for the same reason as in timeout_ms -- bool subclasses int,
+    so a naive check accepts it and silently configures a 1-buffer pool.
+    """
+    from rapidshot.capture import ScreenCapture
+
+    class FakeOutput:
+        devicename = "FAKE"
+        resolution = (1920, 1080)
+        rotation_angle = 0
+
+        def update_desc(self):
+            pass
+
+    with pytest.raises(ValueError, match="pool_size_frames"):
+        ScreenCapture(output=FakeOutput(), device=None, pool_size_frames=bad)

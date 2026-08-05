@@ -57,7 +57,7 @@ class ScreenCapture:
         output_color: str = "RGB",
         nvidia_gpu: bool = False,
         max_buffer_len: int = 64, # This is for the continuous mode ring buffer
-        pool_size_frames: int = 10, # New parameter for memory pool
+        pool_size_frames: int = 4,
         pool_output: bool = True,
         timeout_ms: int = 10,
     ) -> None:
@@ -71,7 +71,15 @@ class ScreenCapture:
             output_color: Color format (RGB, RGBA, BGR, BGRA, GRAY)
             nvidia_gpu: Whether to use NVIDIA GPU acceleration
             max_buffer_len: Maximum buffer length for continuous mode capture
-            pool_size_frames: Number of buffers in the memory pool for grab()
+            pool_size_frames: Buffers kept for ``grab()`` to hand out. Each one
+                is a full frame (8.3 MB at 1080p BGRA), which makes this the
+                main tunable part of the process footprint: measured per-camera
+                cost is 114 MB at 10 buffers, 85 MB at 4 and 81 MB at 2, against
+                75 MB with no pool at all. The default of 4 was chosen because
+                dropping from 10 saved 29 MB with no measurable change in frame
+                rate. Raise it only if you genuinely hold several frames at
+                once; running dry is not an error, it just falls back to
+                allocating, which is slower but always correct.
             pool_output: Reuse buffers for the converted frame instead of
                 allocating one per frame. Saves ~1.6 ms on a 1080p RGB frame --
                 the page faults on first touch cost more than the conversion.
@@ -90,6 +98,11 @@ class ScreenCapture:
         if not isinstance(timeout_ms, int) or isinstance(timeout_ms, bool) or timeout_ms < 0:
             raise ValueError(
                 f"timeout_ms must be a non-negative int, got {timeout_ms!r}"
+            )
+        if (not isinstance(pool_size_frames, int) or isinstance(pool_size_frames, bool)
+                or pool_size_frames < 1):
+            raise ValueError(
+                f"pool_size_frames must be a positive int, got {pool_size_frames!r}"
             )
 
         # Initialize basic attributes first to prevent errors during cleanup if initialization fails

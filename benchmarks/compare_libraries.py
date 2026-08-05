@@ -54,7 +54,7 @@ from typing import Dict, List, Optional
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 
-LIBRARIES = ("rapidshot", "dxcam", "bettercam", "mss")
+LIBRARIES = ("rapidshot", "rapidshot-poll", "dxcam", "bettercam", "mss")
 SCENARIOS = ("fullscreen", "region")
 COLOURS = ("BGRA", "RGB")
 REGION = (760, 340, 1160, 740)          # 400x400, centred on a 1080p display
@@ -122,12 +122,12 @@ class ResourceMonitor:
 # per-library adapters, each returning a zero-argument grab callable
 # ---------------------------------------------------------------------------
 
-def _adapter_rapidshot(scenario: str, colour: str):
+def _adapter_rapidshot(scenario: str, colour: str, timeout_ms: int = 10):
     sys.path.insert(0, str(REPO))
     import rapidshot
     from rapidshot import native
 
-    cam = rapidshot.create(output_color=colour)
+    cam = rapidshot.create(output_color=colour, timeout_ms=timeout_ms)
     region = REGION if scenario == "region" else None
 
     def grab():
@@ -141,7 +141,8 @@ def _adapter_rapidshot(scenario: str, colour: str):
             release()
         return True
 
-    return grab, cam, {"native_extension": native.is_available()}
+    return grab, cam, {"native_extension": native.is_available(),
+                       "timeout_ms": timeout_ms}
 
 
 def _adapter_dxcam(scenario: str, colour: str):
@@ -196,6 +197,11 @@ def _adapter_mss(scenario: str, colour: str):
 
 ADAPTERS = {
     "rapidshot": _adapter_rapidshot,
+    # The same library polling like DXcam does. Without this row the comparison
+    # conflates two different things -- how fast a library can capture, and
+    # whether it chose to spend a core finding out -- and reads as a throughput
+    # deficit when it is mostly a scheduling policy.
+    "rapidshot-poll": lambda s, c: _adapter_rapidshot(s, c, timeout_ms=0),
     "dxcam": _adapter_dxcam,
     "bettercam": _adapter_bettercam,
     "mss": _adapter_mss,
@@ -309,16 +315,16 @@ def spawn(library: str, scenario: str, colour: str, seconds: float,
 
 
 def table(rows: List[dict]) -> str:
-    head = (f"{'library':<11}{'scenario':<12}{'fmt':<6}{'fps':>8}{'p50':>9}"
+    head = (f"{'library':<16}{'scenario':<12}{'fmt':<6}{'fps':>8}{'p50':>9}"
             f"{'p95':>9}{'p99':>9}{'jitter':>9}{'cpu%':>7}{'rssMB':>8}")
     out = [head, "-" * len(head)]
     for r in rows:
         if r.get("error") or not r.get("frames"):
-            out.append(f"{r['library']:<11}{r['scenario']:<12}{r['colour']:<6}"
+            out.append(f"{r['library']:<16}{r['scenario']:<12}{r['colour']:<6}"
                        f"  {r.get('error', 'no frames')[:60]}")
             continue
         out.append(
-            f"{r['library']:<11}{r['scenario']:<12}{r['colour']:<6}"
+            f"{r['library']:<16}{r['scenario']:<12}{r['colour']:<6}"
             f"{r['fps_mean']:>8.1f}{r['ms_p50']:>9.2f}{r['ms_p95']:>9.2f}"
             f"{r['ms_p99']:>9.2f}{r['ms_jitter_stdev']:>9.2f}"
             f"{(r.get('cpu_percent_mean') or 0):>7.1f}"
