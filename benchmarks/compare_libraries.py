@@ -209,6 +209,29 @@ ADAPTERS = {
 
 
 # ---------------------------------------------------------------------------
+# control
+# ---------------------------------------------------------------------------
+
+def control_ms() -> float:
+    """A fixed workload every process runs, so runs can be compared to runs.
+
+    Without this the suite can rank libraries within one sitting and nothing
+    more: two runs of untouched code drifted 20-35% apart, which swamps any
+    change worth measuring. The control's code never changes, so its movement is
+    the machine -- the same calibration perf_suite.py applies.
+    """
+    import numpy as np
+    src = np.zeros((1080, 1920, 4), np.uint8)
+    dst = np.empty_like(src)
+    best = float("inf")
+    for _ in range(20):
+        t0 = time.perf_counter()
+        np.copyto(dst, src)
+        best = min(best, (time.perf_counter() - t0) * 1000.0)
+    return round(best, 4)
+
+
+# ---------------------------------------------------------------------------
 # worker: one library, one scenario, one process
 # ---------------------------------------------------------------------------
 
@@ -253,6 +276,7 @@ def run_worker(library: str, scenario: str, colour: str,
         "library": library,
         "scenario": scenario,
         "colour": colour,
+        "control_ms": control_ms(),
         "seconds": round(elapsed, 3),
         "frames": len(deltas),
         "misses": misses,
@@ -314,9 +338,37 @@ def spawn(library: str, scenario: str, colour: str, seconds: float,
             "error": (proc.stderr.strip().splitlines() or ["no output"])[-1][:200]}
 
 
+def aggregate(samples: List[dict]) -> dict:
+    """Median across independent runs of one cell.
+
+    Median rather than mean: one scheduling hiccup in one repeat should not move
+    the reported figure, and with an odd repeat count the median is a value that
+    was actually observed rather than a blend of runs.
+
+    The spread is kept and printed, because a cell whose repeats disagree cannot
+    support a verdict no matter how tidy its median looks.
+    """
+    good = [s for s in samples if s.get("frames")]
+    if not good:
+        return samples[0]
+    merged = dict(good[0])
+    merged["repeats"] = len(good)
+    for key in ("fps_mean", "ms_p50", "ms_p95", "ms_p99", "ms_jitter_stdev",
+                "cpu_percent_mean", "rss_mb_end", "control_ms", "frames",
+                "misses"):
+        values = [s[key] for s in good if isinstance(s.get(key), (int, float))]
+        if values:
+            merged[key] = round(statistics.median(values), 3)
+    fps = [s["fps_mean"] for s in good]
+    mid = statistics.median(fps) if fps else 0
+    merged["fps_spread_pct"] = (round((max(fps) - min(fps)) / mid * 100, 1)
+                                if len(fps) > 1 and mid else 0.0)
+    return merged
+
+
 def table(rows: List[dict]) -> str:
     head = (f"{'library':<16}{'scenario':<12}{'fmt':<6}{'fps':>8}{'p50':>9}"
-            f"{'p95':>9}{'p99':>9}{'jitter':>9}{'cpu%':>7}{'rssMB':>8}")
+            f"{'p95':>9}{'p99':>9}{'jitter':>9}{'cpu%':>7}{'rssMB':>8}{'spread':>8}")
     out = [head, "-" * len(head)]
     for r in rows:
         if r.get("error") or not r.get("frames"):
@@ -328,7 +380,8 @@ def table(rows: List[dict]) -> str:
             f"{r['fps_mean']:>8.1f}{r['ms_p50']:>9.2f}{r['ms_p95']:>9.2f}"
             f"{r['ms_p99']:>9.2f}{r['ms_jitter_stdev']:>9.2f}"
             f"{(r.get('cpu_percent_mean') or 0):>7.1f}"
-            f"{(r.get('rss_mb_end') or 0):>8.1f}")
+            f"{(r.get('rss_mb_end') or 0):>8.1f}"
+            f"{(r.get('fps_spread_pct') or 0):>7.1f}%")
     return "\n".join(out)
 
 
@@ -346,6 +399,11 @@ def main() -> int:
                     help="assert that something is moving on screen; recorded "
                          "in the output so still-desktop runs cannot be "
                          "mistaken for capture rates")
+    ap.add_argument("--repeats", type=int, default=3,
+                    help="independent runs per cell; the median is reported and "
+                         "the spread shown. One 6-second sample cannot tell a "
+                         "change from scheduling noise -- untouched libraries "
+                         "drifted 20-35%% between single-sample runs.")
     ap.add_argument("--out", type=Path)
     args = ap.parse_args()
 
@@ -366,14 +424,20 @@ def main() -> int:
     print()
 
     rows: List[dict] = []
+    total = len(SCENARIOS) * len(COLOURS) * len(args.libraries) * args.repeats
+    done = 0
     for scenario in SCENARIOS:
         for colour in COLOURS:
             for library in args.libraries:
-                print(f"  running {library}/{scenario}/{colour} ...",
-                      end="\r", flush=True)
-                rows.append(spawn(library, scenario, colour,
-                                  args.seconds, args.warmup))
-    print(" " * 60, end="\r")
+                samples = []
+                for rep in range(args.repeats):
+                    done += 1
+                    print(f"  [{done}/{total}] {library}/{scenario}/{colour} "
+                          f"rep {rep + 1}", end="\r", flush=True)
+                    samples.append(spawn(library, scenario, colour,
+                                         args.seconds, args.warmup))
+                rows.append(aggregate(samples))
+    print(" " * 70, end="\r")
 
     print(table(rows))
     print("\nfps = frames returned per second; p50/p95/p99 and jitter are")
