@@ -152,7 +152,14 @@ jobs:
           if leaked:
               sys.exit(f"SBOM contains build tooling: {sorted(leaked)}")
 
-      - uses: actions/upload-artifact@v5
+      # Node 24. Watch the version numbers here: upload-artifact v5 and
+      # download-artifact v6 both advertised Node 24 support while still
+      # *defaulting* to node20, so being on a recent-looking major is not
+      # evidence of anything -- check `runs.using` in the action's own
+      # action.yml. The two actions have also diverged (upload is on v7,
+      # download on v8) and should be kept as a matched pair, because v8's
+      # direct-download support exists to serve v7's direct uploads.
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
@@ -171,7 +178,7 @@ jobs:
       # can verify they came from this workflow in this repository.
       id-token: write
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
@@ -196,7 +203,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
