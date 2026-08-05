@@ -113,7 +113,29 @@ class Duplicator:
     updated: bool = False
     output: InitVar[Output] = None
     device: InitVar[Device] = None
-    timeout_ms: int = 10  # Timeout for AcquireNextFrame in milliseconds
+    # How long AcquireNextFrame blocks waiting for the compositor to present.
+    #
+    # This one number is the whole difference in behaviour between this library
+    # and the poll-based ones. Measured on the dev machine's 100 Hz output
+    # against a source presenting at ~610 updates/s:
+    #
+    #     timeout   fps    hit%     calls     cpu%
+    #           0  127.8    2.4%    26,224    68.6
+    #           1  119.2   74.5%       801    19.5
+    #           2  124.2   86.4%       719    16.9
+    #           5  118.2   95.3%       621    18.9
+    #          10  118.9  100.0%       595    15.7      <- default
+    #          16  116.9  100.0%       585    16.9
+    #
+    # Throughput barely moves; CPU moves by 4x. Polling at 0 buys ~7% more
+    # frames for ~4.4x the CPU, which is what DXcam does -- it calls
+    # AcquireNextFrame(0) and reached 134 fps at 66% CPU in the same
+    # comparison. 10 ms is the default because a capture stage in a pipeline
+    # usually wants its cores back more than it wants the last 7% of frames.
+    #
+    # Exposed publicly as `ScreenCapture.timeout_ms`; see
+    # `benchmarks/compare_libraries.py`.
+    timeout_ms: int = 10
     cursor: Cursor = field(default_factory=Cursor)
     last_error: str = ""
     cursor_visible: bool = False

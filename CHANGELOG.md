@@ -123,6 +123,29 @@ No breaking changes. `grab()` still returns a `PooledBuffer` as it has since 2.0
   so raising `--live-seconds` makes live numbers look better on unchanged code.
   Live rows are comparable only at the same setting.
 
+### Added
+
+- **`timeout_ms` is now public** — as `rapidshot.create(timeout_ms=...)` and as a
+  settable `ScreenCapture.timeout_ms` property that takes effect on the next
+  acquire. It controls how long each acquire waits for the compositor, and it is
+  the single parameter separating this library's behaviour from the poll-based
+  ones. Measured on a 100 Hz output against a source presenting at ~610
+  updates/s:
+
+  | timeout | fps | hit rate | CPU |
+  | --- | --- | --- | --- |
+  | 0 (poll) | 127.8 | 2.4% | 68.6% |
+  | 10 (default) | 118.9 | 100% | 15.7% |
+
+  Frame rate barely moves; CPU moves 4×. Polling is what DXcam does — it calls
+  `AcquireNextFrame(0)` and reached 134 fps at 66% CPU in the same comparison, so
+  the extra frames are real but expensive. The default stays at 10 ms because a
+  capture stage in a pipeline usually wants its cores back more than it wants the
+  last 7% of frames. Negative, non-integer and `bool` values are rejected —
+  `bool` explicitly, since it is a subclass of `int` and would otherwise silently
+  configure a 1 ms wait. The setting is carried across a duplication rebuild, so
+  a resolution change or display reconnect no longer resets it.
+
 ### Fixed
 
 - **The "no screen updates" warning fired while capture was running at 117 fps.**

@@ -179,6 +179,7 @@ class RapidshotFactory(metaclass=Singleton):
         max_buffer_len: int = 64,
         prefer_integrated: bool = False,  # New parameter to force integrated GPU
         pool_output: bool = True,
+        timeout_ms: int = 10,
     ) -> "ScreenCapture":
         """
         Create a ScreenCapture instance.
@@ -195,6 +196,9 @@ class RapidshotFactory(metaclass=Singleton):
                 per frame (default since 2.0). grab() then returns a
                 PooledBuffer the caller must release. Pass False for the
                 pre-2.0 behaviour.
+            timeout_ms: How long each acquire waits for a new frame. 0 polls,
+                costing ~4x the CPU for ~7% more frames; the default blocks.
+                See ScreenCapture.timeout_ms for the measured curve.
 
         Returns:
             ScreenCapture instance
@@ -275,6 +279,7 @@ class RapidshotFactory(metaclass=Singleton):
                 nvidia_gpu=nvidia_gpu,
                 max_buffer_len=max_buffer_len,
                 pool_output=pool_output,
+                timeout_ms=timeout_ms,
             )
             self._screencapture_instances[instance_key] = screencapture
             
@@ -377,6 +382,7 @@ def create(
     max_buffer_len: int = 64,
     prefer_integrated: bool = False,  # New parameter passed to factory
     pool_output: bool = True,
+    timeout_ms: int = 10,
 ) -> "ScreenCapture":
     """
     Create a ScreenCapture instance.
@@ -406,6 +412,7 @@ def create(
         max_buffer_len=max_buffer_len,
         prefer_integrated=prefer_integrated,
         pool_output=pool_output,
+        timeout_ms=timeout_ms,
     )
 
 def device_info() -> str:

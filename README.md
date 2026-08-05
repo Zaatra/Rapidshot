@@ -345,6 +345,33 @@ camera = rapidshot.create(pool_output=False)   # returns plain ndarrays
 BGRA already worked this way before 2.0 — it does no conversion, so its staging
 buffer was always returned pooled.
 
+### Trading CPU for frames
+
+Each capture waits up to `timeout_ms` for the compositor to present. That one
+number is the whole difference between this library and the poll-based ones:
+
+```python
+camera = rapidshot.create(timeout_ms=0)   # poll instead of waiting
+camera.timeout_ms = 10                    # or change it on a live camera
+```
+
+Measured on a 100 Hz output against a source presenting at ~610 updates/s:
+
+| `timeout_ms` | frames/s | hit rate | CPU |
+| --- | --- | --- | --- |
+| 0 (poll) | 127.8 | 2.4% | 68.6% |
+| 1 | 119.2 | 74.5% | 19.5% |
+| **10 (default)** | 118.9 | 100% | **15.7%** |
+
+The frame rate barely moves across that range and the CPU moves by more than
+four times. Polling is what DXcam does — it calls `AcquireNextFrame(0)` and
+reached 134 fps at 66% CPU in the same comparison, so those extra frames are
+real, just expensive. Use `0` if capture is the only thing the machine is doing;
+leave the default if it is one stage of a pipeline that needs its cores.
+
+Frames beyond the display's refresh rate were never shown as distinct images —
+useful as extra temporal samples for a model, redundant for a recorder.
+
 ### Only process what changed
 
 `grab_frame()` frames carry the compositor's own dirty-rect metadata, so a

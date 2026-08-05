@@ -349,7 +349,7 @@ def test_output_change_rebuild_is_bounded_and_does_not_hang(monkeypatch):
 
     attempts = {"n": 0}
 
-    def always_failing_duplicator(output, device):
+    def always_failing_duplicator(output, device, timeout_ms=10):
         attempts["n"] += 1
         raise com_error(DXGI_ERROR_UNSUPPORTED)
 
@@ -384,6 +384,7 @@ def test_output_change_rebuild_is_bounded_and_does_not_hang(monkeypatch):
     cam._needs_reinit = False
     cam._last_capture_error_message = ""
     cam._max_output_change_retries = 5
+    cam._timeout_ms = 10                          # __init__ always sets this
 
     assert cam._on_output_change() is False       # reports failure
     assert attempts["n"] == 5                     # bounded, did not spin
@@ -398,7 +399,7 @@ def test_output_change_gives_up_immediately_on_protected_content(monkeypatch):
 
     attempts = {"n": 0}
 
-    def protected_duplicator(output, device):
+    def protected_duplicator(output, device, timeout_ms=10):
         attempts["n"] += 1
         raise RapidShotProtectedContentError("HDCP content on screen")
 
@@ -433,6 +434,10 @@ def test_output_change_gives_up_immediately_on_protected_content(monkeypatch):
     cam._needs_reinit = False
     cam._last_capture_error_message = ""
     cam._max_output_change_retries = 12
+    # _on_output_change rebuilds the Duplicator and carries the caller's
+    # acquire timeout across; __init__ always sets this, but these fixtures
+    # build the object with __new__.
+    cam._timeout_ms = 10
 
     assert cam._on_output_change() is False
     assert attempts["n"] == 1  # no retry storm
@@ -510,3 +515,100 @@ def test_still_screen_warning_is_rate_limited(monkeypatch):
     flags = [True] + [False] * 1200
     fired = _quiet_warning_fired(state, monkeypatch, clock, flags)
     assert 1 <= len(fired) <= 8, f"expected a handful of warnings, got {len(fired)}"
+
+
+# --------------------------------------------------------------------------
+# timeout_ms is public, validated, and survives a duplication rebuild
+# --------------------------------------------------------------------------
+
+def test_timeout_ms_defaults_to_blocking():
+    """The default blocks rather than polls: 4x less CPU for ~7% fewer frames."""
+    from rapidshot.core.duplicator import Duplicator
+    assert Duplicator.timeout_ms == 10
+
+
+@pytest.mark.parametrize("bad", [-1, 1.5, "10", None, True])
+def test_timeout_ms_rejects_nonsense(bad):
+    """A silently-ignored bad value would look like the setting having no effect.
+
+    `True` is in here deliberately: bool is a subclass of int, so a naive
+    isinstance check accepts it and the duplicator would block for 1 ms.
+    """
+    from rapidshot.capture import ScreenCapture
+
+    cam = ScreenCapture.__new__(ScreenCapture)
+    cam._duplicator = None
+    with pytest.raises(ValueError):
+        ScreenCapture.timeout_ms.fset(cam, bad)
+
+
+def test_timeout_ms_setter_reaches_the_live_duplicator():
+    """Setting it must take effect on the next acquire, not the next rebuild."""
+    from rapidshot.capture import ScreenCapture
+
+    class FakeDup:
+        timeout_ms = 10
+
+    cam = ScreenCapture.__new__(ScreenCapture)
+    cam._timeout_ms = 10
+    cam._duplicator = FakeDup()
+
+    ScreenCapture.timeout_ms.fset(cam, 0)
+    assert cam._timeout_ms == 0
+    assert cam._duplicator.timeout_ms == 0
+    assert ScreenCapture.timeout_ms.fget(cam) == 0
+
+
+def test_timeout_ms_survives_a_duplication_rebuild(monkeypatch):
+    """The rebuild path must carry the caller's timeout across.
+
+    `_on_output_change` constructs a fresh Duplicator. Dropping the setting
+    there would reset it to the default on the first resolution change or
+    display reconnect -- a regression that only ever shows up as "it got slower
+    after I unplugged a monitor".
+    """
+    import rapidshot.capture as capture_module
+    from rapidshot.capture import ScreenCapture
+
+    built = {}
+
+    class FakeDuplicator:
+        def __init__(self, output=None, device=None, timeout_ms=10):
+            built["timeout_ms"] = timeout_ms
+            self.timeout_ms = timeout_ms
+
+    class FakeStageSurf:
+        def rebuild(self, output=None, device=None):
+            pass
+
+        def release(self):
+            pass
+
+    class FakeOutput:
+        devicename = "FAKE"
+        resolution = (1920, 1080)
+        rotation_angle = 0
+
+        def update_desc(self):
+            pass
+
+    monkeypatch.setattr(capture_module, "Duplicator", FakeDuplicator)
+
+    cam = ScreenCapture.__new__(ScreenCapture)
+    cam._timeout_ms = 0                      # the caller asked for polling
+    cam._duplicator = None
+    cam._stagesurf = FakeStageSurf()
+    cam._output = FakeOutput()
+    cam._device = None
+    cam.width, cam.height = 1920, 1080
+    cam.region = (0, 0, 1920, 1080)
+    cam._region_set_by_user = False
+    cam._sourceRegion = None
+    cam.is_capturing = False
+    cam.rotation_angle = 0
+    cam._needs_reinit = False
+    cam._last_capture_error_message = ""
+    cam._max_output_change_retries = 12
+
+    assert cam._on_output_change() is True
+    assert built["timeout_ms"] == 0, "rebuild reset the caller's timeout"

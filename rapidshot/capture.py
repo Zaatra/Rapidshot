@@ -59,6 +59,7 @@ class ScreenCapture:
         max_buffer_len: int = 64, # This is for the continuous mode ring buffer
         pool_size_frames: int = 10, # New parameter for memory pool
         pool_output: bool = True,
+        timeout_ms: int = 10,
     ) -> None:
         """
         Initialize a ScreenCapture instance.
@@ -78,10 +79,23 @@ class ScreenCapture:
                 the array for indexing and ``np.asarray`` but **must** be
                 released when done. Pass False for the pre-2.0 behaviour of
                 returning a freshly allocated array that needs no release.
+            timeout_ms: How long each acquire waits for the compositor to
+                present a new frame. 0 polls, which costs roughly 4x the CPU for
+                about 7% more frames; the default blocks. See
+                :attr:`timeout_ms` for the measured curve.
+
+        Raises:
+            ValueError: If timeout_ms is negative.
         """
+        if not isinstance(timeout_ms, int) or isinstance(timeout_ms, bool) or timeout_ms < 0:
+            raise ValueError(
+                f"timeout_ms must be a non-negative int, got {timeout_ms!r}"
+            )
+
         # Initialize basic attributes first to prevent errors during cleanup if initialization fails
         self._output = output
         self._device = device
+        self._timeout_ms = timeout_ms
         self._duplicator = None
         self._stagesurf = None
         self._processor = None
@@ -244,7 +258,10 @@ class ScreenCapture:
             self._validate_region(self.region) # This updates self.region and shot_w, shot_h
 
             logger.debug(f"Creating Duplicator for output: {self._output.devicename}")
-            self._duplicator = Duplicator(output=self._output, device=self._device)
+            self._duplicator = Duplicator(
+                output=self._output, device=self._device,
+                timeout_ms=self._timeout_ms,
+            )
             
             logger.debug(f"Creating StageSurface for output: {self._output.devicename}")
             self._stagesurf = StageSurface(output=self._output, device=self._device)
@@ -689,6 +706,51 @@ class ScreenCapture:
         """Number of channels frames from this instance carry."""
         return self._processor.output_channels
 
+    @property
+    def timeout_ms(self) -> int:
+        """
+        How long each acquire waits for the compositor to present a new frame.
+
+        This trades CPU against throughput, and the trade is steep in one
+        direction only. Measured on a 100 Hz output against a source presenting
+        at ~610 updates/s:
+
+        =========  ======  ======  ======
+        timeout      fps    hit%    CPU%
+        =========  ======  ======  ======
+        0           127.8    2.4%   68.6
+        1           119.2   74.5%   19.5
+        5           118.2   95.3%   18.9
+        10          118.9  100.0%   15.7
+        =========  ======  ======  ======
+
+        Frame rate barely moves across that range; CPU moves by more than 4x.
+        Polling at ``0`` is what DXcam does -- it reached 134 fps at 66% CPU in
+        the same comparison, so the extra frames are real, they are just
+        expensive. Set ``0`` if capture is the only thing the machine is doing
+        and you want every frame the compositor produces; leave the default if
+        capture is one stage of a pipeline that needs its cores.
+
+        Note that frames beyond the display's refresh rate were never shown as
+        distinct images: useful as extra temporal samples for a model, redundant
+        for a recorder.
+
+        Reproduce with ``benchmarks/compare_libraries.py``.
+        """
+        return self._timeout_ms
+
+    @timeout_ms.setter
+    def timeout_ms(self, value: int) -> None:
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError(
+                f"timeout_ms must be a non-negative int, got {value!r}"
+            )
+        self._timeout_ms = value
+        # Apply to the live duplicator too, so the change takes effect on the
+        # next acquire rather than at the next rebuild.
+        if self._duplicator is not None:
+            self._duplicator.timeout_ms = value
+
     def bytes_per_frame(self, region: Optional[Tuple[int, int, int, int]] = None) -> int:
         """
         Size in bytes that :meth:`shot` writes for *region*.
@@ -1062,7 +1124,14 @@ class ScreenCapture:
         for attempt in range(self._max_output_change_retries):
             try:
                 self._stagesurf.rebuild(output=self._output, device=self._device)
-                self._duplicator = Duplicator(output=self._output, device=self._device)
+                # Carry the caller's timeout across the rebuild. Dropping it here
+                # would silently reset the setting to the default on the first
+                # resolution change or display reconnect -- a regression that
+                # only shows up as "it got slower after I unplugged a monitor".
+                self._duplicator = Duplicator(
+                    output=self._output, device=self._device,
+                    timeout_ms=self._timeout_ms,
+                )
                 logger.info(
                     f"Duplication rebuilt after output change "
                     f"(attempt {attempt + 1}, resolution {self.width}x{self.height})."
