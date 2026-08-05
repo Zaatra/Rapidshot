@@ -180,7 +180,7 @@ Everything below is the detail.
   fixed rather than silenced:
   - `unwrap_err()` after `is_err()` in both shader compilers — now binds the
     error with `if let Err(error) = &result`
-  - five `PCSTR(b"... ".as_ptr())` byte strings — now `c"..."` literals, which
+  - five `PCSTR(b"...\0".as_ptr())` byte strings — now `c"..."` literals, which
     is what makes the nul termination a property of the type rather than of
     remembering to type it
   - two `D3D11_*_VIEW_DESC::default()` followed by field assignment — now
