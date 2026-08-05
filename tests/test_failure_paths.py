@@ -436,3 +436,77 @@ def test_output_change_gives_up_immediately_on_protected_content(monkeypatch):
 
     assert cam._on_output_change() is False
     assert attempts["n"] == 1  # no retry storm
+
+
+# --------------------------------------------------------------------------
+# The "nothing is arriving" warning must describe elapsed time, not attempts
+# --------------------------------------------------------------------------
+
+def _quiet_warning_fired(capture, monkeypatch, clock_values, updated_flags):
+    """Drive the still-screen branch over a scripted clock, return warning count."""
+    import rapidshot.capture as capture_module
+
+    warnings = []
+    monkeypatch.setattr(capture_module.logger, "warning",
+                        lambda msg, *a, **k: warnings.append(msg))
+
+    ticks = iter(clock_values)
+    monkeypatch.setattr(capture_module.time, "perf_counter", lambda: next(ticks))
+
+    for updated in updated_flags:
+        now = capture_module.time.perf_counter()
+        if updated:
+            capture._last_frame_time = now
+            continue
+        if capture._last_frame_time is None:
+            capture._last_frame_time = now
+        quiet_for = now - capture._last_frame_time
+        if (quiet_for >= capture._quiet_warning_after_s
+                and now - capture._last_quiet_warning >= capture._quiet_warning_after_s):
+            capture_module.logger.warning(f"No screen updates for {quiet_for:.1f}s.")
+            capture._last_quiet_warning = now
+    return warnings
+
+
+class _Quiet:
+    """Just the warning state the capture loop keeps."""
+
+    def __init__(self):
+        self._last_frame_time = None
+        self._quiet_warning_after_s = 2.0
+        self._last_quiet_warning = 0.0
+
+
+def test_polling_misses_do_not_warn_while_frames_are_arriving(monkeypatch):
+    """A run of empty acquires is normal and must not be reported as a still screen.
+
+    With `timeout_ms=0` the capture loop makes tens of thousands of calls a
+    second and ~97% return nothing, so counting *consecutive* misses fired this
+    warning seven times while capture was running at 117 fps. The question is
+    how long it has been since a frame, not how many times we asked.
+    """
+    state = _Quiet()
+    # 600 polls across 3 seconds, a frame every 20th -- i.e. 5 ms apart, a
+    # perfectly healthy 200 fps with a 95% miss rate.
+    clock = [i * 0.005 for i in range(600)]
+    flags = [(i % 20 == 0) for i in range(600)]
+    assert _quiet_warning_fired(state, monkeypatch, clock, flags) == []
+
+
+def test_a_genuinely_still_screen_still_warns(monkeypatch):
+    """The warning must survive: a real stall is worth reporting."""
+    state = _Quiet()
+    clock = [0.0] + [1.0 + i * 0.5 for i in range(12)]
+    flags = [True] + [False] * 12
+    fired = _quiet_warning_fired(state, monkeypatch, clock, flags)
+    assert fired, "a still screen should still produce a warning"
+    assert "No screen updates for" in fired[0]
+
+
+def test_still_screen_warning_is_rate_limited(monkeypatch):
+    """Once every couple of seconds, not once per poll."""
+    state = _Quiet()
+    clock = [0.0] + [1.0 + i * 0.01 for i in range(1200)]   # 12s of polling
+    flags = [True] + [False] * 1200
+    fired = _quiet_warning_fired(state, monkeypatch, clock, flags)
+    assert 1 <= len(fired) <= 8, f"expected a handful of warnings, got {len(fired)}"

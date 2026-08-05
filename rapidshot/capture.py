@@ -133,9 +133,16 @@ class ScreenCapture:
         self._capture_permanently_failed = False
         self._last_capture_error_message = ""
         
-        # For timeout warnings (Phase 1 of timeout handling)
-        self._consecutive_timeouts = 0
-        self._timeout_warning_threshold = 100 # Warn after this many consecutive timeouts
+        # "Nothing is arriving" is a question about elapsed time, not about how
+        # many times we asked. Counting consecutive empty acquires made the
+        # answer depend on `timeout_ms`: with the 10 ms default, 100 misses mean
+        # a second of genuinely still screen, but with a polling timeout of 0 the
+        # same 100 misses take under 20 ms. That fired the warning seven times
+        # while capture was running at 117 fps -- a message that is not merely
+        # noisy but the opposite of true.
+        self._last_frame_time = None            # set on the first successful grab
+        self._quiet_warning_after_s = 2.0
+        self._last_quiet_warning = 0.0
         
         # Store initial constructor arguments for re-initialization
         self._init_args = {
@@ -891,17 +898,24 @@ class ScreenCapture:
                     pooled_buffer_wrapper.release()
                 return None
 
+            now = time.perf_counter()
             if self._duplicator.updated:
-                self._consecutive_timeouts = 0
+                self._last_frame_time = now
             else:
-                self._consecutive_timeouts += 1
-                if self._consecutive_timeouts >= self._timeout_warning_threshold:
+                # Warn about a screen that has actually been still for a while,
+                # and say so in seconds. A run of empty acquires is normal at any
+                # timeout and says nothing on its own.
+                if self._last_frame_time is None:
+                    self._last_frame_time = now
+                quiet_for = now - self._last_frame_time
+                if (quiet_for >= self._quiet_warning_after_s
+                        and now - self._last_quiet_warning >= self._quiet_warning_after_s):
                     logger.warning(
-                        f"No screen updates received for {self._consecutive_timeouts} consecutive attempts "
-                        f"(timeout: {self._duplicator.timeout_ms}ms per attempt). "
-                        "The screen may be static or not updating frequently."
+                        f"No screen updates for {quiet_for:.1f}s. Desktop "
+                        "Duplication only reports changed content, so a still "
+                        "screen produces no frames by design."
                     )
-                    self._consecutive_timeouts = 0
+                    self._last_quiet_warning = now
 
                 if self._duplicator._frame_acquired:
                     self._duplicator.release_frame()
