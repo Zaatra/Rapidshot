@@ -10,21 +10,15 @@ This document is written to be read cold. It states where the project actually i
 
 **Current state.** Rapidshot captures the desktop via DXGI Desktop Duplication and can hand a frame to a GPU consumer as a **model-ready NCHW float32 tensor that never touches the CPU**. The CPU path for the same work costs ~8 ms per 1080p frame. Core capture is pure Python; an *optional* Rust extension provides GPU interop only.
 
-### Release status — read this before anything else
+### Release status
 
-**2.0.0 is finished and verified, but not yet published.** The version on PyPI is 1.1.0 from April 2025, and it **does not work**: it fails to import on Python 3.11+ (`cursor: Cursor = Cursor()` trips the dataclass mutable-default check broadened in 3.11), and patching that one line only gets it to return all-black frames, because the processor is handed a texture where it expects a mapped staging surface. Every current-Python user is broken today. Shipping 2.0.0 is therefore the highest-value action available, ahead of any feature work below.
+**2.0.0 is published.** PyPI serves `rapidshot 2.0.0`, and the GitHub Release for `v2.0.0` (4 August 2026) carries its three assets. PyPI Trusted Publishing and the `pypi` GitHub environment are configured and restricted to `v*` tags, so a pushed tag is what cuts a release; the full procedure is in `RELEASING.md`.
 
-What remains, in order — the full procedure is in `RELEASING.md`:
+**1.1.0 is yanked**, reason *Newer Version*. It was the only thing on PyPI from April 2025 to now and it did not work: it failed to import on Python 3.11+ (`cursor: Cursor = Cursor()` trips the dataclass mutable-default check broadened in 3.11), and patching that one line only got it to return all-black frames, because the processor was handed a texture where it expected a mapped staging surface. Yanking is not deletion — an existing `rapidshot==1.1.0` pin still resolves, which is the intent; only new unpinned installs are steered away.
 
-1. `git push origin main` (commits may be outstanding; check `git log origin/main..HEAD`)
-2. Repo settings that files alone cannot enable: **Settings → Security → private vulnerability reporting** (or the link in `SECURITY.md` 404s), and a branch protection rule with *Require review from Code Owners* (or `CODEOWNERS` is only a routing hint)
-3. `git tag -a v2.0.0 -m "RapidShot 2.0.0"` and push the tag — that triggers `release.yml`, which builds, runs four wheel gates, publishes to PyPI via Trusted Publishing, then creates the GitHub Release
-4. Approve the `pypi` deployment when the workflow pauses for it
-5. Afterwards, consider **yanking 1.1.0** so nobody new lands on a version that returns black frames
+One release item cannot be verified from the repository and should be confirmed in the GitHub UI: **Settings → Security → private vulnerability reporting** must be enabled (or the link in `SECURITY.md` 404s), and branch protection needs *Require review from Code Owners* (or `CODEOWNERS` is only a routing hint).
 
-PyPI Trusted Publishing and the `pypi` GitHub environment are already configured, restricted to `v*` tags.
-
-**Next feature task once released:** § 6.3 — finish Stage 3 (Frame metadata). § 6.1 is complete: hybrid and headless systems are reported clearly, a captured frame crosses to a second adapter at **0.70–0.98 ms per 1080p frame** verified byte-exact, and the convert-first-or-transfer-first question has been measured and settled in favour of transferring the frame. What § 6.1 still lacks is validation on real hybrid hardware and an asynchronous shared fence, both noted there.
+**Next feature task:** § 6.3 — finish Stage 3 (Frame metadata). § 6.1 is complete: hybrid and headless systems are reported clearly, a captured frame crosses to a second adapter at **0.70–0.98 ms per 1080p frame** verified byte-exact, and the convert-first-or-transfer-first question has been measured and settled in favour of transferring the frame. What § 6.1 still lacks is validation on real hybrid hardware and an asynchronous shared fence, both noted there.
 
 **Before changing anything performance-related**, read § 3 (measured baseline) and § 4 (settled questions). Several intuitive-sounding optimisations have already been measured and rejected.
 
@@ -70,15 +64,30 @@ python benchmarks/ab_conversion.py
 
 ## 3. Measured baseline
 
-All figures 1920×1080 BGRA (8.3 MB/frame), measured on the dev machine. Stored in `benchmarks/baseline.json`, **re-recorded 2026-07-30** after the harness was corrected to pace reps to a frame period (§ 2). The previous recording is kept as `benchmarks/baseline-2026-07-27.json`; do not compare across the two, because they drove the benchmarks differently.
+All figures 1920×1080 BGRA (8.3 MB/frame), measured on the dev machine. Stored in `benchmarks/baseline.json`, **re-recorded 2026-08-05** after the GRAY work in § 10. Earlier recordings are kept as `benchmarks/baseline-2026-07-30.json` and `benchmarks/baseline-2026-07-27.json`; do not compare across recordings casually — the 07-27 one drove the benchmarks differently, and the notes below apply to the current one.
+
+**There are two committed recordings, and which one you want depends on the question:**
+
+| File | Extension | What it answers |
+| --- | --- | --- |
+| `baseline.json` | **built** | What the library can do on stated hardware. Feeds the README badges. |
+| `baseline-nonative.json` | absent | What `pip install rapidshot` gets, and what CI compares against — CI has no toolchain. |
+
+Both were recorded back-to-back on 2026-08-05 with `--rounds 5 --reps 25`, the invocation § 2 documents, so they are directly comparable to each other rather than separated by machine drift. Two consequences worth knowing:
+
+- **CI's compare step points at `baseline-nonative.json`.** Aimed at `baseline.json` it would report a 6–20× "regression" on every conversion row forever, since the runner builds no extension — which is how a benchmark suite teaches people to ignore it.
+- **`pipeline.gpu_dispatch` and `pipeline.gpu_plus_readback` appear only in `baseline.json`**; they need the extension.
+- The **live rows were recorded against a defined synthetic workload**: a 420×300 window moved at ~30 Hz. See the dirty-fraction note in § 6.3 — a small moving window is the *favourable* end of that distribution.
+
+Use `python benchmarks/compare_recordings.py` to diff any two stored recordings; it normalises each by its own control row before quoting a ratio.
 
 | Stage of the loop | Cost/frame |
 | --- | --- |
 | Python → COM binding overhead (~6 calls) | **0.003 ms** |
 | `CopySubresourceRegion` (GPU) | 0.016 ms |
 | Read from mapped staging surface | 2.27 ms |
-| Pixel conversion, RGB/BGR (NumPy, post-optimisation) | 1.76–1.80 ms |
-| Pixel conversion, GRAY | 13.7–14.9 ms — see § 10 |
+| Pixel conversion, RGB/BGR (NumPy, post-optimisation) | 1.76–1.84 ms |
+| Pixel conversion, GRAY (NumPy) | 6.9–10.5 ms — was 13.7–14.9, see § 10 |
 | Preprocess for a model (resize/normalise/CHW → 640×640) | 6.23 ms |
 | **CPU total, capture → model input** | **~8 ms** |
 
@@ -86,10 +95,61 @@ Capture path comparison, real capture:
 
 | Path | Per frame |
 | --- | --- |
-| `grab()` — CPU staging read + convert | 4.53 ms |
-| `grab_frame()` — texture stays on GPU | **0.21 ms** |
+| `grab()` — CPU staging read + convert | 4.27 ms — **see the caveat below** |
+| `grab_frame()` — texture stays on GPU | 0.77 ms — **see the caveat below** |
 
-Absolute figures rose against the 2026-07-27 recording (RGB 1.45 → 1.76 ms, GRAY 9.16 → 13.72 ms). Part of that is the harness correction, which stopped flattering GRAY in particular; part may be machine state three days apart. The two causes cannot be separated after the fact, which is the argument for re-recording a baseline whenever the harness changes rather than carrying one across.
+**Neither live figure should be quoted without this caveat, and both are unreliable.** Across six recordings in a single session, on code that only ever got faster, the minima ranged:
+
+| Row | Observed range | Spread |
+| --- | --- | --- |
+| `live.grab_with_frame` | 1.65 – 4.53 ms | 2.7× |
+| `live.grab_frame_gpu` | 0.17 – 0.77 ms | 4.5× |
+
+`grab_frame()` does no conversion at all — the texture never leaves the GPU — so its 4.5× spread is *purely* measurement, not code. The honest figure for it remains **0.17–0.21 ms**, which five of six recordings agree on; `baseline.json` happens to hold the outlier.
+
+Three traps sit behind this, all worth keeping:
+
+- **Live cost tracks the screen, not the library.** Region-limited conversion only converts the dirty part, so `grab()` depends on what moved. § 6.3 records the same effect from the other side: median dirty fraction was 0.8% for a small animated window and 68% for a dragged one.
+- **A minimum is monotonically non-increasing in sample count.** Raising `--live-seconds` from 3 to 15 moved `grab()` from 3.08 to 1.65 ms on unchanged code — more samples simply find a luckier frame. So live rows are comparable only at identical `--live-seconds`, and "sample longer" makes the number flattering rather than truer. Use the default.
+- **Re-recording until the number looks good is cherry-picking**, and it is tempting precisely because the spread is this wide. The recording stands as taken.
+
+**The `grab`/`grab_frame` badges inherit all of this, and that is a known defect.** The `BGRA→RGB` badge was added because `convert.*` rows are synthetic and deterministic: it moves when the library changes and not otherwise, which is what a badge is for. Replacing the two live badges with synthetic rows is the obvious fix and has not been done.
+
+Between the 07-27 and 07-30 recordings the absolute figures *rose* (RGB 1.45 → 1.76 ms, GRAY 9.16 → 13.72 ms). Part of that was the harness correction, which stopped flattering GRAY in particular; part was machine state three days apart. The two causes could not be separated after the fact, which is the argument for re-recording a baseline whenever the harness changes rather than carrying one across — and for recording *why* alongside the numbers, as the provenance list above now does.
+
+### Native conversion kernels
+
+Every colour mode now has a byte-exact Rust kernel, used automatically when the optional extension is present and declined cleanly when it is not. Measured 2026-08-05 by `perf_suite --synthetic-only --rounds 5 --reps 25 --compare`, against the native-absent baseline, with the control's 1.11× drift divided out:
+
+| Mode | NumPy | Native | Gain | GB/s | Share of the 33.2 GB/s ceiling |
+| --- | --- | --- | --- | --- | --- |
+| BGRA | 0.22 ms | *(unchanged)* | — | 33.2 | **100%** — a straight copy; nothing to win |
+| GRAY | 9.39 ms | **0.26 ms** | **37.2×** | 31.8 | **96%** |
+| BGR | 1.91 ms | **0.30 ms** | 6.5× | 27.3 | 82% |
+| RGB | 1.90 ms | **0.31 ms** | 6.3× | 26.6 | 80% |
+| RGBA | 2.61 ms | **0.36 ms** | 7.5× | 22.9 | 69% |
+
+The `convert.BGRA` row is the control that made this worth doing at all: the same 8.29 MB moves at 33.2 GB/s when nothing is reordered, so the old 2–3 ms figures were never a memory-system limit. They were three separate strided gather/scatter passes — `dst[..., 0] = src[..., 2]` and so on — where one pass can read each cache line once.
+
+**The three reorder modes use `pshufb`; that is what took them from 30–65% of the ceiling to 69–79%.** The autovectorised Rust loops first reached only 2.5–7.2×, and RGB was the worst of them despite being the mode most CV consumers hand to a model. The reason was visible by contrast with BGR: both write three bytes per pixel, but BGR keeps channel order and LLVM widens it into a clean load-4/store-3, whereas RGB has to *reverse* each triple, which defeated the vectoriser entirely and degraded to per-byte stores. `_mm256_shuffle_epi8` expresses exactly that permutation, and RGB went 0.82 → 0.32 ms.
+
+Two things about that kernel are worth not rediscovering:
+
+- **It stores exactly 24 bytes, not 32.** The conventional trick for a 3-byte output is to store a full vector and let the next iteration overwrite the surplus. That would run past the end of a row — which for a dirty-rect patch is not the end of the buffer but *the next row of live pixels*, so it corrupts silently rather than crashing. Storing 16 + 8 costs one extra instruction and removes the hazard, and the tests assert no write lands past a row end.
+- **`pshufb` works per 128-bit lane**, so after the shuffle each half holds 12 useful bytes followed by 4 zeros. `vpermd` compacts the halves (dwords 0,1,2 then 4,5,6) before the store. Skipping that step yields output that looks right for the first four pixels of every group and is wrong afterwards.
+
+AVX2 is detected at runtime — x86_64 guarantees only SSE2, so a wheel that assumed it would fault on older hardware — with the scalar loops as the fallback. The tests compare vector against scalar at **every width from 1 to 64**, which is what covers all eight possible tail lengths; a tail bug is invisible at any width that happens to be a multiple of 8 — including the 1920 this library actually runs at.
+
+**GRAY has an AVX2 kernel too, and it is now the fastest of the five at 96% of the ceiling** — 0.26 ms, which beats single-threaded OpenCV's 0.34 ms while being byte-exact where OpenCV is off by up to 1 LSB. It went from the slowest mode by an order of magnitude to essentially free. Its design is dictated entirely by one hazard:
+
+- **`_mm256_maddubs_epi16` is unusable, despite looking purpose-built.** It accumulates into *signed* i16 with saturation, and `b*29 + g*150` reaches 45,645 — past 32,767. It would clamp on bright pixels and corrupt them silently; the error appears only in highlights, so no test of speed, shape or stability would catch it, and a randomly sampled correctness test would very likely pass.
+- The way around it is to widen to u16 first and use **`_mm256_madd_epi16`, which accumulates into i32** where the Q8 total cannot overflow. One unpack per half buys correctness that does not depend on the input.
+- `phaddd` then sums the two partial products per pixel and, usefully, interleaves the low and high unpacks back into pixel order — so all eight lumas emerge in sequence with no cross-lane fixup.
+- Because of that hazard the correctness test is **exhaustive over all 2²⁴ BGR triples through the vector path**, not sampled. It costs about 20 ms.
+
+That leaves RGBA the least efficient at 69%, and it is the one mode where the autovectoriser was already close, so there is little left to win anywhere in conversion. **The remaining CPU costs are elsewhere: see § 10.**
+
+None of this changes `benchmarks/baseline.json`, which is deliberately recorded with the extension absent (§ 3 provenance above). The NumPy fallbacks were left byte-for-byte identical, so the no-toolchain install performs exactly as the baseline records.
 
 Cross-adapter transfer, 1080p BGRA (8.29 MB) into a `SHARED_CROSS_ADAPTER` heap, copy-queue submission and fence wait included:
 
@@ -116,6 +176,10 @@ For scale: this is about a third of what reading the same frame to the CPU costs
 **D3D11 cannot share buffers — only 2D non-mipmapped textures.** Six configurations were probed (structured/raw/plain × NT-handle/legacy); none produced a buffer D3D12 could open. This is why the conversion shader runs on D3D12. `native.probe_shareable_buffers()` re-checks it; a regression test fails if this ever changes.
 
 **HLSL presents BGRA textures semantically.** For `DXGI_FORMAT_B8G8R8A8_UNORM` the hardware swizzles so `.x` is **red**, despite blue being first in memory. Reversing channels by hand produces BGR labelled RGB — silently wrong model input that no test of speed or shape catches.
+
+**DWM does not emit move rects.** Measured 2026-08-05 on the dev machine (Intel iGPU, Windows 11): 2,205 frames of live capture while a 700×500 window was dragged across the screen at 30 Hz with its text view scrolling — the two classic move-rect producers. `GetFrameMoveRects` returned `S_OK` on every frame and reported **zero** move rects, while dirty rects arrived on all of them (4,071 rects). `TotalMetadataBufferSize` ranged 16–144 bytes; a `RECT` is 16 bytes and a `DXGI_OUTDUPL_MOVE_RECT` is 24, so the smallest frames do not reserve room for a single move rect. Under DWM composition this metadata is effectively vestigial.
+
+The spec requirement is real even so, and is recorded here as a latent hole rather than a closed one: [MSDN states that to produce a visually accurate copy an application must process all move rects before it processes dirty rects](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_2/nf-dxgi1_2-idxgioutputduplication-getframemoverects). The § 6.3 accumulator patches dirty rects only, so against a source that *does* report moves it would leave stale pixels at the move destinations. This is verified unobservable here, not proven impossible everywhere — one GPU, one driver, one OS build. Treat `move_rects` as **not worth implementing** until a source that emits them is found: the code path cannot be exercised on available hardware, and synthetic metadata proves nothing (§ 2).
 
 **A software adapter is not a second GPU.** The Microsoft Basic Render Driver (WARP) reports zero outputs, exactly like the dGPU on an Optimus laptop, so the obvious "adapter with no outputs = discrete GPU" check calls every ordinary desktop a hybrid system. `DXGI_ADAPTER_FLAG_SOFTWARE` is what separates them. The flip side is useful: WARP is a real second D3D12 device, which is what makes the cross-adapter path testable on a single-GPU machine at all.
 
@@ -183,7 +247,7 @@ So B wins only below 416², **640² is a tie**, and A wins clearly above it. Thr
 
 Remaining work:
 
-- **A shared fence.** Synchronisation is currently CPU-side: `transfer` blocks until the source GPU finishes. Correct, but it serialises the two adapters. `D3D12_FENCE_FLAG_SHARED | SHARED_CROSS_ADAPTER` would let them overlap. Likely worth more than the ordering choice ever was.
+- **A shared fence.** Synchronisation is currently CPU-side: `transfer` blocks until the source GPU finishes (`end_and_wait` in `native/src/cross_adapter.rs`). Correct, but it serialises the two adapters, and `D3D12_FENCE_FLAG_SHARED | SHARED_CROSS_ADAPTER` would let them overlap. **Measured 2026-08-05: the blocking wait is not the cost.** `probe_cross_adapter()` reports 0.83 ms min / 1.01 ms median for the copy at 9.5 GB/s, indistinguishable from `transfer()`'s 0.70–0.98 ms — so the wait adds essentially nothing per frame. The fence buys *overlap*: latency and pipelining, not throughput. It also cannot be validated here, because the probe reports `representative: False` and `destination_is_software: True`, and overlap against WARP predicts nothing about how a real discrete GPU schedules two queues. **Do this on hybrid hardware, not before.**
 - **Real hybrid hardware.** WARP proves the mechanism; it cannot prove an Intel→NVIDIA transfer behaves the same. `examples/verify_cross_adapter.py` is the check to run there.
 - Do **not** chase per-frame shared-handle caching on this evidence. One run suggested `transfer()` cost 1.48 ms against a 0.66 ms raw copy, implying ~0.8 ms of per-frame handle overhead; three further runs put it at 0.70–0.98 ms, consistent with the raw copy. The apparent overhead was noise. (The capture texture pointer *is* stable across frames, so caching remains possible if a real profile ever justifies it.)
 
@@ -197,7 +261,9 @@ Not yet exercised on a genuinely headless machine — the logic is tested by des
 
 ### 6.3 — Finish Stage 3 (Frame metadata)
 
-The lifetime slice is done, `dirty_rects` is done, and `py.typed` now ships with the module-level API annotated. **Still missing:** `move_rects` (the COM signature is declared and ready — see § 6.3's settled notes), cursor data on `Frame`, normalised timestamps, and `Protocol`-typed interfaces for the public surface.
+The lifetime slice is done, `dirty_rects` is done, and `py.typed` now ships with the module-level API annotated. **Still missing:** cursor data on `Frame`, normalised timestamps, and `Protocol`-typed interfaces for the public surface.
+
+`move_rects` is **deferred, not pending.** The COM signature is declared correctly and is ready to call, but DWM never emits a move rect (§ 4), so there is nothing to wire it to and no way to test what was wired.
 
 Design this **before** a second backend exists — retrofitting a DXGI-shaped API to fit WGC later is more expensive than designing one abstraction all backends fill.
 
@@ -262,6 +328,8 @@ Three reasons the projection missed, all worth keeping in mind before trusting t
 - **The pipeline benchmark used a RAM proxy for the mapped surface**, as `perf_suite.py`'s fixture does. A real mapped staging surface is uncached and far slower, so the component that shrinks least was the one modelled most optimistically. The 12–15× figure was measuring the wrong thing, not measuring it wrongly.
 
 Still worth having: 1.6 ms/frame, no regression on the median, correctness verified live. But quote 1.5×, not 12×.
+
+**And quote it with its workload.** The 0.7–0.8% dirty figure is a small animated window on an otherwise still desktop. Measured 2026-08-05 over 999 live frames with a 700×500 window dragged across the screen while its text scrolled, the dirty fraction was **median 0.68, mean 0.74, max 1.00** — about 85× the headline figure. Read against the table above that is roughly 1.2×, and any frame past `DIRTY_AREA_LIMIT` (0.9) falls back to a full conversion outright. So the optimisation is worth 1.5× on incidental desktop animation and decays toward 1.0× under sustained drag or scroll — which is what a screen-share or agent-driving workload actually produces. Neither figure is wrong; the distribution is the honest answer, and a single number quoted without its workload will mislead whoever reads it next.
 
 **Reading rect columns instead of whole rows: measured, no difference.** The idea was to touch 0.8% of the surface instead of 11.5%. Against a real mapped staging surface with fixed rect shapes, both strategies land within noise — tall-and-narrow, square, and wide-and-short alike. `_read_patch_columns` is kept only so `benchmarks/dirty_rect_read_strategy.py` can reproduce that; rows stays the default as the simpler of two equals.
 
@@ -337,10 +405,16 @@ Realistic cost is roughly six months with a native-graphics-fluent co-maintainer
 - **Exclusive-fullscreen and HDCP paths are fault-injection tested only.** The logic is verified against injected HRESULTs; neither has been exercised by its real trigger.
 - **Hybrid and headless topologies are classified but never observed.** The dev machine is a single Intel iGPU driving two monitors. Both branches are tested by describing those machines; neither has been run on one.
 - **Cross-adapter sharing verified against WARP only.** The mechanism works and the source-side cost is measured, but no Intel→NVIDIA transfer has been performed.
-- **GRAY is by far the slowest colour mode, and worse than previously recorded.** It is bimodal: a ~9.2 ms fast mode and a ~15 ms slow one. The fast mode is a transient the CPU sustains for a second or two, so a *capture loop never sees it* — at 60 Hz GRAY fills ~95% of a frame and runs effectively sustained. The old 9.16 ms figure came from a harness that drove it in short bursts; the honest number is **13.7–14.9 ms**, which means GRAY cannot keep up with a 60 Hz display at 1080p. A SIMD kernel is now the clearest remaining CPU win, and this is the strongest argument yet for writing one.
+- **GRAY was by far the slowest colour mode; both halves are now fixed.** It used to be bimodal — a ~9.2 ms fast mode the CPU sustains for a second or two and a ~15 ms slow one — and because a capture loop never sees the transient, the honest figure was **13.7–14.9 ms**, filling ~95% of a 60 Hz frame. Two changes landed 2026-08-05, measured by `benchmarks/gray_kernel.py`:
+  - **NumPy path: ~16 ms → 8.5–11 ms (1.5–1.8×), byte-identical.** The old formulation allocated a full-frame uint16 temporary per channel; those page faults cost more than the arithmetic. Reusing persistent intermediates removed them. This is what `pip install rapidshot` gets — no toolchain, no new dependency.
+  - **Native kernel: → 0.70 ms (24× on the same machine), byte-identical.** `native/src/luma.rs`, exercised through `NumpyProcessor.convert_into` when the optional extension is present. GRAY now costs 4% of a 60 Hz frame instead of ~95%.
+  Byte-exactness is asserted over all 2²⁴ BGR triples on both sides of the FFI boundary — it is what lets the accelerated path be swapped in without changing any consumer's pixels, and it is the one thing OpenCV's kernel cannot offer (off by up to 1 LSB, mean 0.13, because it rounds differently).
+  - **AVX2 kernel: → 0.26 ms, byte-identical, 96% of the memory ceiling.** GRAY is now the *fastest* of the five modes, having been the slowest by an order of magnitude, and it beats single-threaded OpenCV (0.34 ms) while OpenCV is off by up to 1 LSB. **37× against the NumPy path, 59× against the 2.0.0 formulation.** § 3 records the `maddubs` saturation hazard that dictates the design and why the correctness test is exhaustive over all 2²⁴ triples rather than sampled.
+  **Conversion is finished as an optimisation target.** All five modes sit at 69–100% of the 33.2 GB/s the memory system delivers; RGBA at 69% is the weakest and worth ~0.1 ms. `benchmarks/baseline.json` and the badges were re-recorded after this landed. GRAY's *NumPy* path remains duty-cycle sensitive (6.9–10.5 ms across runs in one session), so the suite flags it informational rather than gating on it — quote a range for that one.
 - **CuPy/CUDA paths untested** — no NVIDIA GPU available. Worth a spike: `gfx2cuda` + CuPy may give a **pure-Python** D3D11→CUDA tensor path, which would mean CUDA users get GPU tensors with no build step at all.
 - **`shot()` writes BGRA regardless of `output_color`**, and overruns an undersized buffer without bounds checks. Documented; not yet fixed.
-- **No hosted docs**, no release automation.
+- **`pipeline.cpu_to_nchw` is now the largest CPU cost in the baseline at 6.4–6.8 ms**, and it is untouched — bigger than any single colour conversion now that the native kernels have landed (§ 3). Stage 6's GPU path bypasses it, but every CPU-only consumer still pays it in full. The staging read at 2.27 ms is the second, and § 6.3 records why dirty rects could not shrink it: the read scales with dirty *rows*, not area.
+- **No hosted docs.** Release automation exists as of 2.0.0 (§ 5); `GOVERNANCE.md` and OpenSSF Scorecard remain outstanding (§ 7).
 
 ---
 

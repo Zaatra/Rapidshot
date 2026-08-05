@@ -69,6 +69,112 @@ def build_info() -> Optional[Dict[str, Any]]:
     return dict(_ext.build_info())
 
 
+def _addressable(src, dst, channels) -> bool:
+    """Whether the kernels can address this pair of arrays directly.
+
+    Shared by both conversion wrappers. Everything refused here is a layout where
+    the arrays' strides would not describe the memory a raw-pointer kernel is
+    about to walk -- a 3-channel source, a column slice, a transposed view. All
+    are legitimate inputs to the NumPy path, so refusing is routine.
+    """
+    if src.dtype != "uint8" or src.ndim != 3 or src.shape[2] != 4:
+        return False
+    if src.strides[2] != 1 or src.strides[1] != 4 or src.strides[0] < src.shape[1] * 4:
+        return False
+
+    if dst.dtype != "uint8" or dst.shape[:2] != src.shape[:2]:
+        return False
+    if channels == 1:
+        if dst.ndim != 2 or dst.strides[1] != 1 or dst.strides[0] < dst.shape[1]:
+            return False
+    else:
+        if dst.ndim != 3 or dst.shape[2] != channels:
+            return False
+        # Pixels must be packed within a row; rows themselves may be strided.
+        if dst.strides[2] != 1 or dst.strides[1] != channels:
+            return False
+        if dst.strides[0] < dst.shape[1] * channels:
+            return False
+    return True
+
+
+def bgra_swizzle_into(src, dst, mode: str) -> bool:
+    """
+    Reorder BGRA `src` into `dst` for mode RGB, BGR or RGBA.
+
+    Returns True if the native path ran, False if the layout is not one it can
+    address, in which case the caller must fall back to NumPy. Byte-identical to
+    what `NumpyProcessor.convert_into` produces for the same mode.
+
+    These are the most-used modes, and the ones furthest from the memory system's
+    limit: the NumPy path assigns one channel at a time, so it makes three
+    strided passes over the frame where one pass suffices. See `native/src/
+    swizzle.rs` for the measured gap.
+
+    Both row pitches come from the arrays' own strides, so a dirty-rect
+    sub-rectangle of the accumulator is written in place without a copy.
+    """
+    if _ext is None:
+        return False
+
+    channels = 4 if mode == "RGBA" else 3
+    if mode not in ("RGB", "BGR", "RGBA"):
+        return False
+    if not _addressable(src, dst, channels):
+        return False
+
+    height, width = dst.shape[:2]
+    pitch, dst_pitch = src.strides[0], dst.strides[0]
+    src_len = pitch * (height - 1) + width * 4
+    dst_len = dst_pitch * (height - 1) + width * channels
+
+    _ext.bgra_swizzle_into(
+        src.ctypes.data, src_len, dst.ctypes.data, dst_len,
+        width, height, mode, pitch, dst_pitch,
+    )
+    return True
+
+
+def bgra_to_gray_into(src, dst) -> bool:
+    """
+    Convert BGRA `src` into single-channel `dst` using the native kernel.
+
+    Returns True if the native path ran, False if this pair of arrays is not
+    something it can address, in which case the caller must fall back to NumPy.
+    Returning a flag rather than raising is deliberate: an unsupported layout is
+    an ordinary occurrence, not an error, and the NumPy path is always correct.
+
+    Byte-identical to `rapidshot.processor.numpy_processor.bgra_to_gray` -- the
+    Rust side asserts that over all 2^24 BGR triples and the Python suite checks
+    it again through this wrapper. Measured 0.686 ms against NumPy's 9.4 ms on a
+    1920x1080 frame (`benchmarks/gray_kernel.py`).
+
+    The geometry is passed explicitly because the kernel takes raw addresses:
+    both row pitches come from the arrays' own strides, so a sub-rectangle of a
+    larger buffer is addressed correctly without being copied first. Everything
+    this function refuses is a layout where those strides would not describe the
+    memory the kernel is about to walk.
+    """
+    if _ext is None:
+        return False
+    if not _addressable(src, dst, 1):
+        return False
+
+    height, width = dst.shape
+    pitch, dst_pitch = src.strides[0], dst.strides[0]
+    # The span each view actually owns, from its own first byte to its last.
+    # Passing these lets the kernel cross-check the geometry it was handed
+    # against the buffer it was pointed at, instead of trusting either alone.
+    src_len = pitch * (height - 1) + width * 4
+    dst_len = dst_pitch * (height - 1) + width
+
+    _ext.bgra_to_gray_into(
+        src.ctypes.data, src_len, dst.ctypes.data, dst_len,
+        width, height, pitch, dst_pitch,
+    )
+    return True
+
+
 def describe_texture(frame) -> Dict[str, Any]:
     """
     Read the Direct3D description of a live :class:`~rapidshot.frame.Frame`.

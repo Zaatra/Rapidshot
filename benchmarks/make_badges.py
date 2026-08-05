@@ -13,6 +13,19 @@ regenerated from it, and CI fails if they drift apart -- which is the failure
 mode that let the README claim "240Hz+" and "Python 3.7+" long after neither
 was true.
 
+**`baseline.json` is recorded with the optional native extension built**, so the
+badges describe the library at full capability. `baseline-nonative.json` is the
+same suite without it -- what a plain `pip install rapidshot` gets, and what CI
+compares against, since CI has no toolchain. The README says which is which next
+to the badges; if that ever stops being true, the badges are lying by omission
+even while matching the file they came from.
+
+A note on the two kinds of row here. `live.*` come from real capture and depend
+on what was on screen at the time: ROADMAP.md section 3 records a 1.65-4.08 ms
+spread on unchanged code, so those badges move for reasons that have nothing to
+do with the library. `convert.*` are synthetic and deterministic, which is why a
+conversion badge was added -- it is the one that actually tracks work done.
+
     python benchmarks/make_badges.py           # write badge JSON
     python benchmarks/make_badges.py --check    # fail if out of date (CI)
 """
@@ -27,9 +40,22 @@ BASELINE = ROOT / "benchmarks" / "baseline.json"
 BADGE_DIR = ROOT / ".github" / "badges"
 
 # (badge filename, label, benchmark name in baseline.json)
+#
+# Synthetic rows only. The `live.*` rows were badged until 2026-08-05 and had to
+# go: over six recordings on code that only ever got faster,
+# `live.grab_frame_gpu` spanned 0.17-0.77 ms -- a 4.5x swing on a path that does
+# no conversion at all, so the badge was reporting the desktop rather than the
+# library. A badge that moves for reasons the reader cannot see is worse than no
+# badge. The live figures are still measured and still in ROADMAP.md section 3,
+# with their range stated; they are just not advertised as if they were stable.
 BADGES = [
-    ("grab-frame.json", "grab_frame()", "live.grab_frame_gpu"),
-    ("grab.json", "grab()", "live.grab_with_frame"),
+    # RGB is the mode most consumers hand to a model.
+    ("convert-rgb.json", "BGRA->RGB", "convert.RGB"),
+    # GRAY was the slowest mode by an order of magnitude; worth showing it is not.
+    ("convert-gray.json", "BGRA->GRAY", "convert.GRAY"),
+    # The direct-to-buffer capture path: staging read plus conversion, which is
+    # the closest deterministic analogue of what `grab()` costs.
+    ("shot.json", "shot()->buffer", "shot.RGB"),
 ]
 
 

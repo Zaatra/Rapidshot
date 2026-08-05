@@ -5,9 +5,21 @@
 [![Python](https://img.shields.io/pypi/pyversions/rapidshot)](https://pypi.org/project/rapidshot/)
 [![License](https://img.shields.io/pypi/l/rapidshot)](LICENSE)
 
-[![grab_frame](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Zaatra/Rapidshot/main/.github/badges/grab-frame.json)](ROADMAP.md#3-measured-baseline)
-[![grab](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Zaatra/Rapidshot/main/.github/badges/grab.json)](ROADMAP.md#3-measured-baseline)
+[![BGRA to RGB](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Zaatra/Rapidshot/main/.github/badges/convert-rgb.json)](ROADMAP.md#3-measured-baseline)
+[![BGRA to GRAY](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Zaatra/Rapidshot/main/.github/badges/convert-gray.json)](ROADMAP.md#3-measured-baseline)
+[![shot to buffer](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Zaatra/Rapidshot/main/.github/badges/shot.json)](ROADMAP.md#3-measured-baseline)
 [![measured on](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Zaatra/Rapidshot/main/.github/badges/measured-on.json)](benchmarks/baseline.json)
+
+<sub>Generated from [`benchmarks/baseline.json`](benchmarks/baseline.json), recorded
+**with the optional native extension built**. A plain `pip install rapidshot`
+needs no toolchain and uses pure-NumPy conversion, which is slower — those
+numbers are in
+[`benchmarks/baseline-nonative.json`](benchmarks/baseline-nonative.json)
+(BGRA→RGB 1.9 ms rather than 0.32 ms). These are all deterministic synthetic
+benchmarks. The end-to-end `grab()` and `grab_frame()` figures are measured too
+but deliberately not badged: they depend on what is on screen, and
+`grab_frame()` alone spanned 0.17–0.77 ms across six recordings of unchanged
+code. See [ROADMAP.md § 3](ROADMAP.md#3-measured-baseline).</sub>
 
 A high-performance screencapture library for Windows using the Desktop Duplication API. This is a merged version combining features from multiple DXCam forks, designed to deliver ultra-fast capture capabilities with advanced functionality.
 
@@ -17,7 +29,11 @@ A high-performance screencapture library for Windows using the Desktop Duplicati
   most one frame per refresh, and RapidShot keeps up with that ceiling — about
   240 fps on a 240 Hz monitor. No capture library can exceed it.
 - **GPU-resident frames**: `grab_frame()` hands back a frame that never leaves
-  the GPU — 21× faster than `grab()`, for consumers that feed a model directly
+  the GPU, skipping the CPU round-trip entirely — for consumers that feed a model
+  directly
+- **Colour conversion is essentially free** with the optional native extension:
+  BGRA→RGB in 0.31 ms and BGRA→GRAY in 0.26 ms per 1080p frame, at 80–96% of what
+  the memory system can move, and byte-identical to the pure-Python path
 - **Only process what changed**: frames carry the compositor's dirty-rect
   metadata, typically under 1% of the screen on a normal desktop
 - **Hybrid GPU laptops**: move a frame to the discrete GPU that Desktop
@@ -445,9 +461,12 @@ with screencapture.grab_frame() as frame:
     print(frame.timestamp, frame.accumulated_frames)
 ```
 
-Measured at 1920x1080: **0.21 ms/frame versus 4.53 ms — about 21x faster.**
-Numbers come from `benchmarks/baseline.json`; see ROADMAP.md section 3 for how
-they are measured and why they moved.
+Both paths are measured in `benchmarks/baseline.json`, but **neither is a stable
+number**: each depends on what is on screen, because conversion is limited to the
+regions that changed. Over seven recordings of unchanged code, `grab_frame()`
+ranged 0.17–0.83 ms and `grab()` 1.65–4.53 ms. The gap is real and consistently
+in `grab_frame()`'s favour — it skips the CPU round-trip entirely — but quote the
+range, not a ratio. See ROADMAP.md section 3.
 
 > **The `with` block is not optional.** Direct3D cannot capture the next frame
 > while a reference to the previous one is outstanding, so an unreleased `Frame`
@@ -606,14 +625,26 @@ someone else's machine tells you nothing about yours.
 What is measured, reproducibly, is the per-frame cost of RapidShot's own paths
 (1920×1080, Intel iGPU, from `benchmarks/baseline.json`):
 
-| Path | Per frame | Implied ceiling |
+| Path | Per frame | Notes |
 | --- | --- | --- |
-| `grab()` — staging read + colour conversion | 4.53 ms | ~220 fps |
-| `grab_frame()` — texture stays on the GPU | **0.21 ms** | far above any display |
+| Colour conversion, BGRA→RGB | **0.31 ms** | 1.9 ms without the native extension |
+| Colour conversion, BGRA→GRAY | **0.26 ms** | 9.4 ms without it |
+| `shot()` → your buffer | **0.32 ms** | staging read plus conversion |
+| `grab()` — end to end | 1.7–4.5 ms | **depends on screen activity, see below** |
+| `grab_frame()` — texture stays on the GPU | 0.17–0.83 ms | same caveat |
 
-The `grab_frame()` figure is not a capture rate. It is what the *calling thread*
-pays per frame; the display still delivers only one frame per refresh. What it
-means is that capture stops being your bottleneck.
+The first three are synthetic and deterministic: they move when the library
+changes and not otherwise, which is why they are the ones on the badges above.
+
+**The last two are not stable measurements and should not be quoted as single
+numbers.** `grab()` converts only the parts of the frame that changed, so its
+cost tracks what is happening on screen; across seven recordings on unchanged
+code `grab_frame()` alone spanned 0.17–0.83 ms. They are reported for shape, not
+precision.
+
+Neither figure is a capture rate. They are what the *calling thread* pays per
+frame; the display still delivers only one frame per refresh. What they mean is
+that capture stops being your bottleneck.
 
 See `ROADMAP.md` section 3 for the full breakdown and how these are measured.
 

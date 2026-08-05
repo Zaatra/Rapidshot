@@ -1,0 +1,185 @@
+{
+  "machine": {
+    "timestamp": "2026-08-05T07:21:09.492079+00:00",
+    "python": "3.13.14",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 198 Stepping 2, GenuineIntel",
+    "numpy": "2.5.1",
+    "frame": "1920x1080",
+    "rapidshot": "2.0.0",
+    "gpu": "Intel(R) Graphics"
+  },
+  "results": [
+    {
+      "name": "convert.BGRA",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 0.2562,
+      "min_ms": 0.2153,
+      "p95_ms": 0.2948,
+      "stdev_ms": 0.025563,
+      "gb_per_s": 32.375
+    },
+    {
+      "name": "convert.RGBA",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 2.9212,
+      "min_ms": 2.6122,
+      "p95_ms": 3.5716,
+      "stdev_ms": 0.312571,
+      "gb_per_s": 2.839
+    },
+    {
+      "name": "convert.RGB",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 2.0717,
+      "min_ms": 1.8972,
+      "p95_ms": 2.3419,
+      "stdev_ms": 0.138916,
+      "gb_per_s": 4.004
+    },
+    {
+      "name": "convert.BGR",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 2.0913,
+      "min_ms": 1.9053,
+      "p95_ms": 2.5812,
+      "stdev_ms": 0.196068,
+      "gb_per_s": 3.966
+    },
+    {
+      "name": "convert.GRAY",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 11.5987,
+      "min_ms": 9.393,
+      "p95_ms": 12.2475,
+      "stdev_ms": 0.45682,
+      "gb_per_s": 0.715
+    },
+    {
+      "name": "shot.BGRA",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 0.2444,
+      "min_ms": 0.2277,
+      "p95_ms": 0.3053,
+      "stdev_ms": 0.027636,
+      "gb_per_s": 33.938
+    },
+    {
+      "name": "shot.RGBA",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 3.06,
+      "min_ms": 2.6721,
+      "p95_ms": 3.681,
+      "stdev_ms": 0.306995,
+      "gb_per_s": 2.711
+    },
+    {
+      "name": "shot.RGB",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 2.1604,
+      "min_ms": 2.0183,
+      "p95_ms": 2.5434,
+      "stdev_ms": 0.186213,
+      "gb_per_s": 3.839
+    },
+    {
+      "name": "shot.BGR",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 2.1478,
+      "min_ms": 2.0138,
+      "p95_ms": 2.5838,
+      "stdev_ms": 0.184267,
+      "gb_per_s": 3.862
+    },
+    {
+      "name": "shot.GRAY",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 11.6096,
+      "min_ms": 10.1277,
+      "p95_ms": 11.9571,
+      "stdev_ms": 0.259739,
+      "gb_per_s": 0.714
+    },
+    {
+      "name": "process.BGRA",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 0.2502,
+      "min_ms": 0.2179,
+      "p95_ms": 0.2965,
+      "stdev_ms": 0.036644,
+      "gb_per_s": 33.151
+    },
+    {
+      "name": "process.RGB",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 4.319,
+      "min_ms": 4.0202,
+      "p95_ms": 5.0095,
+      "stdev_ms": 0.294825,
+      "gb_per_s": 1.92
+    },
+    {
+      "name": "pipeline.cpu_to_nchw",
+      "kind": "synthetic",
+      "samples": 60,
+      "median_ms": 7.635,
+      "min_ms": 7.0843,
+      "p95_ms": 9.2402,
+      "stdev_ms": 0.590353,
+      "note": "resize + normalise + transpose to NCHW on the CPU"
+    },
+    {
+      "name": "control.memcopy",
+      "kind": "control",
+      "samples": 125,
+      "median_ms": 0.2474,
+      "min_ms": 0.2079,
+      "p95_ms": 0.2854,
+      "stdev_ms": 0.027032,
+      "gb_per_s": 33.526,
+      "note": "CONTROL: a plain memory copy whose implementation never changes. Its movement between runs measures machine drift (background load, thermal state), which is used to normalise the other comparisons."
+    },
+    {
+      "name": "com.get_desc_call",
+      "kind": "live",
+      "samples": 5000,
+      "median_ms": 0.0004,
+      "min_ms": 0.0003,
+      "p95_ms": 0.0005,
+      "stdev_ms": 0.000525,
+      "note": "trivial COM method; approximates pure binding overhead"
+    },
+    {
+      "name": "live.grab_with_frame",
+      "kind": "live",
+      "samples": 179,
+      "median_ms": 9.9684,
+      "min_ms": 3.0606,
+      "p95_ms": 19.5613,
+      "stdev_ms": 3.911853,
+      "note": "179 frame-producing calls (145 returned no new content) in 3s. DDA only reports changed content, so this depends on screen activity \u2014 compare across runs with caution."
+    },
+    {
+      "name": "live.grab_frame_gpu",
+      "kind": "live",
+      "samples": 140,
+      "median_ms": 9.65995,
+      "min_ms": 0.1991,
+      "p95_ms": 19.64,
+      "stdev_ms": 4.346483,
+      "note": "140 frame-producing calls (97 empty) in 3s; GPU-resident, no CPU round-trip"
+    }
+  ]
+}

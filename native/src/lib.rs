@@ -19,8 +19,10 @@
 //! changed the design, and would otherwise have to be rediscovered.
 
 mod cross_adapter;
+mod luma;
 mod preprocess;
 mod preprocess12;
+mod swizzle;
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -1069,6 +1071,8 @@ fn _rapidshot_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     m.add_function(wrap_pyfunction!(probe_onnxruntime, m)?)?;
+    m.add_function(wrap_pyfunction!(luma::bgra_to_gray_into, m)?)?;
+    m.add_function(wrap_pyfunction!(swizzle::bgra_swizzle_into, m)?)?;
     m.add_function(wrap_pyfunction!(build_info, m)?)?;
     m.add_class::<GpuPreprocessor>()?;
     m.add_class::<GpuPreprocessor12>()?;

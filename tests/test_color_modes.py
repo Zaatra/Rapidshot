@@ -94,6 +94,215 @@ def test_gray_of_pure_channels():
     assert abs(int(gray[2]) - 76) <= 1   # red   -> 0.299 * 255
 
 
+def test_gray_convert_into_matches_bgra_to_gray():
+    """The reused-scratch path must equal the allocating one, bit for bit.
+
+    `convert_into` writes GRAY through persistent uint16 intermediates while
+    `bgra_to_gray` allocates fresh ones. Same arithmetic, so same answer -- and
+    a divergence here is the kind that no test of speed or shape would catch.
+    """
+    proc = NumpyProcessor("GRAY")
+    bgra = make_bgra(height=97, width=61)
+    dst = np.empty((97, 61, 1), np.uint8)
+    proc.convert_into(bgra, dst)
+    assert np.array_equal(dst, bgra_to_gray(bgra))
+
+
+def test_gray_convert_into_handles_varying_shapes():
+    """One processor, many shapes: the dirty-rect path calls it on sub-views.
+
+    Scratch is a single flat allocation that only grows, sliced per call. A bug
+    in that sizing shows up as wrong pixels only for whichever shape follows a
+    larger one, so the shrinking sequence here is the case that matters.
+    """
+    proc = NumpyProcessor("GRAY")
+    frame = make_bgra(height=200, width=300)
+    for top, left, bottom, right in [
+        (0, 0, 200, 300),   # full frame first, so scratch is at capacity
+        (10, 20, 14, 26),   # then much smaller
+        (0, 0, 200, 3),      # tall and narrow
+        (199, 299, 200, 300),  # single pixel at the far corner
+        (0, 0, 200, 300),   # back to full size
+    ]:
+        sub = frame[top:bottom, left:right]
+        dst = np.empty((bottom - top, right - left, 1), np.uint8)
+        proc.convert_into(sub, dst)
+        assert np.array_equal(dst, bgra_to_gray(sub)), (top, left, bottom, right)
+
+
+def test_gray_numpy_path_allocates_nothing_in_steady_state(monkeypatch):
+    """Reusing intermediates is the whole point -- 1.83x came from the allocations.
+
+    The previous formulation materialised a full-frame uint16 temporary per
+    channel; on a 1080p frame those page faults cost more than the arithmetic.
+
+    The native kernel is pinned off here on purpose. It is faster but does spend
+    a few dozen bytes per call boxing arguments for the FFI boundary, so leaving
+    it enabled would make this assertion depend on whether the extension happens
+    to be built -- and the invariant under test belongs to the NumPy path.
+    """
+    from rapidshot.processor import numpy_processor
+
+    monkeypatch.setattr(numpy_processor, "_native_gray", lambda src, out: False)
+
+    proc = NumpyProcessor("GRAY")
+    bgra = make_bgra(height=128, width=128)
+    dst = np.empty((128, 128, 1), np.uint8)
+    proc.convert_into(bgra, dst)  # first call sizes the scratch
+
+    import tracemalloc
+
+    tracemalloc.start()
+    try:
+        before = tracemalloc.get_traced_memory()[0]
+        for _ in range(10):
+            proc.convert_into(bgra, dst)
+        after = tracemalloc.get_traced_memory()[0]
+    finally:
+        tracemalloc.stop()
+    assert after - before == 0
+
+
+def test_gray_native_kernel_matches_numpy_exactly():
+    """The accelerated path must be the same answer, not a close one.
+
+    ROADMAP.md section 11: a fast wrong answer is worthless, and OpenCV's kernel
+    is off by up to 1 LSB precisely because it rounds differently. This is the
+    check that lets the native path be swapped in without changing what any
+    consumer sees. Skipped where the extension is not built, which includes the
+    main CI job by design.
+    """
+    from rapidshot import native
+
+    if not native.is_available():
+        pytest.skip("native extension not built")
+
+    rng = np.random.default_rng(20260805)
+    frame = rng.integers(0, 256, (67, 91, 4), dtype=np.uint8)
+
+    out = np.empty(frame.shape[:2], np.uint8)
+    assert native.bgra_to_gray_into(frame, out) is True
+    assert np.array_equal(out[..., np.newaxis], bgra_to_gray(frame))
+
+    # A strided destination: the dirty-rect path patches sub-rectangles of the
+    # accumulator, and rows there are strided by the full frame width.
+    parent = np.full((67, 91), 0xAA, np.uint8)
+    sub = parent[10:20, 5:30]
+    src_sub = frame[10:20, 5:30]
+    assert native.bgra_to_gray_into(src_sub, sub) is True
+    assert np.array_equal(sub[..., np.newaxis], bgra_to_gray(src_sub))
+    # Everything outside the rectangle is untouched.
+    assert (parent[:10] == 0xAA).all() and (parent[20:] == 0xAA).all()
+    assert (parent[10:20, :5] == 0xAA).all() and (parent[10:20, 30:] == 0xAA).all()
+
+
+def test_gray_native_kernel_declines_layouts_it_cannot_address():
+    """Declining must be a boolean, so the caller falls back instead of failing.
+
+    A 3-channel BGR source and a non-contiguous row are both legitimate inputs to
+    `bgra_to_gray`; the kernel steps 4 bytes per pixel, so it has to hand them
+    back rather than misread them.
+    """
+    from rapidshot import native
+
+    if not native.is_available():
+        pytest.skip("native extension not built")
+
+    bgr = np.zeros((8, 8, 3), np.uint8)
+    assert native.bgra_to_gray_into(bgr, np.empty((8, 8), np.uint8)) is False
+
+    bgra = np.zeros((8, 8, 4), np.uint8)
+    # Every second column: pixels within a row are no longer 4 bytes apart.
+    assert native.bgra_to_gray_into(bgra[:, ::2], np.empty((8, 4), np.uint8)) is False
+
+    # Shape disagreement between source and destination.
+    assert native.bgra_to_gray_into(bgra, np.empty((8, 7), np.uint8)) is False
+
+    # Wrong dtype on the destination.
+    assert native.bgra_to_gray_into(bgra, np.empty((8, 8), np.uint16)) is False
+
+
+@pytest.mark.parametrize("mode,channels", [("RGB", 3), ("BGR", 3), ("RGBA", 4)])
+def test_native_swizzle_matches_numpy_fallback(monkeypatch, mode, channels):
+    """Native and NumPy must agree bit for bit on every reorder mode.
+
+    The two paths are reached through the same `convert_into` call, so this pins
+    the dispatch as well as the arithmetic: whichever one runs, the caller sees
+    the same pixels.
+    """
+    from rapidshot import native
+    from rapidshot.processor import numpy_processor
+
+    if not native.is_available():
+        pytest.skip("native extension not built")
+
+    bgra = make_bgra(height=67, width=91)
+
+    native_dst = np.empty((67, 91, channels), np.uint8)
+    NumpyProcessor(mode).convert_into(bgra, native_dst)
+
+    monkeypatch.setattr(numpy_processor, "_native_swizzle", lambda s, d, m: False)
+    fallback_dst = np.empty((67, 91, channels), np.uint8)
+    NumpyProcessor(mode).convert_into(bgra, fallback_dst)
+
+    assert np.array_equal(native_dst, fallback_dst)
+
+
+@pytest.mark.parametrize("mode,channels", [("RGB", 3), ("BGR", 3), ("RGBA", 4)])
+def test_native_swizzle_writes_only_its_own_rectangle(mode, channels):
+    """A dirty-rect patch must not disturb the rest of the accumulator.
+
+    The kernel takes both row pitches from the arrays' strides so it can write a
+    sub-rectangle in place. Getting that arithmetic wrong would corrupt pixels
+    outside the rect, which no shape or speed check would notice.
+    """
+    from rapidshot import native
+
+    if not native.is_available():
+        pytest.skip("native extension not built")
+
+    frame = make_bgra(height=60, width=80)
+    parent = np.full((60, 80, channels), 0xAA, np.uint8)
+    top, left, bottom, right = 12, 20, 44, 66
+
+    assert native.bgra_swizzle_into(
+        frame[top:bottom, left:right], parent[top:bottom, left:right], mode
+    ) is True
+
+    assert (parent[:top] == 0xAA).all()
+    assert (parent[bottom:] == 0xAA).all()
+    assert (parent[top:bottom, :left] == 0xAA).all()
+    assert (parent[top:bottom, right:] == 0xAA).all()
+    # And the patch itself is right, not merely contained.
+    expected = np.empty((bottom - top, right - left, channels), np.uint8)
+    NumpyProcessor(mode)  # channel order is asserted by the mode tests above
+    src = frame[top:bottom, left:right]
+    order = {"RGB": (2, 1, 0), "BGR": (0, 1, 2), "RGBA": (2, 1, 0, 3)}[mode]
+    for out_ch, in_ch in enumerate(order):
+        expected[..., out_ch] = src[..., in_ch]
+    assert np.array_equal(parent[top:bottom, left:right], expected)
+
+
+def test_native_swizzle_declines_unsupported_input():
+    """Declining is a boolean so the caller falls back rather than failing.
+
+    GRAY and BGRA are not this kernel's job, and a column-sliced source breaks
+    the 4-byte pixel stride it steps by.
+    """
+    from rapidshot import native
+
+    if not native.is_available():
+        pytest.skip("native extension not built")
+
+    bgra = np.zeros((8, 8, 4), np.uint8)
+    assert native.bgra_swizzle_into(bgra, np.empty((8, 8), np.uint8), "GRAY") is False
+    assert native.bgra_swizzle_into(bgra, np.empty((8, 8, 4), np.uint8), "BGRA") is False
+    assert native.bgra_swizzle_into(
+        bgra[:, ::2], np.empty((8, 4, 3), np.uint8), "RGB") is False
+    # Right mode, wrong channel count on the destination.
+    assert native.bgra_swizzle_into(bgra, np.empty((8, 8, 4), np.uint8), "RGB") is False
+
+
 def test_gray_does_not_require_opencv(monkeypatch):
     """GRAY must work with OpenCV absent -- it used to silently pass through."""
     import builtins

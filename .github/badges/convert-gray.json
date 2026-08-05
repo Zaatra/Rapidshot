@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "label": "BGRA->GRAY",
+  "message": "0.26 ms/frame",
+  "color": "brightgreen"
+}

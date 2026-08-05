@@ -143,7 +143,13 @@ jobs:
       - name: Compare against the committed baseline
         # Informational. CI hardware differs from the machine the baseline was
         # recorded on, so a "regression" here is a prompt to look, not a failure.
-        run: python benchmarks/perf_suite.py --synthetic-only --rounds 3 --reps 20 --compare benchmarks/baseline.json
+        #
+        # Compares against baseline-nonative.json, NOT baseline.json. This job
+        # installs with `pip install -e .` and builds no native extension, while
+        # baseline.json is recorded with it. Pointed at that file, every
+        # conversion row would report a 6-20x "regression" on every run forever
+        # -- which is how a benchmark suite teaches people to ignore it.
+        run: python benchmarks/perf_suite.py --synthetic-only --rounds 3 --reps 20 --compare benchmarks/baseline-nonative.json
         continue-on-error: true
 
       - name: Performance badges must match the baseline

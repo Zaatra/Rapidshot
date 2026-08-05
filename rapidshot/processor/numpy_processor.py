@@ -23,6 +23,100 @@ _LUMA_R, _LUMA_G, _LUMA_B = 77, 150, 29
 _LUMA_ROUND, _LUMA_SHIFT = 128, 8
 
 
+def _luma_into(src: np.ndarray, out: np.ndarray,
+               acc: np.ndarray, tmp: np.ndarray) -> None:
+    """
+    Q8 luma from BGR(A) ``src`` into ``out``, using caller-owned intermediates.
+
+    Every step writes into a buffer the caller already owns, so a steady-state
+    conversion allocates nothing. The previous formulation reached for
+    ``src[..., 1].astype(np.uint16) * _LUMA_G``, which materialises a full-frame
+    uint16 temporary per channel -- two 4 MB allocations per 1080p frame, whose
+    page faults cost more than the arithmetic they carried. Reusing the
+    intermediates instead measured **1.5-1.8x on 1920x1080 with byte-identical
+    output** (`benchmarks/gray_kernel.py`), taking GRAY from ~16 ms to 8.5-11 ms
+    and so inside a 60 Hz frame budget. Three runs spanned that range on an
+    otherwise idle machine, so it is quoted as a range rather than a figure --
+    see the benchmark-noise note in ROADMAP.md section 2.
+
+    For the much larger win, see `_native_gray`: the same arithmetic in Rust is
+    0.70 ms. This path is what runs when the optional extension is absent, which
+    is the default for `pip install rapidshot`.
+
+    The rounding term is folded into the first channel's accumulation rather
+    than applied as its own ``acc += 128`` pass. Identical output, but it avoids
+    one full read-modify-write over the intermediate.
+
+    Args:
+        src: (H, W, 3) or (H, W, 4) uint8 in BGR(A) channel order
+        out: (H, W) uint8 destination
+        acc: (H, W) uint16 accumulator
+        tmp: (H, W) uint16 second intermediate
+    """
+    np.multiply(src[..., 2], _LUMA_R, out=acc, dtype=np.uint16, casting="unsafe")
+    acc += _LUMA_ROUND
+    np.multiply(src[..., 1], _LUMA_G, out=tmp, dtype=np.uint16, casting="unsafe")
+    acc += tmp
+    np.multiply(src[..., 0], _LUMA_B, out=tmp, dtype=np.uint16, casting="unsafe")
+    acc += tmp
+    acc >>= _LUMA_SHIFT
+    np.copyto(out, acc, casting="unsafe")
+
+
+# Resolved on first use: None = not looked up yet, False = unavailable.
+_NATIVE_GRAY = None
+_NATIVE_SWIZZLE = None
+
+
+def _native_swizzle(src: np.ndarray, dst: np.ndarray, mode: str) -> bool:
+    """
+    Run the native channel-reorder kernel if it can address these arrays.
+
+    False means it declined -- the extension is absent, which is the normal case
+    for `pip install rapidshot`, or the layout is one its strides cannot
+    describe. NumPy then produces the identical answer.
+
+    Cached like `_native_gray`, and for the same reason: `rapidshot.native` loads
+    the compiled extension, so importing it while `rapidshot` is still
+    initialising would be a cycle.
+    """
+    global _NATIVE_SWIZZLE
+    if _NATIVE_SWIZZLE is None:
+        try:
+            from rapidshot.native import bgra_swizzle_into
+            _NATIVE_SWIZZLE = bgra_swizzle_into
+        except Exception:  # pragma: no cover - depends on the install
+            _NATIVE_SWIZZLE = False
+    if _NATIVE_SWIZZLE is False:
+        return False
+    return _NATIVE_SWIZZLE(src, dst, mode)
+
+
+def _native_gray(src: np.ndarray, out: np.ndarray) -> bool:
+    """
+    Run the native luma kernel if it can address these arrays.
+
+    False means it declined -- either the extension is absent, which is the
+    normal case for `pip install rapidshot`, or the layout is one its strides
+    cannot describe. Either way NumPy produces the identical answer.
+
+    Imported lazily and cached. `rapidshot.native` loads the compiled extension,
+    and reaching for it while `rapidshot` is still initialising would be a cycle;
+    caching means the per-frame path resolves the lookup once rather than on
+    every conversion.
+    """
+    global _NATIVE_GRAY
+    if _NATIVE_GRAY is None:
+        try:
+            from rapidshot.native import bgra_to_gray_into
+            _NATIVE_GRAY = bgra_to_gray_into
+        except Exception:  # pragma: no cover - depends on the install
+            _NATIVE_GRAY = False
+    if _NATIVE_GRAY is False:
+        return False
+    return _NATIVE_GRAY(src, out)
+
+
 def bgra_to_gray(src: np.ndarray) -> np.ndarray:
     """
     Convert a BGRA (or BGR) image to single-channel grayscale.
@@ -32,24 +126,22 @@ def bgra_to_gray(src: np.ndarray) -> np.ndarray:
     without OpenCV the conversion silently did nothing and callers received
     unconverted 4-channel BGRA frames labelled as grayscale.
 
+    This allocates its own result and intermediates, so it is the convenience
+    form. The per-frame capture path uses
+    :meth:`NumpyProcessor.convert_into`, which reuses both.
+
     Args:
         src: (H, W, 3) or (H, W, 4) uint8 array in BGR(A) channel order
 
     Returns:
         (H, W, 1) uint8 grayscale array
     """
-    # The rounding term is folded into the first channel's accumulation rather
-    # than applied as its own `luma += 128` pass. Identical output, but it
-    # avoids one full read-modify-write over a 4 MB intermediate -- worth 1.2x
-    # on this memory-bound operation.
-    luma = src[..., 2].astype(np.uint16)
-    luma *= _LUMA_R
-    luma += _LUMA_ROUND
-    luma += src[..., 1].astype(np.uint16) * _LUMA_G
-    luma += src[..., 0].astype(np.uint16) * _LUMA_B
-    luma >>= _LUMA_SHIFT
-
-    return luma.astype(np.uint8)[..., np.newaxis]
+    height, width = src.shape[:2]
+    out = np.empty((height, width, 1), dtype=np.uint8)
+    _luma_into(src, out[..., 0],
+               np.empty((height, width), dtype=np.uint16),
+               np.empty((height, width), dtype=np.uint16))
+    return out
 
 
 class NumpyProcessor:
@@ -74,6 +166,11 @@ class NumpyProcessor:
         self.color_mode = color_mode
         self.PBYTE = ctypes.POINTER(ctypes.c_ubyte)
 
+        # GRAY intermediates, allocated on first use and reused thereafter.
+        self._luma_a = None
+        self._luma_b = None
+        self._luma_capacity = 0
+
         # Simplified processing for BGRA
         if self.color_mode == 'BGRA':
             self.color_mode = None
@@ -82,6 +179,24 @@ class NumpyProcessor:
     def output_channels(self) -> int:
         """Number of channels this processor's frames carry."""
         return channels_for_color_mode(self.color_mode)
+
+    def _luma_scratch(self, height: int, width: int):
+        """
+        Reusable uint16 intermediates for GRAY, sized to the largest request.
+
+        ``convert_into`` runs on dirty-rect sub-views as well as whole frames, so
+        the shape varies from call to call. One flat allocation that only ever
+        grows, sliced and reshaped per call, covers every shape without
+        reallocating -- both the slice and the reshape return views, so no copy
+        is involved.
+        """
+        need = height * width
+        if need > self._luma_capacity:
+            self._luma_a = np.empty(need, dtype=np.uint16)
+            self._luma_b = np.empty(need, dtype=np.uint16)
+            self._luma_capacity = need
+        return (self._luma_a[:need].reshape(height, width),
+                self._luma_b[:need].reshape(height, width))
 
     def convert_into(self, src: np.ndarray, dst: np.ndarray) -> None:
         """
@@ -96,27 +211,45 @@ class NumpyProcessor:
         """
         mode = self.color_mode
         if mode is None or mode == "BGRA":
+            # Already the source layout: a straight copy, and NumPy does that at
+            # memory speed (33 GB/s measured). Nothing for a kernel to improve.
             dst[:] = src
-        elif mode == "RGB":
-            # Per-channel assignment rather than dst[:] = src[..., 2::-1].
-            # The reversed stride forces NumPy through a slow gather; three
-            # contiguous channel copies measured 1.8x faster for identical
-            # output.
-            dst[..., 0] = src[..., 2]
-            dst[..., 1] = src[..., 1]
-            dst[..., 2] = src[..., 0]
-        elif mode == "BGR":
-            dst[..., 0] = src[..., 0]
-            dst[..., 1] = src[..., 1]
-            dst[..., 2] = src[..., 2]
-        elif mode == "RGBA":
-            # BGRA -> RGBA is a red/blue swap with alpha preserved.
-            dst[..., 0] = src[..., 2]
-            dst[..., 1] = src[..., 1]
-            dst[..., 2] = src[..., 0]
-            dst[..., 3] = src[..., 3]
+        elif mode in ("RGB", "BGR", "RGBA"):
+            # One native pass reads each cache line once; the NumPy fallback
+            # below makes three strided passes over the frame. Identical output
+            # either way -- see `_native_swizzle`.
+            if not _native_swizzle(src, dst, mode):
+                if mode == "RGB":
+                    # Per-channel assignment rather than dst[:] = src[..., 2::-1].
+                    # The reversed stride forces NumPy through a slow gather;
+                    # three contiguous channel copies measured 1.8x faster for
+                    # identical output.
+                    dst[..., 0] = src[..., 2]
+                    dst[..., 1] = src[..., 1]
+                    dst[..., 2] = src[..., 0]
+                elif mode == "BGR":
+                    dst[..., 0] = src[..., 0]
+                    dst[..., 1] = src[..., 1]
+                    dst[..., 2] = src[..., 2]
+                else:
+                    # BGRA -> RGBA is a red/blue swap with alpha preserved.
+                    dst[..., 0] = src[..., 2]
+                    dst[..., 1] = src[..., 1]
+                    dst[..., 2] = src[..., 0]
+                    dst[..., 3] = src[..., 3]
         elif mode == "GRAY":
-            dst[:] = bgra_to_gray(src)
+            # `dst[..., 0]` is a view of a (H, W, 1) destination, so nothing is
+            # copied on the way out of either path.
+            out = dst[..., 0] if dst.ndim == 3 else dst
+            # The native kernel is 14x the NumPy path and byte-identical to it,
+            # so it is tried first and NumPy is the fallback -- not a different
+            # answer, the same answer more slowly. It declines any layout its
+            # strides cannot describe, which is why this is a boolean and not a
+            # try/except.
+            if not _native_gray(src, out):
+                height, width = src.shape[:2]
+                acc, tmp = self._luma_scratch(height, width)
+                _luma_into(src, out, acc, tmp)
         else:  # pragma: no cover - construction validates the mode
             raise ValueError(f"Unsupported color mode: {mode!r}")
 
