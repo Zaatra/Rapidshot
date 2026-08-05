@@ -106,6 +106,19 @@ No breaking changes. `grab()` still returns a `PooledBuffer` as it has since 2.0
   performs no conversion at all, so the badge reported the desktop rather than
   the library. The live figures are still measured and still in ROADMAP.md § 3
   with their range stated; they are simply no longer advertised as if stable.
+- **A cross-machine comparison no longer reports verdicts as if they were real.**
+  `control.memcopy` measures memory bandwidth, so drift-normalising by it only
+  works for benchmarks that are also bandwidth-bound. On a CI runner it reported
+  `pipeline.cpu_to_nchw` (float32 resize/normalise/transpose, compute-bound) as a
+  1.34× regression against untouched code, while calling every conversion row
+  1.4× *faster* on a machine that was uniformly slower — one control standing in
+  for workloads it does not resemble, wrong in both directions at once.
+  `print_comparison` now detects a baseline recorded on different hardware, marks
+  every verdict indicative, and gates nothing. Improvements are flagged as
+  loudly as regressions.
+- The regression summary claimed "the 10% threshold" while the default was 1.30,
+  telling anyone reading a failure that a change had to be 10% to count when it
+  actually had to be 30%. It now quotes the threshold in force.
 - Also recorded there: a minimum is monotonically non-increasing in sample count,
   so raising `--live-seconds` makes live numbers look better on unchanged code.
   Live rows are comparable only at the same setting.

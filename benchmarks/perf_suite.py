@@ -623,6 +623,39 @@ def print_comparison(current: List[Result], baseline_path: Path,
           f"(recorded {baseline['machine'].get('timestamp', '?')[:19]})")
     print("Using minimum-sample times (robust to background load).")
 
+    # A recording made on other hardware cannot gate a change, and the control
+    # benchmark is not enough to rescue it. `control.memcopy` measures memory
+    # bandwidth and nothing else, so dividing by its movement only normalises
+    # benchmarks that are *also* bandwidth-bound. `pipeline.cpu_to_nchw` is
+    # float32 resize/normalise/transpose -- compute-bound, and sensitive to
+    # vector width and NumPy version in ways memcpy is not. Normalising it by a
+    # memcpy ratio produced a 1.34x "regression" against an untouched code path
+    # on a CI runner, while simultaneously reporting every conversion row 1.4x
+    # *faster* on a machine that was uniformly slower. Both directions were
+    # artefacts of one control standing in for workloads it does not resemble;
+    # ROADMAP.md section 2 records the same limitation for GRAY.
+    base_machine = baseline.get("machine", {})
+    now_machine = machine_info()
+
+    def _differing(keys):
+        return [k for k in keys
+                if base_machine.get(k) and now_machine.get(k)
+                and base_machine[k] != now_machine[k]]
+
+    hardware = _differing(("processor", "platform", "gpu"))
+    environment = _differing(("python", "numpy"))
+    cross_machine = bool(hardware)
+
+    if cross_machine or environment:
+        print()
+        for key in hardware + environment:
+            print(f"  {key}: baseline {base_machine[key]!r} vs now "
+                  f"{now_machine[key]!r}")
+    if cross_machine:
+        print("\nCROSS-MACHINE COMPARISON: verdicts below are indicative only and")
+        print("nothing here gates. Re-record a baseline on this machine to compare")
+        print("code against code rather than hardware against hardware.")
+
     # Calibrate against the control benchmark: its code is identical in both
     # runs, so any movement is the machine, not us.
     drift = 1.0
@@ -663,6 +696,11 @@ def print_comparison(current: List[Result], baseline_path: Path,
             verdict = "(calibration)"
         elif judged >= threshold:
             verdict = f"FASTER {judged:.2f}x"
+            # Flagged in both directions on purpose: a spurious improvement is
+            # as misleading as a spurious regression, and harder to notice
+            # because nobody investigates good news.
+            if cross_machine:
+                verdict += " (cross-machine: indicative)"
         elif judged <= 1.0 / threshold:
             verdict = f"SLOWER {1 / judged:.2f}x"
             # Live benchmarks depend on what is happening on screen, which is
@@ -690,6 +728,8 @@ def print_comparison(current: List[Result], baseline_path: Path,
                 # granularity dominates, and drift normalisation amplifies it
                 # further. These are reported but do not gate.
                 verdict += " (sub-ms: informational)"
+            elif cross_machine:
+                verdict += " (cross-machine: indicative)"
             else:
                 regressions += 1
         else:
@@ -699,8 +739,16 @@ def print_comparison(current: List[Result], baseline_path: Path,
         print(f"{r.name:<30}{before:>8.3f}m{after:>8.3f}m{ratio:>10.2f}x"
               f"{adj_col}  {verdict}")
     print("-" * (61 + len(hdr_adj) + 20))
+
+    if cross_machine:
+        print("\nNo verdict gated: the baseline came from different hardware.")
+        return 0
     if regressions:
-        print(f"\n{regressions} regression(s) beyond the 10% threshold.")
+        # Quote the real threshold. This said "the 10% threshold" while the
+        # default was 1.30, so anyone reading the failure was told a change had
+        # to be 10% to count when it actually had to be 30%.
+        print(f"\n{regressions} regression(s) beyond {threshold:.2f}x "
+              f"({(threshold - 1) * 100:.0f}%).")
     return regressions
 
 
