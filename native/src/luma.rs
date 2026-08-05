@@ -43,8 +43,7 @@ const LUMA_SHIFT: u32 = 8;
 /// One pixel, in the exact arithmetic the NumPy path performs.
 #[inline(always)]
 fn luma_px(b: u8, g: u8, r: u8) -> u8 {
-    let acc =
-        (r as u32) * LUMA_R + (g as u32) * LUMA_G + (b as u32) * LUMA_B + LUMA_ROUND;
+    let acc = (r as u32) * LUMA_R + (g as u32) * LUMA_G + (b as u32) * LUMA_B + LUMA_ROUND;
     (acc >> LUMA_SHIFT) as u8
 }
 
@@ -101,9 +100,7 @@ mod avx2 {
             super::LUMA_G as i16,
             super::LUMA_R as i16,
         );
-        let coef = _mm256_setr_epi16(
-            b, g, r, 0, b, g, r, 0, b, g, r, 0, b, g, r, 0,
-        );
+        let coef = _mm256_setr_epi16(b, g, r, 0, b, g, r, 0, b, g, r, 0, b, g, r, 0);
         let round = _mm256_set1_epi32(super::LUMA_ROUND as i32);
 
         let px = dst.len();
@@ -118,23 +115,17 @@ mod avx2 {
             let hi = _mm256_madd_epi16(_mm256_unpackhi_epi8(v, zero), coef);
             // Lane 0 becomes [l0,l1,l2,l3], lane 1 becomes [l4,l5,l6,l7].
             let h = _mm256_hadd_epi32(lo, hi);
-            let y = _mm256_srli_epi32::<{ super::LUMA_SHIFT as i32 }>(
-                _mm256_add_epi32(h, round),
-            );
+            let y = _mm256_srli_epi32::<{ super::LUMA_SHIFT as i32 }>(_mm256_add_epi32(h, round));
             // Values are 0..255 here, so neither pack saturates.
-            let packed = _mm256_packus_epi16(
-                _mm256_packus_epi32(y, y),
-                _mm256_packus_epi32(y, y),
-            );
+            let packed = _mm256_packus_epi16(_mm256_packus_epi32(y, y), _mm256_packus_epi32(y, y));
             let out = dst.as_mut_ptr().add(i);
             // Exactly 8 bytes: the low dword of each 128-bit lane. Writing a
             // whole vector would overrun the row, and for a dirty-rect patch
             // that means clobbering live pixels of the next row.
             (out as *mut u32)
                 .write_unaligned(_mm_cvtsi128_si32(_mm256_castsi256_si128(packed)) as u32);
-            (out.add(4) as *mut u32).write_unaligned(
-                _mm_cvtsi128_si32(_mm256_extracti128_si256::<1>(packed)) as u32,
-            );
+            (out.add(4) as *mut u32)
+                .write_unaligned(_mm_cvtsi128_si32(_mm256_extracti128_si256::<1>(packed)) as u32);
             i += 8;
         }
         // Tail: fewer than 8 pixels left.
@@ -228,7 +219,9 @@ pub fn bgra_to_gray_into(
         ));
     }
     if src_ptr == 0 || dst_ptr == 0 {
-        return Err(PyValueError::new_err("source and destination must not be null"));
+        return Err(PyValueError::new_err(
+            "source and destination must not be null",
+        ));
     }
 
     let pitch = pitch.unwrap_or(width * 4);
@@ -321,9 +314,9 @@ mod tests {
         for row in 0..h {
             for x in 0..w {
                 let o = row * pitch + x * 4;
-                src[o] = 10;      // B
-                src[o + 1] = 20;  // G
-                src[o + 2] = 30;  // R
+                src[o] = 10; // B
+                src[o + 1] = 20; // G
+                src[o + 2] = 30; // R
                 src[o + 3] = 255;
             }
             // Padding after the real pixels must not be read as image data.
@@ -359,8 +352,11 @@ mod tests {
         while base < (1usize << 24) {
             for k in 0..CHUNK {
                 let v = base + k;
-                let (b, g, r) = ((v & 0xFF) as u8, ((v >> 8) & 0xFF) as u8,
-                                 ((v >> 16) & 0xFF) as u8);
+                let (b, g, r) = (
+                    (v & 0xFF) as u8,
+                    ((v >> 8) & 0xFF) as u8,
+                    ((v >> 16) & 0xFF) as u8,
+                );
                 src[k * 4] = b;
                 src[k * 4 + 1] = g;
                 src[k * 4 + 2] = r;
@@ -403,7 +399,9 @@ mod tests {
         for width in [1usize, 7, 8, 9, 15, 16, 17, 31, 33] {
             let (parent_w, height) = (width + 9, 4usize);
             let mut parent = vec![0xAAu8; parent_w * height];
-            let src: Vec<u8> = (0..width * 4 * height).map(|i| (i * 13 % 251) as u8).collect();
+            let src: Vec<u8> = (0..width * 4 * height)
+                .map(|i| (i * 13 % 251) as u8)
+                .collect();
             luma_image(&src, &mut parent, width, height, width * 4, parent_w);
             for row in 0..height {
                 let tail = row * parent_w + width;

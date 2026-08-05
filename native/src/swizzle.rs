@@ -122,10 +122,38 @@ mod avx2 {
     macro_rules! lane_mask {
         ($a:expr, $b:expr, $c:expr) => {
             _mm256_setr_epi8(
-                $a, $b, $c, $a + 4, $b + 4, $c + 4, $a + 8, $b + 8, $c + 8,
-                $a + 12, $b + 12, $c + 12, -1, -1, -1, -1,
-                $a, $b, $c, $a + 4, $b + 4, $c + 4, $a + 8, $b + 8, $c + 8,
-                $a + 12, $b + 12, $c + 12, -1, -1, -1, -1,
+                $a,
+                $b,
+                $c,
+                $a + 4,
+                $b + 4,
+                $c + 4,
+                $a + 8,
+                $b + 8,
+                $c + 8,
+                $a + 12,
+                $b + 12,
+                $c + 12,
+                -1,
+                -1,
+                -1,
+                -1,
+                $a,
+                $b,
+                $c,
+                $a + 4,
+                $b + 4,
+                $c + 4,
+                $a + 8,
+                $b + 8,
+                $c + 8,
+                $a + 12,
+                $b + 12,
+                $c + 12,
+                -1,
+                -1,
+                -1,
+                -1,
             )
         };
     }
@@ -179,8 +207,8 @@ mod avx2 {
     #[target_feature(enable = "avx2")]
     pub unsafe fn row_rgba(src: &[u8], dst: &mut [u8]) {
         let shuf = _mm256_setr_epi8(
-            2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15,
-            2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15,
+            2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15, 2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8,
+            11, 14, 13, 12, 15,
         );
         let px = dst.len() / 4;
         let vec_px = px & !7usize;
@@ -421,7 +449,15 @@ mod tests {
         let parent_pitch = parent_w * 3;
         let mut parent = vec![0xAAu8; parent_pitch * parent_h];
         let offset = y0 * parent_pitch + x0 * 3;
-        swizzle_image(&src, &mut parent[offset..], w, h, src_pitch, parent_pitch, Mode::Rgb);
+        swizzle_image(
+            &src,
+            &mut parent[offset..],
+            w,
+            h,
+            src_pitch,
+            parent_pitch,
+            Mode::Rgb,
+        );
 
         for y in 0..parent_h {
             for x in 0..parent_w {
@@ -459,8 +495,7 @@ mod tests {
                 let mut got = vec![0u8; width * channels];
                 // Goes through the dispatcher, so this also proves the
                 // dispatcher selects the vector path when the CPU has it.
-                swizzle_image(&src, &mut got, width, 1, width * 4,
-                              width * channels, mode);
+                swizzle_image(&src, &mut got, width, 1, width * 4, width * channels, mode);
                 assert_eq!(got, want, "mode {} width {width}", mode.channels());
             }
         }
@@ -482,8 +517,15 @@ mod tests {
 
             let src_pitch = width * 4;
             let src = bgra(width * height);
-            swizzle_image(&src, &mut parent, width, height, src_pitch,
-                          parent_pitch, Mode::Rgb);
+            swizzle_image(
+                &src,
+                &mut parent,
+                width,
+                height,
+                src_pitch,
+                parent_pitch,
+                Mode::Rgb,
+            );
 
             // The 5 pixels of slack at the end of every row must be untouched.
             for row in 0..height {
