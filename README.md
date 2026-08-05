@@ -21,13 +21,48 @@ but deliberately not badged: they depend on what is on screen, and
 `grab_frame()` alone spanned 0.17–0.77 ms across six recordings of unchanged
 code. See [ROADMAP.md § 3](ROADMAP.md#3-measured-baseline).</sub>
 
-A high-performance screencapture library for Windows using the Desktop Duplication API. This is a merged version combining features from multiple DXCam forks, designed to deliver ultra-fast capture capabilities with advanced functionality.
+Windows screen capture built for feeding models, not for saving screenshots.
+
+RapidShot captures the desktop through DXGI Desktop Duplication and can hand a
+frame straight to a GPU consumer as a model-ready NCHW float32 tensor that never
+touches the CPU. Colour conversion runs in byte-exact SIMD kernels, frames carry
+the compositor's dirty-rect metadata so only what changed is converted, and a
+captured frame can be moved to the discrete GPU on hybrid laptops that Desktop
+Duplication refuses to capture from.
+
+**RapidShot is not the fastest library by raw frame count, and says so.** Measured
+against DXcam, BetterCam and mss on one 1080p 100 Hz display with a motion source
+fast enough to saturate it (`benchmarks/compare_libraries.py`, full numbers in
+`benchmarks/library-comparison.json`):
+
+| | frames/s | CPU | per-call p50 |
+| --- | --- | --- | --- |
+| RapidShot | 114 | **15%** | 8.9 ms |
+| DXcam | **135** | 66% | 5.3 ms |
+| BetterCam | 132 | 63% | 2.4 ms |
+| mss | 33 | 30% | 30.0 ms |
+
+DXcam and BetterCam return more frames per second than RapidShot. They do it by
+polling in a tight loop — over 100,000 `None` returns in six seconds, a 0.3% hit
+rate — which is why they cost four times the CPU for a fifth more frames, and up
+to **2.2 cores** in the RGB case. RapidShot waits for a frame instead.
+
+So the trade is explicit: if you want the highest possible frame count and have a
+core to spare, DXcam is the faster library. If capture is one stage of a pipeline
+that needs its CPU for something else, RapidShot delivers a comparable rate for a
+fraction of it, and can hand the frame to a GPU consumer without a round trip
+through system memory at all.
+
+It began as a merge of several DXcam forks and keeps a broadly familiar API, but
+the capture path, the colour pipeline and the GPU interop have since been
+rewritten.
 
 ## Features
 
-- **Capture at your display's refresh rate**: Desktop Duplication delivers at
-  most one frame per refresh, and RapidShot keeps up with that ceiling — about
-  240 fps on a 240 Hz monitor. No capture library can exceed it.
+- **Capture as fast as the desktop actually changes**: Desktop Duplication
+  reports compositor *presents*, not display refreshes, so the ceiling is how
+  often the screen is redrawn — measured at 117 fps of distinct frames on a
+  100 Hz panel here, with the compositor itself producing ~188/s
 - **GPU-resident frames**: `grab_frame()` hands back a frame that never leaves
   the GPU, skipping the CPU round-trip entirely — for consumers that feed a model
   directly
@@ -612,10 +647,13 @@ python benchmarks/rapidshot_max_fps.py --color BGRA
 
 **Run them yourself.** This README used to carry a table of cross-library FPS
 figures with no hardware, method or date attached, claiming 240+ for RapidShot
-and 300+ with GPU acceleration. Both were unsupportable: Desktop Duplication
-returns at most one frame per display refresh, so 300 fps needs a 300 Hz
-monitor, and CuPy acceleration changes the *conversion* cost, not the rate at
-which frames arrive.
+and 300+ with GPU acceleration. Both were unsupportable, though not for the
+reason first given here: Desktop Duplication reports compositor *presents*, so
+the ceiling is the rate at which the desktop is redrawn — which can exceed the
+panel's refresh rate, and did in our own measurements (117 fps of distinct
+frames on a 100 Hz display). The figures were unsupportable because no hardware
+or method was attached to them, and because CuPy acceleration changes the
+*conversion* cost rather than the rate at which frames arrive.
 
 Published FPS claims in this space contradict each other badly — DXcam's README
 reports DXcam at 239 fps, BetterCam's reports the same library at 39 — because
@@ -643,8 +681,8 @@ code `grab_frame()` alone spanned 0.17–0.83 ms. They are reported for shape, n
 precision.
 
 Neither figure is a capture rate. They are what the *calling thread* pays per
-frame; the display still delivers only one frame per refresh. What they mean is
-that capture stops being your bottleneck.
+frame; frames still arrive only as fast as the compositor presents them. What
+they mean is that capture stops being your bottleneck.
 
 See `ROADMAP.md` section 3 for the full breakdown and how these are measured.
 

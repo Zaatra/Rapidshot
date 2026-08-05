@@ -168,7 +168,22 @@ For scale: this is about a third of what reading the same frame to the CPU costs
 
 **Python is not the bottleneck.** CPU pixel work is ~2,500× the entire Python/COM binding overhead. At 240 FPS the binding cost is 0.07% of the frame budget.
 
-**Capture rate is hardware-bounded.** Desktop Duplication returns at most one frame per display refresh. DXcam already achieves 239 FPS on a 240 Hz monitor *in pure Python with ctypes* — essentially 100% of the physical ceiling. No language change moves this.
+**Capture rate is bounded by the compositor's present rate, not by the display's refresh rate.** This entry previously said "at most one frame per display refresh", which is **wrong**, and § 6.2 already contradicted it in passing ("DDA is driven by presents, not refresh") — the two sat in the same document for months.
+
+Measured 2026-08-05 on the 100 Hz primary output, against a source presenting unthrottled at ~610 updates/s:
+
+| | |
+| --- | --- |
+| Frames returned | 705 in 6.00 s — **117.5 fps on a 100 Hz panel** |
+| Distinct `LastPresentTime` values | 705 — **zero repeats** |
+| Inter-present gaps | min **1.010 ms**, p50 9.181 ms; 48.4% shorter than 9 ms |
+| `AccumulatedFrames` | `{1: 301, 2: 386, 3: 17, 5: 1}` → ~**188 presents/s** |
+
+Every acquire carried a distinct QPC present timestamp, so these are neither duplicates nor cursor-only updates, and gaps of 1 ms are impossible if presents were tied to scanout. DXGI reports *presents* — desktop composition updates — and DWM composes when content changes rather than when the panel scans out. The coalescing figure is the sharper one: 386 of 705 acquires carried **two** presents, so the compositor produced ~188/s and the capture loop was *missing* presents, not inventing them.
+
+What still holds: **Python is not what limits this** — DXcam reaches 239 FPS in pure ctypes, and on this machine both libraries sit at 117–169 fps, bounded by the compositor rather than by either implementation. What does not hold is the ceiling's *value*: it is not the refresh rate, and a library reporting more than the refresh rate is not necessarily lying.
+
+Two caveats before generalising. The dev machine runs **mixed refresh rates** (100 Hz + 60 Hz), where DWM's composition clock is known to behave irregularly; a single-monitor measurement has not been taken. And frames above the panel's refresh were never *displayed* as distinct images — useful as extra temporal samples for a model, redundant for a recorder.
 
 **A native capture core is not worth building.** It addresses 0.003 ms of an 8 ms frame, and `windows-capture` already ships exactly that (Rust + PyO3, DXGI + WGC) — so it is neither a differentiator nor a measurable win. See § 8.
 

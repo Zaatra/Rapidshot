@@ -123,7 +123,27 @@ No breaking changes. `grab()` still returns a `PooledBuffer` as it has since 2.0
   so raising `--live-seconds` makes live numbers look better on unchanged code.
   Live rows are comparable only at the same setting.
 
+### Fixed
+
+- **The "no screen updates" warning fired while capture was running at 117 fps.**
+  It counted *consecutive empty acquires*, which makes the threshold depend on
+  `timeout_ms`: at the 10 ms default, 100 misses mean a second of still screen,
+  but while polling with `timeout_ms=0` the same 100 misses take under 20 ms and
+  are entirely normal at a 97% miss rate. It now measures how long it has
+  actually been since a frame, reports that in seconds, and is rate-limited —
+  false warnings during a 6 s polling capture went from 7 to 0.
+
 ### Documentation
+
+- **ROADMAP.md § 4 corrected: capture rate is bounded by the compositor's present
+  rate, not the display's refresh rate.** The entry claimed "at most one frame
+  per display refresh"; § 6.2 already contradicted it ("DDA is driven by presents,
+  not refresh") and the two sat in the same document. Measured on a 100 Hz panel:
+  705 frames in 6 s, **705 distinct `LastPresentTime` values** (zero repeats),
+  inter-present gaps down to **1.01 ms**, and `AccumulatedFrames` showing the
+  compositor produced ~188 presents/s while the capture loop caught 117.5. A
+  library reporting more frames per second than the refresh rate is not
+  necessarily lying. README claims updated to match.
 
 - ROADMAP.md § 4 records that **DWM does not emit move rects** — 2,205 frames of
   live capture under a workload built to produce them returned zero, so
