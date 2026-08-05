@@ -388,16 +388,34 @@ def bench_preprocess_pipeline(reps: int) -> List[Result]:
     ys = (np.arange(OUT_H) * src_h // OUT_H).clip(0, src_h - 1)
     xs = (np.arange(OUT_W) * src_w // OUT_W).clip(0, src_w - 1)
 
+    # This arm is what the GPU path is judged against, so it has to be the best
+    # CPU implementation rather than the first one. It was neither: the original
+    # widened the 640x640x4 gather to float32 *before* scaling (6.55 MB of
+    # traffic where 1.6 MB suffices), divided in a second pass, stacked the
+    # channels into a fresh array in a third, and allocated ~11 MB per call.
+    # Writing each channel once into a destination that already exists is 1.78x
+    # faster for a bit-identical result -- and a strawman here would have
+    # overstated the GPU win by exactly that much.
+    #
+    # Preallocating is the fair comparison: the GPU arm reuses its buffers, and
+    # any real consumer in a capture loop would reuse this one.
+    index = np.ix_(ys, xs)
+    nchw = np.empty((1, 3, OUT_H, OUT_W), np.float32)
+
     def cpu_pipeline():
-        sampled = src[np.ix_(ys, xs)].astype(np.float32)
-        sampled /= 255.0
-        b, g, r = sampled[..., 0], sampled[..., 1], sampled[..., 2]
-        return np.ascontiguousarray(np.stack((r, g, b), axis=0)[None])
+        sampled = src[index]                       # gather stays uint8
+        np.divide(sampled[..., 2], 255.0, out=nchw[0, 0])   # R
+        np.divide(sampled[..., 1], 255.0, out=nchw[0, 1])   # G
+        np.divide(sampled[..., 0], 255.0, out=nchw[0, 2])   # B
+        return nchw
 
     out.append(Result("pipeline.cpu_to_nchw", "synthetic",
                       time_it(cpu_pipeline, max(reps // 2, 5),
                               name="pipeline.cpu_to_nchw"),
-                      note="resize + normalise + transpose to NCHW on the CPU"))
+                      note="resize + normalise + transpose to NCHW on the CPU; "
+                           "reimplemented 2026-08-05, 1.78x faster and "
+                           "bit-identical -- not comparable with recordings "
+                           "before that date"))
 
     # --- GPU arm ---------------------------------------------------------
     try:

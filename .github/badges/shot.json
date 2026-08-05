@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
   "label": "shot()->buffer",
-  "message": "0.32 ms/frame",
+  "message": "0.31 ms/frame",
   "color": "brightgreen"
 }

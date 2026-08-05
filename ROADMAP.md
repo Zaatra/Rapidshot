@@ -89,7 +89,7 @@ Use `python benchmarks/compare_recordings.py` to diff any two stored recordings;
 | Read from mapped staging surface | 2.27 ms |
 | Pixel conversion, RGB/BGR (NumPy, post-optimisation) | 1.76–1.84 ms |
 | Pixel conversion, GRAY (NumPy) | 6.9–10.5 ms — was 13.7–14.9, see § 10 |
-| Preprocess for a model (resize/normalise/CHW → 640×640) | 6.23 ms |
+| Preprocess for a model (resize/normalise/CHW → 640×640) | **3.90 ms** — was 6.23, see below |
 | **CPU total, capture → model input** | **~8 ms** |
 
 Capture path comparison, real capture:
@@ -429,7 +429,13 @@ Realistic cost is roughly six months with a native-graphics-fluent co-maintainer
   **Conversion is finished as an optimisation target.** All five modes sit at 69–100% of the 33.2 GB/s the memory system delivers; RGBA at 69% is the weakest and worth ~0.1 ms. `benchmarks/baseline.json` and the badges were re-recorded after this landed. GRAY's *NumPy* path remains duty-cycle sensitive (6.9–10.5 ms across runs in one session), so the suite flags it informational rather than gating on it — quote a range for that one.
 - **CuPy/CUDA paths untested** — no NVIDIA GPU available. Worth a spike: `gfx2cuda` + CuPy may give a **pure-Python** D3D11→CUDA tensor path, which would mean CUDA users get GPU tensors with no build step at all.
 - **`shot()` writes BGRA regardless of `output_color`**, and overruns an undersized buffer without bounds checks. Documented; not yet fixed.
-- **`pipeline.cpu_to_nchw` is now the largest CPU cost in the baseline at 6.4–6.8 ms**, and it is untouched — bigger than any single colour conversion now that the native kernels have landed (§ 3). Stage 6's GPU path bypasses it, but every CPU-only consumer still pays it in full.
+- **`pipeline.cpu_to_nchw` was a strawman, and fixing it cost the GPU comparison 1.78×.** This row is not library code — RapidShot ships no CPU preprocess — it is the reference arm the GPU tensor path is measured against, and **Stage 6 was promoted on the strength of that comparison** (§ 11). It was written naively: it widened the 640×640×4 gather to float32 *before* scaling (6.55 MB of traffic where 1.6 MB suffices), divided in a second pass, stacked channels into a fresh array in a third, and allocated ~11 MB per call. Writing each channel once into a preallocated destination is **6.84 → 3.90 ms for a bit-identical result**.
+
+  The conclusion survives — GPU dispatch is 2 µs against 3.9 ms, so a consumer that keeps the tensor on the device still wins overwhelmingly — but the margin was overstated by 1.78× for as long as the reference was the first implementation rather than the best one. **A benchmark's control arm is part of the claim it supports.**
+
+  One variant looked 7× faster and was wrong: replacing the fancy-index gather with a strided slice, on the assumption the indices were a uniform decimation. They are not — 1080/640 = 1.6875, so the indices step 0, 1, 3, 5, 6, 8 — and the strided version silently sampled a different set of pixels. It was caught only because every variant is checked against the original's output before its time is believed.
+
+  Still the largest single CPU cost at 3.90 ms, ahead of the 2.17 ms staging map, and still untouched by any optimisation that would help a CPU-only consumer, because there is nothing in the library to optimise.
 - **The staging map is 2.1 ms and it is pure GPU-wait, not work.** Re-profiled 2026-08-05, because the old stage table predates the native kernels and no longer ranks anything correctly. A `grab()` returning a frame is p50 **9.86 ms**, split: acquire + GPU copy 6.44 ms (mostly the 10 ms blocking timeout — its *min* is 0.12 ms), **map staging surface 2.17 ms**, read + convert 0.58 ms (BGRA) / 1.14 ms (RGB), unmap 0.006 ms. Conversion is now 6–11% of a frame; the map is 3.6× it.
 
   Inserting a delay between `CopySubresourceRegion` and `Map` collapses the map, which identifies the cost exactly:

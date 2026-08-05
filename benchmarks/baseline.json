@@ -1,12 +1,12 @@
 {
   "machine": {
-    "timestamp": "2026-08-05T07:37:21.560521+00:00",
+    "timestamp": "2026-08-05T12:14:48.724346+00:00",
     "python": "3.13.14",
     "platform": "Windows-11-10.0.26200-SP0",
     "processor": "Intel64 Family 6 Model 198 Stepping 2, GenuineIntel",
     "numpy": "2.5.1",
     "frame": "1920x1080",
-    "rapidshot": "2.0.0",
+    "rapidshot": "2.1.0",
     "gpu": "Intel(R) Graphics"
   },
   "results": [
@@ -14,161 +14,161 @@
       "name": "convert.BGRA",
       "kind": "synthetic",
       "samples": 125,
-      "median_ms": 0.2391,
-      "min_ms": 0.2111,
-      "p95_ms": 0.3001,
-      "stdev_ms": 0.03028,
-      "gb_per_s": 34.69
+      "median_ms": 0.2341,
+      "min_ms": 0.2059,
+      "p95_ms": 0.2577,
+      "stdev_ms": 0.013024,
+      "gb_per_s": 35.431
     },
     {
       "name": "convert.RGBA",
       "kind": "synthetic",
       "samples": 125,
-      "median_ms": 0.3914,
-      "min_ms": 0.3619,
-      "p95_ms": 0.4848,
-      "stdev_ms": 0.046344,
-      "gb_per_s": 21.192
+      "median_ms": 0.3916,
+      "min_ms": 0.3505,
+      "p95_ms": 0.4592,
+      "stdev_ms": 0.032331,
+      "gb_per_s": 21.181
     },
     {
       "name": "convert.RGB",
       "kind": "synthetic",
       "samples": 125,
-      "median_ms": 0.3404,
-      "min_ms": 0.3116,
-      "p95_ms": 0.4131,
-      "stdev_ms": 0.028677,
-      "gb_per_s": 24.367
+      "median_ms": 0.3343,
+      "min_ms": 0.3032,
+      "p95_ms": 0.436,
+      "stdev_ms": 0.044395,
+      "gb_per_s": 24.811
     },
     {
       "name": "convert.BGR",
       "kind": "synthetic",
       "samples": 125,
-      "median_ms": 0.3369,
-      "min_ms": 0.3045,
-      "p95_ms": 0.4803,
-      "stdev_ms": 0.052188,
-      "gb_per_s": 24.62
+      "median_ms": 0.3341,
+      "min_ms": 0.3047,
+      "p95_ms": 0.4265,
+      "stdev_ms": 0.060314,
+      "gb_per_s": 24.826
     },
     {
       "name": "convert.GRAY",
       "kind": "synthetic",
       "samples": 125,
-      "median_ms": 0.2801,
-      "min_ms": 0.261,
-      "p95_ms": 0.3373,
-      "stdev_ms": 0.032581,
-      "gb_per_s": 29.612
+      "median_ms": 0.2765,
+      "min_ms": 0.256,
+      "p95_ms": 0.3789,
+      "stdev_ms": 0.045597,
+      "gb_per_s": 29.998
     },
     {
       "name": "shot.BGRA",
       "kind": "synthetic",
       "samples": 125,
-      "median_ms": 0.2431,
-      "min_ms": 0.1851,
-      "p95_ms": 0.2952,
-      "stdev_ms": 0.032994,
-      "gb_per_s": 34.119
+      "median_ms": 0.2418,
+      "min_ms": 0.2047,
+      "p95_ms": 0.2909,
+      "stdev_ms": 0.027258,
+      "gb_per_s": 34.303
     },
     {
       "name": "shot.RGBA",
       "kind": "synthetic",
       "samples": 125,
-      "median_ms": 0.3862,
-      "min_ms": 0.3474,
-      "p95_ms": 0.4579,
-      "stdev_ms": 0.037216,
-      "gb_per_s": 21.477
+      "median_ms": 0.4096,
+      "min_ms": 0.3598,
+      "p95_ms": 0.4975,
+      "stdev_ms": 0.050081,
+      "gb_per_s": 20.25
     },
     {
       "name": "shot.RGB",
       "kind": "synthetic",
       "samples": 125,
-      "median_ms": 0.3388,
-      "min_ms": 0.3199,
-      "p95_ms": 0.3909,
-      "stdev_ms": 0.025404,
-      "gb_per_s": 24.482
+      "median_ms": 0.3605,
+      "min_ms": 0.307,
+      "p95_ms": 0.5098,
+      "stdev_ms": 0.070451,
+      "gb_per_s": 23.008
     },
     {
       "name": "shot.BGR",
       "kind": "synthetic",
       "samples": 125,
-      "median_ms": 0.3418,
-      "min_ms": 0.3116,
-      "p95_ms": 0.4375,
-      "stdev_ms": 0.055656,
-      "gb_per_s": 24.267
+      "median_ms": 0.3383,
+      "min_ms": 0.3115,
+      "p95_ms": 0.5066,
+      "stdev_ms": 0.066315,
+      "gb_per_s": 24.518
     },
     {
       "name": "shot.GRAY",
       "kind": "synthetic",
       "samples": 125,
-      "median_ms": 0.294,
-      "min_ms": 0.2691,
-      "p95_ms": 0.3821,
-      "stdev_ms": 0.041534,
-      "gb_per_s": 28.212
+      "median_ms": 0.2854,
+      "min_ms": 0.2646,
+      "p95_ms": 0.6628,
+      "stdev_ms": 0.125021,
+      "gb_per_s": 29.062
     },
     {
       "name": "process.BGRA",
       "kind": "synthetic",
       "samples": 125,
-      "median_ms": 0.2462,
-      "min_ms": 0.2002,
-      "p95_ms": 0.3044,
-      "stdev_ms": 0.036779,
-      "gb_per_s": 33.69
+      "median_ms": 0.2592,
+      "min_ms": 0.2082,
+      "p95_ms": 0.305,
+      "stdev_ms": 0.024225,
+      "gb_per_s": 32.0
     },
     {
       "name": "process.RGB",
       "kind": "synthetic",
       "samples": 125,
-      "median_ms": 3.2029,
-      "min_ms": 2.8908,
-      "p95_ms": 3.6407,
-      "stdev_ms": 0.239466,
-      "gb_per_s": 2.59
+      "median_ms": 3.1558,
+      "min_ms": 2.3302,
+      "p95_ms": 3.6562,
+      "stdev_ms": 0.355899,
+      "gb_per_s": 2.628
     },
     {
       "name": "pipeline.cpu_to_nchw",
       "kind": "synthetic",
       "samples": 60,
-      "median_ms": 7.45055,
-      "min_ms": 6.6933,
-      "p95_ms": 8.03,
-      "stdev_ms": 0.329625,
-      "note": "resize + normalise + transpose to NCHW on the CPU"
+      "median_ms": 4.41465,
+      "min_ms": 3.9065,
+      "p95_ms": 6.4157,
+      "stdev_ms": 0.730828,
+      "note": "resize + normalise + transpose to NCHW on the CPU; reimplemented 2026-08-05, 1.78x faster and bit-identical -- not comparable with recordings before that date"
     },
     {
       "name": "pipeline.gpu_dispatch",
       "kind": "synthetic",
       "samples": 125,
-      "median_ms": 0.002,
-      "min_ms": 0.0015,
-      "p95_ms": 0.0117,
-      "stdev_ms": 0.005221,
+      "median_ms": 0.0026,
+      "min_ms": 0.0016,
+      "p95_ms": 0.0127,
+      "stdev_ms": 0.005753,
       "note": "one compute dispatch; result stays on the GPU"
     },
     {
       "name": "pipeline.gpu_plus_readback",
       "kind": "synthetic",
       "samples": 60,
-      "median_ms": 16.2176,
-      "min_ms": 13.9641,
-      "p95_ms": 24.8651,
-      "stdev_ms": 3.432897,
+      "median_ms": 17.85395,
+      "min_ms": 14.7991,
+      "p95_ms": 24.0884,
+      "stdev_ms": 3.070495,
       "note": "dispatch + full GPU->CPU readback (the round-trip we avoid)"
     },
     {
       "name": "control.memcopy",
       "kind": "control",
       "samples": 125,
-      "median_ms": 0.2777,
-      "min_ms": 0.2148,
-      "p95_ms": 0.2951,
-      "stdev_ms": 0.02721,
-      "gb_per_s": 29.868,
+      "median_ms": 0.2482,
+      "min_ms": 0.2236,
+      "p95_ms": 0.2997,
+      "stdev_ms": 0.028175,
+      "gb_per_s": 33.418,
       "note": "CONTROL: a plain memory copy whose implementation never changes. Its movement between runs measures machine drift (background load, thermal state), which is used to normalise the other comparisons."
     },
     {
@@ -178,28 +178,28 @@
       "median_ms": 0.0004,
       "min_ms": 0.0003,
       "p95_ms": 0.0004,
-      "stdev_ms": 0.000339,
+      "stdev_ms": 0.000125,
       "note": "trivial COM method; approximates pure binding overhead"
     },
     {
       "name": "live.grab_with_frame",
       "kind": "live",
-      "samples": 212,
-      "median_ms": 9.51435,
-      "min_ms": 1.7675,
-      "p95_ms": 15.8666,
-      "stdev_ms": 3.313443,
-      "note": "212 frame-producing calls (126 returned no new content) in 3s. DDA only reports changed content, so this depends on screen activity \u2014 compare across runs with caution."
+      "samples": 298,
+      "median_ms": 10.0033,
+      "min_ms": 2.4074,
+      "p95_ms": 11.5958,
+      "stdev_ms": 1.662841,
+      "note": "298 frame-producing calls (16 returned no new content) in 3s. DDA only reports changed content, so this depends on screen activity \u2014 compare across runs with caution."
     },
     {
       "name": "live.grab_frame_gpu",
       "kind": "live",
-      "samples": 120,
-      "median_ms": 8.89765,
-      "min_ms": 0.8323,
-      "p95_ms": 19.4287,
-      "stdev_ms": 4.227617,
-      "note": "120 frame-producing calls (164 empty) in 3s; GPU-resident, no CPU round-trip"
+      "samples": 301,
+      "median_ms": 9.985,
+      "min_ms": 0.1584,
+      "p95_ms": 10.3828,
+      "stdev_ms": 1.58252,
+      "note": "301 frame-producing calls (14 empty) in 3s; GPU-resident, no CPU round-trip"
     }
   ]
 }

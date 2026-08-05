@@ -84,6 +84,23 @@ No breaking changes. `grab()` still returns a `PooledBuffer` as it has since 2.0
 
 ### Benchmarks
 
+- **The CPU arm of the preprocess comparison was a strawman; fixing it cost the
+  GPU path 1.78× of its apparent win.** `pipeline.cpu_to_nchw` is not library
+  code — RapidShot ships no CPU preprocess — it is the reference the GPU tensor
+  path is measured against, and Stage 6 was promoted on that comparison. It
+  widened the 640×640×4 gather to float32 *before* scaling (6.55 MB of traffic
+  where 1.6 MB suffices), divided in a second pass, stacked channels into a
+  fresh array in a third, and allocated ~11 MB per call. Writing each channel
+  once into a preallocated destination is **6.84 → 3.90 ms, bit-identical**.
+  The conclusion holds — GPU dispatch is 2 µs against 3.90 ms — but the margin
+  was overstated for as long as the control arm was the first implementation
+  rather than the best one. Both baselines re-recorded, since this changes what
+  the row measures; recordings before 2026-08-05 are not comparable on it.
+  A variant that looked 7× faster was discarded for sampling the wrong pixels:
+  the resize indices are not a uniform stride (1080/640 = 1.6875), so a strided
+  slice silently reads a different image. Caught only because every variant is
+  checked against the original's output before its timing is believed.
+
 - **Two committed recordings instead of one**, both taken 2026-08-05 back-to-back
   so they are comparable to each other rather than separated by machine drift:
   - `benchmarks/baseline.json` — **with** the native extension. What the library
