@@ -37,6 +37,9 @@ from rapidshot.util.topology import (
     probe_topology,
 )
 
+# Pure NumPy, so it imports on any platform even though capture does not.
+from rapidshot.preprocess import to_nchw
+
 # Initialize logging
 logger = get_logger("init")
 
@@ -46,6 +49,7 @@ __all__ = [
     "clean_up", "reset", "ScreenCapture",
     "RapidshotError", "HeadlessError", "get_version_info",
     "probe_topology", "GpuTopology", "AdapterInfo",
+    "to_nchw",
 ]
 
 class RapidshotError(Exception):

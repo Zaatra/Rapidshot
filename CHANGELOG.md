@@ -142,6 +142,22 @@ No breaking changes. `grab()` still returns a `PooledBuffer` as it has since 2.0
 
 ### Added
 
+- **`rapidshot.to_nchw()` converts a frame to model input** — `(1, 3, H, W)`
+  float32 scaled to 0-1 — in one call, with the fast implementation rather than
+  the obvious one. Measured at 1920x1080 to 640x640: hand-written naive
+  **7.20 ms**, `to_nchw()` **5.18 ms**, `to_nchw(out=buf)` **4.05 ms** reusing a
+  destination. Output is bit-identical to the hand-written version, so this is
+  purely about which implementation you end up with.
+
+  Deliberately narrow: output size and channel order, nothing else. No mean/std
+  normalisation, no float16, no NHWC, no letterboxing — those are dictated by the
+  model rather than chosen for speed, and measured within ~1.5x of each other
+  (2.5-5.1 ms), so there is nothing to gain by guessing. Two costs are documented
+  rather than hidden: `source_order` is **required**, because an `(H, W, 3)`
+  array cannot say whether it holds RGB or BGR and feeding a model the wrong one
+  fails silently; and the resize is nearest-neighbour, not the bilinear most
+  detection models were trained with.
+
 - **`pool_size_frames` is now public, and its default drops from 10 to 4.** It
   was settable on `ScreenCapture` but the factory never forwarded it, so the
   largest tunable part of the process footprint was unreachable through
