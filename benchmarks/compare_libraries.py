@@ -347,6 +347,13 @@ def aggregate(samples: List[dict]) -> dict:
 
     The spread is kept and printed, because a cell whose repeats disagree cannot
     support a verdict no matter how tidy its median looks.
+
+    Every *measured* quantity carries its own spread. Frame rate alone is not
+    enough: CPU percentage moved between runs by considerably more than frame
+    rate did -- RapidShot's fullscreen RGB read 16-20% in earlier runs and 35%
+    in a later one, with frame rate steady at 99.5 throughout -- so a CPU column
+    without an error bar invites exactly the false conclusion the frame-rate
+    spread exists to prevent.
     """
     good = [s for s in samples if s.get("frames")]
     if not good:
@@ -359,29 +366,53 @@ def aggregate(samples: List[dict]) -> dict:
         values = [s[key] for s in good if isinstance(s.get(key), (int, float))]
         if values:
             merged[key] = round(statistics.median(values), 3)
-    fps = [s["fps_mean"] for s in good]
-    mid = statistics.median(fps) if fps else 0
-    merged["fps_spread_pct"] = (round((max(fps) - min(fps)) / mid * 100, 1)
-                                if len(fps) > 1 and mid else 0.0)
+
+    for key, label in (("fps_mean", "fps"),
+                       ("cpu_percent_mean", "cpu"),
+                       ("rss_mb_end", "rss")):
+        values = [s[key] for s in good if isinstance(s.get(key), (int, float))]
+        mid = statistics.median(values) if values else 0
+        merged[f"{label}_spread_pct"] = (
+            round((max(values) - min(values)) / mid * 100, 1)
+            if len(values) > 1 and mid else 0.0)
+
+    # One number for "is this cell worth reading at all".
+    merged["worst_spread_pct"] = max(
+        merged["fps_spread_pct"], merged["cpu_spread_pct"],
+        merged["rss_spread_pct"])
     return merged
 
 
+SPREAD_LIMIT = 10.0     # above this a cell is reported but should not be argued from
+
+
+def _with_spread(value: float, spread: float, width: int, decimals: int) -> str:
+    """A measurement and its uncertainty, together.
+
+    Printed adjacent rather than in a distant column: an error bar three columns
+    away from the number it qualifies gets read as decoration.
+    """
+    return f"{value:>{width}.{decimals}f} ±{spread:>4.1f}%"
+
+
 def table(rows: List[dict]) -> str:
-    head = (f"{'library':<16}{'scenario':<12}{'fmt':<6}{'fps':>8}{'p50':>9}"
-            f"{'p95':>9}{'p99':>9}{'jitter':>9}{'cpu%':>7}{'rssMB':>8}{'spread':>8}")
+    head = (f"{'library':<16}{'scenario':<12}{'fmt':<6}"
+            f"{'fps':>13}{'':<2}{'p50':>7}{'p99':>8}{'jitter':>8}"
+            f"{'cpu%':>13}{'':<2}{'rssMB':>14}{'':<2}{'ok':>4}")
     out = [head, "-" * len(head)]
     for r in rows:
         if r.get("error") or not r.get("frames"):
             out.append(f"{r['library']:<16}{r['scenario']:<12}{r['colour']:<6}"
                        f"  {r.get('error', 'no frames')[:60]}")
             continue
+        worst = r.get("worst_spread_pct", 0.0)
         out.append(
             f"{r['library']:<16}{r['scenario']:<12}{r['colour']:<6}"
-            f"{r['fps_mean']:>8.1f}{r['ms_p50']:>9.2f}{r['ms_p95']:>9.2f}"
-            f"{r['ms_p99']:>9.2f}{r['ms_jitter_stdev']:>9.2f}"
-            f"{(r.get('cpu_percent_mean') or 0):>7.1f}"
-            f"{(r.get('rss_mb_end') or 0):>8.1f}"
-            f"{(r.get('fps_spread_pct') or 0):>7.1f}%")
+            f"{_with_spread(r['fps_mean'], r.get('fps_spread_pct', 0), 7, 1)}"
+            f"{r['ms_p50']:>7.2f}{r['ms_p99']:>8.2f}{r['ms_jitter_stdev']:>8.2f}"
+            f"{_with_spread(r.get('cpu_percent_mean') or 0, r.get('cpu_spread_pct', 0), 7, 1)}"
+            f"{_with_spread(r.get('rss_mb_end') or 0, r.get('rss_spread_pct', 0), 8, 1)}"
+            f"{'  ' if worst <= SPREAD_LIMIT else '  <<':>4}")
     return "\n".join(out)
 
 
@@ -440,8 +471,12 @@ def main() -> int:
     print(" " * 70, end="\r")
 
     print(table(rows))
-    print("\nfps = frames returned per second; p50/p95/p99 and jitter are")
-    print("inter-frame deltas in ms. Compare only within one scenario+format.")
+    print(f"\n± is the spread across {args.repeats} independent runs of that cell,")
+    print("as a percentage of the median. A row marked << has some measurement")
+    print(f"disagreeing by more than {SPREAD_LIMIT:.0f}%: read it, do not argue from it.")
+    print("p50/p99/jitter are inter-frame deltas in ms and carry no error bar;")
+    print("they are within-run distributions already. Compare only within one")
+    print("scenario+format.")
 
     payload = {"environment": env, "results": rows}
     out = args.out or (HERE / "library-comparison.json")

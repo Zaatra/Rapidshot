@@ -35,23 +35,33 @@ against DXcam, BetterCam and mss on one 1080p 100 Hz display with a motion sourc
 fast enough to saturate it (`benchmarks/compare_libraries.py`, full numbers in
 `benchmarks/library-comparison.json`):
 
+Median of three independent runs per cell, with the spread across those runs:
+
 | | frames/s | CPU | per-call p50 |
 | --- | --- | --- | --- |
-| RapidShot | 114 | **15%** | 8.9 ms |
-| DXcam | **135** | 66% | 5.3 ms |
-| BetterCam | 132 | 63% | 2.4 ms |
-| mss | 33 | 30% | 30.0 ms |
+| RapidShot | 99.7 ±0.3% | **10.7% ±41%** | 9.99 ms |
+| RapidShot (`timeout_ms=0`) | 99.6 ±0.3% | 83.8% ±12% | 2.70 ms |
+| DXcam | 100.0 ±19% | 77.8% ±7% | 5.46 ms |
+| BetterCam | 100.6 ±14% | 80.8% ±5% | 2.30 ms |
+| mss | 39.5 ±8% | 35.1% ±7% | 27.33 ms |
 
-DXcam and BetterCam return more frames per second than RapidShot. They do it by
-polling in a tight loop — over 100,000 `None` returns in six seconds, a 0.3% hit
-rate — which is why they cost four times the CPU for a fifth more frames, and up
-to **2.2 cores** in the RGB case. RapidShot waits for a frame instead.
+**Every DXGI-based library lands at ~100 fps** — the compositor is the ceiling, not
+the library. What differs is what you pay for it. DXcam and BetterCam poll: over
+100,000 empty returns in six seconds, a 0.3% hit rate, up to **2.2 cores** in the
+RGB case. RapidShot waits instead, and the second row shows that is a setting
+rather than a limit — `timeout_ms=0` buys DXcam's latency at DXcam's CPU cost.
 
-So the trade is explicit: if you want the highest possible frame count and have a
-core to spare, DXcam is the faster library. If capture is one stage of a pipeline
-that needs its CPU for something else, RapidShot delivers a comparable rate for a
-fraction of it, and can hand the frame to a GPU consumer without a round trip
-through system memory at all.
+**Read the CPU column with its error bar.** It is the noisiest thing here: across
+three runs RapidShot's figure ranged about 8.5–12.9% and DXcam's 75–80%, so the
+honest statement is *roughly 6–9× less CPU for the same frame rate*, not a precise
+multiple. The direction is solid; the exact number is not, and anyone quoting one
+significant figure from a benchmark like this is over-reading it.
+
+So the trade is explicit: if you want the lowest possible per-call latency and
+have a core to spare, DXcam and BetterCam are excellent. If capture is one stage
+of a pipeline that needs its CPU for something else, RapidShot delivers the same
+frame rate for a fraction of it — and can hand the frame to a GPU consumer
+without a round trip through system memory at all.
 
 It began as a merge of several DXcam forks and keeps a broadly familiar API, but
 the capture path, the colour pipeline and the GPU interop have since been
