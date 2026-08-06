@@ -12,75 +12,37 @@ each release can be traced back to the plan it implements.
 
 Nothing yet.
 
-## [2.1.0] - 2026-08-05
+## [2.2.0] - 2026-08-06
 
-**Colour conversion stops being the CPU bottleneck.** It was the dominant cost in
-every capture that leaves the GPU; all five modes now run at 69–100% of what the
-dev machine's memory system can move, so there is little left to win there.
+**Capture that gets out of your way.** No library beats the compositor -- every
+DXGI capture library lands at ~100 fps on a 100 Hz display, RapidShot included.
+What separates them is the bill. RapidShot delivers those frames on **13.6% CPU
+against DXcam's 79.7% and BetterCam's 74.4%**, and converts colour for about a
+**third** of what they spend, which is the AVX2 kernels rather than a scheduling
+choice. If capture is one stage of a pipeline that needs its cores for inference,
+that difference is the whole point.
 
-**Read the two figures separately, because they differ by a lot.** A plain
-`pip install rapidshot` needs no toolchain and gains **GRAY 1.5–1.8×** — the other
-modes are unchanged, deliberately. The large numbers below (6–37×) need the
-*optional* native extension, which requires Rust plus the MSVC build tools. Both
-paths produce byte-identical output, so the extension is purely a speed choice and
-never a behaviour one.
+**The last mile got shorter.** `to_nchw()` turns a frame into model input in one
+call -- `(1, 3, H, W)` float32, correct channel order, **7.20 ms → 4.05 ms**
+against the version most people write, bit-identical output. And two knobs that
+were previously ours to assume are now yours to set: `timeout_ms` picks your
+point on the CPU-versus-latency curve, and `pool_size_frames` your memory
+footprint.
 
-No breaking changes. `grab()` still returns a `PooledBuffer` as it has since 2.0.0.
+**Memory dropped 60 MB per camera**, from 174 MB to 114 MB, at no measurable cost
+in frame rate. It remains roughly 40 MB above DXcam's, and `pool_size_frames`
+takes it lower still if that matters more to you than buffer reuse.
 
-### Performance — Stage 1b (pixel path)
+**And you can now check all of it yourself.** This release adds a reproducible
+cross-library comparison against DXcam, BetterCam and mss -- error bars, isolated
+processes, a calibrated motion source -- along with the two results that do not
+flatter us. Nobody should take a performance claim on trust, including ours.
 
-- **GRAY is 1.5–1.8× faster with no toolchain, and 24× faster with the optional
-  native extension.** Output is byte-identical in both cases, asserted over all
-  16,777,216 BGR combinations. GRAY had been the one colour mode that could not
-  keep up with a 60 Hz display at 1080p (13.7–14.9 ms against a 16.67 ms frame);
-  it now costs 8.5–11 ms in pure NumPy and 0.70 ms through the native kernel.
-  - The NumPy path stopped allocating. The previous formulation built a
-    full-frame `uint16` temporary per channel, and those page faults cost more
-    than the arithmetic they carried; intermediates are now reused across frames.
-  - **An AVX2 kernel takes GRAY to 0.26 ms** — 37× the NumPy path, 59× the 2.0.0
-    formulation, and 96% of the memory system's 33.2 GB/s limit. It beats
-    single-threaded OpenCV (0.34 ms) while being byte-exact, where OpenCV differs
-    by up to 1 LSB. GRAY went from the slowest colour mode to the fastest.
-    The obvious instruction, `_mm256_maddubs_epi16`, is unusable: it saturates as
-    signed i16 while `b*29 + g*150` reaches 45,645, so it would clamp and corrupt
-    bright pixels silently. Widening to u16 and using `_mm256_madd_epi16`
-    accumulates into i32 where nothing can overflow. Because that failure mode
-    hides in highlights, the correctness test is **exhaustive over all 2²⁴ BGR
-    triples through the vector path**, not sampled.
-  - `native/src/luma.rs` adds a byte-exact Rust kernel, used automatically by
-    `NumpyProcessor.convert_into` when the extension is present and silently
-    declined when it is not — so `pip install rapidshot` is unaffected, per the
-    "optional means optional" principle in ROADMAP.md § 11. It releases the GIL
-    for the duration of the conversion, and addresses both source and
-    destination by their own row pitches, so dirty-rect patches into the
-    accumulator go through it without being copied first.
-  - New `benchmarks/gray_kernel.py` compares four NumPy formulations and the
-    native kernel against a hand-written SIMD reference, and records two
-    negative results worth keeping: a lookup-table formulation is **1.5× slower**
-    than the multiplies it replaces, and a `uint32` SWAR formulation that reads
-    contiguously is no better than the strided `uint16` one.
+Pick DXcam or BetterCam if capture is your whole program and you want the lowest
+possible per-call latency. Pick RapidShot if it is one stage of something larger.
 
-- **Native kernels for RGB, BGR and RGBA too** (`native/src/swizzle.rs`), byte-exact
-  and used automatically when the optional extension is present: **RGB 6.4×,
-  BGR 6.5×, RGBA 7.5×** at 1920x1080, putting all three at 69–79% of the memory
-  system's measured 33.2 GB/s limit. BGRA is untouched — a straight copy already
-  running at that limit, and the control proving the old 2–3 ms figures were never
-  a memory constraint but three strided passes doing one pass's work.
-  - The reorder modes use an AVX2 `pshufb` permutation, detected at runtime with
-    the scalar loops as fallback (x86_64 guarantees only SSE2). The
-    autovectorised loops alone reached just 2.5–7.2×, and RGB was the worst
-    because reversing each triple defeats the vectoriser — `pshufb` took it from
-    0.82 ms to 0.32 ms.
-  - The 3-byte kernels store **exactly 24 bytes**, not a full vector. The usual
-    store-32-and-overwrite trick would run past a row end, which for a
-    dirty-rect patch is the next row of live pixels — silent corruption rather
-    than a crash.
-  - Correctness is asserted over every distinct BGRA quad per mode, on odd shapes
-    down to 1×1, on strided sub-rectangles that must leave the rest of the
-    accumulator intact, and vector-against-scalar at every width from 1 to 64 —
-    which covers all eight tail lengths, where such a bug would otherwise hide.
-  - The NumPy fallbacks are unchanged, so a toolchain-free install performs
-    exactly as before.
+No breaking changes. The `pool_size_frames` default drops from 10 to 4; pass 10
+explicitly to restore the previous behaviour.
 
 ### Benchmarks
 
@@ -100,45 +62,6 @@ No breaking changes. `grab()` still returns a `PooledBuffer` as it has since 2.0
   the resize indices are not a uniform stride (1080/640 = 1.6875), so a strided
   slice silently reads a different image. Caught only because every variant is
   checked against the original's output before its timing is believed.
-
-- **Two committed recordings instead of one**, both taken 2026-08-05 back-to-back
-  so they are comparable to each other rather than separated by machine drift:
-  - `benchmarks/baseline.json` — **with** the native extension. What the library
-    can do on stated hardware; feeds the README badges.
-  - `benchmarks/baseline-nonative.json` — **without** it. What a plain
-    `pip install rapidshot` gets, and what CI's compare step now points at, since
-    the runner builds no extension. Aimed at `baseline.json` it would report a
-    6–20× "regression" on every conversion row forever.
-  - The 07-30 recording is preserved as `benchmarks/baseline-2026-07-30.json`.
-- **New `benchmarks/compare_recordings.py`** diffs stored recordings against each
-  other, normalising each by its own `control.memcopy` row first so a recording
-  taken on a cold machine is not credited for it. Measured gains against 07-30:
-  **GRAY 20.8×, RGBA 7.0×, RGB 6.2×, BGR 6.0×**; BGRA unchanged (it is a copy),
-  and `pipeline.cpu_to_nchw` unchanged (untouched).
-- **Badges now come from deterministic synthetic rows only.** `BGRA→RGB`,
-  `BGRA→GRAY` and `shot()→buffer` replace the former `grab()` and
-  `grab_frame()` badges, which were fed from live capture and could not be
-  trusted: across seven recordings on code that only ever got faster,
-  `live.grab_frame_gpu` spanned 0.17–0.83 ms — a 4.9× swing on a path that
-  performs no conversion at all, so the badge reported the desktop rather than
-  the library. The live figures are still measured and still in ROADMAP.md § 3
-  with their range stated; they are simply no longer advertised as if stable.
-- **A cross-machine comparison no longer reports verdicts as if they were real.**
-  `control.memcopy` measures memory bandwidth, so drift-normalising by it only
-  works for benchmarks that are also bandwidth-bound. On a CI runner it reported
-  `pipeline.cpu_to_nchw` (float32 resize/normalise/transpose, compute-bound) as a
-  1.34× regression against untouched code, while calling every conversion row
-  1.4× *faster* on a machine that was uniformly slower — one control standing in
-  for workloads it does not resemble, wrong in both directions at once.
-  `print_comparison` now detects a baseline recorded on different hardware, marks
-  every verdict indicative, and gates nothing. Improvements are flagged as
-  loudly as regressions.
-- The regression summary claimed "the 10% threshold" while the default was 1.30,
-  telling anyone reading a failure that a change had to be 10% to count when it
-  actually had to be 30%. It now quotes the threshold in force.
-- Also recorded there: a minimum is monotonically non-increasing in sample count,
-  so raising `--live-seconds` makes live numbers look better on unchanged code.
-  Live rows are comparable only at the same setting.
 
 ### Added
 
@@ -221,6 +144,160 @@ No breaking changes. `grab()` still returns a `PooledBuffer` as it has since 2.0
   compositor produced ~188 presents/s while the capture loop caught 117.5. A
   library reporting more frames per second than the refresh rate is not
   necessarily lying. README claims updated to match.
+
+- ROADMAP.md § 4 records that **DWM does not emit move rects** — 2,205 frames of
+  live capture under a workload built to produce them returned zero, so
+  `move_rects` is deferred rather than pending, and the latent correctness hole
+  it would close is documented instead of lost.
+- ROADMAP.md § 6.1 records that the cross-adapter **CPU-side wait is not the
+  cost** (0.83 ms min / 1.01 ms median copy at 9.5 GB/s, indistinguishable from
+  `transfer()`), so a shared fence is a latency change, not a throughput one —
+  and cannot be validated against WARP.
+- ROADMAP.md § 6.3 records the **dirty-fraction distribution**, which is
+  workload-dependent: 0.7–0.8% for a small animated window, but median 68% for a
+  dragged and scrolling one, where the optimisation decays toward 1.0×.
+
+### Benchmarks
+
+- **A cross-library comparison against DXcam, BetterCam and mss**
+  (`benchmarks/compare_libraries.py`), with each library in its own process --
+  a correctness requirement, not tidiness: all three DXGI libraries declare the
+  same COM interfaces and whichever imports first breaks the others.
+  `benchmarks/motion_source.py` supplies on-screen motion and reports its own
+  achieved rate, because a source slower than the display silently becomes the
+  ceiling and every library then reports *it* rather than themselves.
+- **Every measured quantity carries an error bar**, taken across repeated runs
+  and printed next to the value. Frame rate alone was not enough: CPU moved
+  between runs by far more than frame rate did, and CPU is the column the
+  headline claim rests on. CPU is now derived from `cpu_times()` rather than
+  sampled, which removes the sampling error entirely -- though the remaining
+  variation is the machine rather than the instrument, so the column is
+  directional and the README says so.
+- **`benchmarks/compare_recordings.py`** diffs stored recordings against each
+  other, normalising each by its own control row first.
+
+### Documentation
+
+- **The README now states where RapidShot loses.** It is not faster than DXcam
+  or BetterCam -- every DXGI library sits at ~100 fps because the compositor is
+  the ceiling -- and it uses the most memory of the four (124 MB against
+  BetterCam's 80 MB). Most of the CPU advantage is a default rather than an
+  achievement, which the `timeout_ms=0` row in the table makes unavoidable. What
+  survives as engineering is the colour conversion, which costs about a third of
+  DXcam's CPU for the same work.
+
+## [2.1.0] - 2026-08-05
+
+**Colour conversion stops being the CPU bottleneck.** It was the dominant cost in
+every capture that leaves the GPU; all five modes now run at 69–100% of what the
+dev machine's memory system can move, so there is little left to win there.
+
+**Read the two figures separately, because they differ by a lot.** A plain
+`pip install rapidshot` needs no toolchain and gains **GRAY 1.5–1.8×** — the other
+modes are unchanged, deliberately. The large numbers below (6–37×) need the
+*optional* native extension, which requires Rust plus the MSVC build tools. Both
+paths produce byte-identical output, so the extension is purely a speed choice and
+never a behaviour one.
+
+No breaking changes. `grab()` still returns a `PooledBuffer` as it has since 2.0.0.
+
+### Performance — Stage 1b (pixel path)
+
+- **GRAY is 1.5–1.8× faster with no toolchain, and 24× faster with the optional
+  native extension.** Output is byte-identical in both cases, asserted over all
+  16,777,216 BGR combinations. GRAY had been the one colour mode that could not
+  keep up with a 60 Hz display at 1080p (13.7–14.9 ms against a 16.67 ms frame);
+  it now costs 8.5–11 ms in pure NumPy and 0.70 ms through the native kernel.
+  - The NumPy path stopped allocating. The previous formulation built a
+    full-frame `uint16` temporary per channel, and those page faults cost more
+    than the arithmetic they carried; intermediates are now reused across frames.
+  - **An AVX2 kernel takes GRAY to 0.26 ms** — 37× the NumPy path, 59× the 2.0.0
+    formulation, and 96% of the memory system's 33.2 GB/s limit. It beats
+    single-threaded OpenCV (0.34 ms) while being byte-exact, where OpenCV differs
+    by up to 1 LSB. GRAY went from the slowest colour mode to the fastest.
+    The obvious instruction, `_mm256_maddubs_epi16`, is unusable: it saturates as
+    signed i16 while `b*29 + g*150` reaches 45,645, so it would clamp and corrupt
+    bright pixels silently. Widening to u16 and using `_mm256_madd_epi16`
+    accumulates into i32 where nothing can overflow. Because that failure mode
+    hides in highlights, the correctness test is **exhaustive over all 2²⁴ BGR
+    triples through the vector path**, not sampled.
+  - `native/src/luma.rs` adds a byte-exact Rust kernel, used automatically by
+    `NumpyProcessor.convert_into` when the extension is present and silently
+    declined when it is not — so `pip install rapidshot` is unaffected, per the
+    "optional means optional" principle in ROADMAP.md § 11. It releases the GIL
+    for the duration of the conversion, and addresses both source and
+    destination by their own row pitches, so dirty-rect patches into the
+    accumulator go through it without being copied first.
+  - New `benchmarks/gray_kernel.py` compares four NumPy formulations and the
+    native kernel against a hand-written SIMD reference, and records two
+    negative results worth keeping: a lookup-table formulation is **1.5× slower**
+    than the multiplies it replaces, and a `uint32` SWAR formulation that reads
+    contiguously is no better than the strided `uint16` one.
+
+- **Native kernels for RGB, BGR and RGBA too** (`native/src/swizzle.rs`), byte-exact
+  and used automatically when the optional extension is present: **RGB 6.4×,
+  BGR 6.5×, RGBA 7.5×** at 1920x1080, putting all three at 69–79% of the memory
+  system's measured 33.2 GB/s limit. BGRA is untouched — a straight copy already
+  running at that limit, and the control proving the old 2–3 ms figures were never
+  a memory constraint but three strided passes doing one pass's work.
+  - The reorder modes use an AVX2 `pshufb` permutation, detected at runtime with
+    the scalar loops as fallback (x86_64 guarantees only SSE2). The
+    autovectorised loops alone reached just 2.5–7.2×, and RGB was the worst
+    because reversing each triple defeats the vectoriser — `pshufb` took it from
+    0.82 ms to 0.32 ms.
+  - The 3-byte kernels store **exactly 24 bytes**, not a full vector. The usual
+    store-32-and-overwrite trick would run past a row end, which for a
+    dirty-rect patch is the next row of live pixels — silent corruption rather
+    than a crash.
+  - Correctness is asserted over every distinct BGRA quad per mode, on odd shapes
+    down to 1×1, on strided sub-rectangles that must leave the rest of the
+    accumulator intact, and vector-against-scalar at every width from 1 to 64 —
+    which covers all eight tail lengths, where such a bug would otherwise hide.
+  - The NumPy fallbacks are unchanged, so a toolchain-free install performs
+    exactly as before.
+
+### Benchmarks
+
+- **Two committed recordings instead of one**, both taken 2026-08-05 back-to-back
+  so they are comparable to each other rather than separated by machine drift:
+  - `benchmarks/baseline.json` — **with** the native extension. What the library
+    can do on stated hardware; feeds the README badges.
+  - `benchmarks/baseline-nonative.json` — **without** it. What a plain
+    `pip install rapidshot` gets, and what CI's compare step now points at, since
+    the runner builds no extension. Aimed at `baseline.json` it would report a
+    6–20× "regression" on every conversion row forever.
+  - The 07-30 recording is preserved as `benchmarks/baseline-2026-07-30.json`.
+- **New `benchmarks/compare_recordings.py`** diffs stored recordings against each
+  other, normalising each by its own `control.memcopy` row first so a recording
+  taken on a cold machine is not credited for it. Measured gains against 07-30:
+  **GRAY 20.8×, RGBA 7.0×, RGB 6.2×, BGR 6.0×**; BGRA unchanged (it is a copy),
+  and `pipeline.cpu_to_nchw` unchanged (untouched).
+- **Badges now come from deterministic synthetic rows only.** `BGRA→RGB`,
+  `BGRA→GRAY` and `shot()→buffer` replace the former `grab()` and
+  `grab_frame()` badges, which were fed from live capture and could not be
+  trusted: across seven recordings on code that only ever got faster,
+  `live.grab_frame_gpu` spanned 0.17–0.83 ms — a 4.9× swing on a path that
+  performs no conversion at all, so the badge reported the desktop rather than
+  the library. The live figures are still measured and still in ROADMAP.md § 3
+  with their range stated; they are simply no longer advertised as if stable.
+- **A cross-machine comparison no longer reports verdicts as if they were real.**
+  `control.memcopy` measures memory bandwidth, so drift-normalising by it only
+  works for benchmarks that are also bandwidth-bound. On a CI runner it reported
+  `pipeline.cpu_to_nchw` (float32 resize/normalise/transpose, compute-bound) as a
+  1.34× regression against untouched code, while calling every conversion row
+  1.4× *faster* on a machine that was uniformly slower — one control standing in
+  for workloads it does not resemble, wrong in both directions at once.
+  `print_comparison` now detects a baseline recorded on different hardware, marks
+  every verdict indicative, and gates nothing. Improvements are flagged as
+  loudly as regressions.
+- The regression summary claimed "the 10% threshold" while the default was 1.30,
+  telling anyone reading a failure that a change had to be 10% to count when it
+  actually had to be 30%. It now quotes the threshold in force.
+- Also recorded there: a minimum is monotonically non-increasing in sample count,
+  so raising `--live-seconds` makes live numbers look better on unchanged code.
+  Live rows are comparable only at the same setting.
+
+### Documentation
 
 - ROADMAP.md § 4 records that **DWM does not emit move rects** — 2,205 frames of
   live capture under a workload built to produce them returned zero, so

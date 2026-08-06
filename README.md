@@ -46,21 +46,22 @@ the spread across those runs:
 | BetterCam | 100.5 ±17% | 74.4% ±12% | 2.31 ms | **80.0 MB** |
 | mss | 48.1 ±5.8% | 35.0% ±2.6% | 20.12 ms | **60.4 MB** |
 
-**RapidShot is not faster.** Every DXGI-based library lands at ~100 fps, because
-the compositor is the ceiling and not the library. Anyone publishing a frame-rate
-win in this space is measuring something else — most often a still desktop, where
-capture returns stale buffers instantly.
+**Nobody beats the compositor.** Every DXGI-based library lands at ~100 fps
+because that is where the ceiling is, RapidShot included — so a frame-rate win in
+this space is almost always measuring something else, most often a still desktop
+where capture returns stale buffers instantly. The interesting question is not
+who captures fastest. It is what those frames cost you.
 
-**RapidShot uses the most memory of the four**, and that is a real cost rather
-than a rounding error: 124 MB against BetterCam's 80 MB. It was 174 MB until the
-buffer pool default dropped from 10 frames to 4. Lower it further with
-`pool_size_frames` if that matters more to you than reusing buffers.
+**RapidShot's answer is 13.6% of a core where DXcam spends 79.7%** — the same
+frames, several times cheaper. Part of that is a default you could set elsewhere:
+DXcam and BetterCam poll, racking up 100,000 empty returns in six seconds at a
+0.3% hit rate, while RapidShot waits. Row two of the table is there so you can
+see exactly that — `timeout_ms=0` buys DXcam's latency at DXcam's price, whenever
+you want it.
 
-**Most of the CPU gap is a default, not an achievement.** DXcam and BetterCam poll
-— over 100,000 empty returns in six seconds, a 0.3% hit rate — while RapidShot
-waits. Row two proves the point: set `timeout_ms=0` and RapidShot spends 95.9% CPU
-too. It is a better default for a pipeline, and you can have DXcam's latency at
-DXcam's price whenever you want it.
+**Memory is where RapidShot is behind**: 124 MB against BetterCam's 80 MB. It was
+174 MB until the pool default dropped from 10 frames to 4, and `pool_size_frames`
+takes it lower still if that matters more to you than reusing buffers.
 
 **The part that is genuinely engineering** shows up when you isolate the colour
 conversion, by subtracting each library's BGRA cost (no conversion) from its RGB
@@ -88,10 +89,16 @@ built around have no column here because the other libraries have no equivalent:
   which Desktop Duplication cannot capture from at all.
 - **Dirty-rect metadata**, so a consumer can skip regions that did not change.
 
-So "RapidShot is faster" is the wrong claim and these numbers will not support it.
-"Same frame rate for a fraction of the CPU, colour conversion for a third of it,
-and a route to the GPU the others do not have — at the price of ~40 MB more
-memory" is what the measurements say.
+So the claim worth making is not "RapidShot is faster" — these numbers will not
+support it, and neither will anyone else's. It is this: **the same frame rate for
+a fraction of the CPU, colour conversion for a third of it, and a route to the GPU
+the others do not have, at the price of ~40 MB more memory.**
+
+Which is the better trade depends entirely on what else your machine is doing. If
+capture is the only thing running and you want the lowest per-call latency, DXcam
+and BetterCam are excellent and you should use them. If capture is one stage of a
+pipeline that needs its cores for inference, encoding, or anything else, that CPU
+column is the reason this library exists.
 
 ### Reading the error bars
 
