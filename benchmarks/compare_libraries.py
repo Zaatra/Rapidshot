@@ -65,53 +65,84 @@ REGION = (760, 340, 1160, 740)          # 400x400, centred on a 1080p display
 # ---------------------------------------------------------------------------
 
 class ResourceMonitor:
-    """Samples CPU and RSS from a daemon thread.
+    """CPU from cumulative counters, RSS from a daemon thread.
 
-    In-thread sampling would perturb the very loop being measured -- the GIL is
-    held by whichever thread is running, so a `psutil` call between grabs adds
-    itself to the frame time. A separate thread still contends for the GIL but
-    does not serialise into the capture loop.
+    **CPU is not sampled.** It was, at 20 Hz, and averaging those point
+    estimates produced a column too noisy to quote: spreads reached 54.9% across
+    repeats while frame rate held to 0.5%, on cells where nothing about the
+    workload had changed. That noise is the instrument, not the library --
+    `cpu_percent()` reports utilisation over the gap since the last call, so a
+    short window landing between two bursts of work reads low and one landing on
+    a burst reads high, and averaging a hundred of those still leaves the window
+    boundaries in the answer.
+
+    `cpu_times()` is a cumulative counter of CPU seconds the process has
+    actually consumed. Taking it once at each end and dividing the difference by
+    wall time gives the true average utilisation over the window with no
+    sampling error at all -- the same reason a benchmark counts total frames over
+    a period rather than averaging instantaneous frame rates.
+
+    RSS still needs sampling, since it is a level rather than a total, and that
+    stays on a separate thread: an in-thread `psutil` call between grabs would
+    add itself to the frame time it is meant to observe.
     """
 
     def __init__(self, hz: float = 20.0):
         self.interval = 1.0 / hz
         self._stop = threading.Event()
-        self.cpu: List[float] = []
         self.rss: List[int] = []
         self._thread: Optional[threading.Thread] = None
+        self._cpu_start = None
+        self._cpu_end = None
+        self._t0 = 0.0
+        self._elapsed = 0.0
         try:
             import psutil
             self._proc = psutil.Process()
-            self._proc.cpu_percent(interval=None)   # prime the counter
         except Exception:
             self._proc = None
 
     def _run(self) -> None:
         while not self._stop.wait(self.interval):
             try:
-                self.cpu.append(self._proc.cpu_percent(interval=None))
                 self.rss.append(self._proc.memory_info().rss)
             except Exception:
                 break
 
     def __enter__(self):
         if self._proc is not None:
+            self.rss.append(self._proc.memory_info().rss)
+            self._cpu_start = self._proc.cpu_times()
+            self._t0 = time.perf_counter()
             self._thread = threading.Thread(target=self._run, daemon=True)
             self._thread.start()
         return self
 
     def __exit__(self, *exc):
+        if self._proc is not None:
+            self._elapsed = time.perf_counter() - self._t0
+            try:
+                self._cpu_end = self._proc.cpu_times()
+            except Exception:
+                self._cpu_end = None
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=1.0)
 
     def summary(self) -> dict:
-        if not self.cpu:
-            return {"cpu_percent_mean": None, "cpu_percent_max": None,
-                    "rss_mb_start": None, "rss_mb_end": None, "rss_mb_growth": None}
+        empty = {"cpu_percent_mean": None, "cpu_seconds": None,
+                 "rss_mb_start": None, "rss_mb_end": None, "rss_mb_growth": None}
+        if not self.rss or self._cpu_start is None or self._cpu_end is None:
+            return empty
+        busy = ((self._cpu_end.user - self._cpu_start.user)
+                + (self._cpu_end.system - self._cpu_start.system))
         return {
-            "cpu_percent_mean": round(statistics.fmean(self.cpu), 1),
-            "cpu_percent_max": round(max(self.cpu), 1),
+            # >100 means more than one core: this counts every thread the
+            # process ran, which is the point when comparing a library that
+            # polls against one that waits.
+            "cpu_percent_mean": (round(busy / self._elapsed * 100, 1)
+                                 if self._elapsed > 0 else None),
+            "cpu_seconds": round(busy, 4),
             "rss_mb_start": round(self.rss[0] / 1e6, 1),
             "rss_mb_end": round(self.rss[-1] / 1e6, 1),
             "rss_mb_growth": round((self.rss[-1] - self.rss[0]) / 1e6, 1),
@@ -361,8 +392,8 @@ def aggregate(samples: List[dict]) -> dict:
     merged = dict(good[0])
     merged["repeats"] = len(good)
     for key in ("fps_mean", "ms_p50", "ms_p95", "ms_p99", "ms_jitter_stdev",
-                "cpu_percent_mean", "rss_mb_end", "control_ms", "frames",
-                "misses"):
+                "cpu_percent_mean", "cpu_seconds", "rss_mb_end", "control_ms",
+                "frames", "misses"):
         values = [s[key] for s in good if isinstance(s.get(key), (int, float))]
         if values:
             merged[key] = round(statistics.median(values), 3)
@@ -416,12 +447,35 @@ def table(rows: List[dict]) -> str:
     return "\n".join(out)
 
 
+def launch_motion(seconds: float):
+    """Run the motion source for the whole measurement, and own its lifetime.
+
+    Coordinating it by hand does not work. Twice now a run outlived a
+    fixed-duration motion source and the final cells measured a still desktop:
+    libraries that wait returned almost nothing, libraries that poll returned
+    stale buffers, and the only clue was a frame-rate spread of 20% in cells
+    whose earlier repeats had agreed to within 1%. Estimating the duration here
+    and killing it afterwards removes the failure entirely.
+    """
+    script = HERE / "motion_source.py"
+    if not script.exists():
+        print("  motion_source.py missing; run it yourself or results are void")
+        return None
+    proc = subprocess.Popen(
+        [sys.executable, str(script), str(seconds)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(1.5)                     # let it paint before anything measures
+    return proc
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--worker", nargs=3, metavar=("LIB", "SCENARIO", "COLOUR"),
                     help="internal: run one measurement in this process")
-    ap.add_argument("--seconds", type=float, default=6.0)
+    ap.add_argument("--seconds", type=float, default=10.0,
+                    help="measurement window per run. Longer windows steady "
+                         "CPU attribution and cost nothing but time.")
     ap.add_argument("--warmup", type=int, default=120,
                     help="frames discarded before timing; DXGI has a real "
                          "first-acquire cost and every library needs it")
@@ -435,6 +489,10 @@ def main() -> int:
                          "the spread shown. One 6-second sample cannot tell a "
                          "change from scheduling noise -- untouched libraries "
                          "drifted 20-35%% between single-sample runs.")
+    ap.add_argument("--with-motion", action="store_true",
+                    help="launch benchmarks/motion_source.py for the duration "
+                         "of the run and stop it afterwards, instead of relying "
+                         "on one having been started by hand for long enough")
     ap.add_argument("--out", type=Path)
     args = ap.parse_args()
 
@@ -456,6 +514,13 @@ def main() -> int:
 
     rows: List[dict] = []
     total = len(SCENARIOS) * len(COLOURS) * len(args.libraries) * args.repeats
+    motion = None
+    if args.with_motion:
+        # Startup dominates for short windows, so budget per run rather than
+        # per second, and add half again so a slow cell cannot outlive it.
+        budget = total * (args.seconds + 3.0) * 1.5
+        print(f"  starting motion source for ~{budget:.0f}s")
+        motion = launch_motion(budget)
     done = 0
     for scenario in SCENARIOS:
         for colour in COLOURS:
@@ -477,6 +542,13 @@ def main() -> int:
     print("p50/p99/jitter are inter-frame deltas in ms and carry no error bar;")
     print("they are within-run distributions already. Compare only within one")
     print("scenario+format.")
+
+    if motion is not None:
+        motion.terminate()
+        try:
+            motion.wait(timeout=10)
+        except Exception:
+            motion.kill()
 
     payload = {"environment": env, "results": rows}
     out = args.out or (HERE / "library-comparison.json")

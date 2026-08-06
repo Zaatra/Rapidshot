@@ -35,33 +35,75 @@ against DXcam, BetterCam and mss on one 1080p 100 Hz display with a motion sourc
 fast enough to saturate it (`benchmarks/compare_libraries.py`, full numbers in
 `benchmarks/library-comparison.json`):
 
-Median of three independent runs per cell, with the spread across those runs:
+Median of three independent runs per cell, 1080p BGRA on a 100 Hz display, with
+the spread across those runs:
 
-| | frames/s | CPU | per-call p50 |
-| --- | --- | --- | --- |
-| RapidShot | 99.7 ±0.3% | **10.7% ±41%** | 9.99 ms |
-| RapidShot (`timeout_ms=0`) | 99.6 ±0.3% | 83.8% ±12% | 2.70 ms |
-| DXcam | 100.0 ±19% | 77.8% ±7% | 5.46 ms |
-| BetterCam | 100.6 ±14% | 80.8% ±5% | 2.30 ms |
-| mss | 39.5 ±8% | 35.1% ±7% | 27.33 ms |
+| | frames/s | CPU | per-call p50 | memory |
+| --- | --- | --- | --- | --- |
+| RapidShot | 99.9 ±0.5% | **13.6% ±15%** | 9.97 ms | 124.4 MB |
+| RapidShot (`timeout_ms=0`) | 100.1 ±0.1% | 95.9% ±17% | 2.73 ms | 125.2 MB |
+| DXcam | 100.5 ±1.1% | 79.7% ±2% | 5.43 ms | **87.1 MB** |
+| BetterCam | 100.5 ±17% | 74.4% ±12% | 2.31 ms | **80.0 MB** |
+| mss | 48.1 ±5.8% | 35.0% ±2.6% | 20.12 ms | **60.4 MB** |
 
-**Every DXGI-based library lands at ~100 fps** — the compositor is the ceiling, not
-the library. What differs is what you pay for it. DXcam and BetterCam poll: over
-100,000 empty returns in six seconds, a 0.3% hit rate, up to **2.2 cores** in the
-RGB case. RapidShot waits instead, and the second row shows that is a setting
-rather than a limit — `timeout_ms=0` buys DXcam's latency at DXcam's CPU cost.
+**RapidShot is not faster.** Every DXGI-based library lands at ~100 fps, because
+the compositor is the ceiling and not the library. Anyone publishing a frame-rate
+win in this space is measuring something else — most often a still desktop, where
+capture returns stale buffers instantly.
 
-**Read the CPU column with its error bar.** It is the noisiest thing here: across
-three runs RapidShot's figure ranged about 8.5–12.9% and DXcam's 75–80%, so the
-honest statement is *roughly 6–9× less CPU for the same frame rate*, not a precise
-multiple. The direction is solid; the exact number is not, and anyone quoting one
-significant figure from a benchmark like this is over-reading it.
+**RapidShot uses the most memory of the four**, and that is a real cost rather
+than a rounding error: 124 MB against BetterCam's 80 MB. It was 174 MB until the
+buffer pool default dropped from 10 frames to 4. Lower it further with
+`pool_size_frames` if that matters more to you than reusing buffers.
 
-So the trade is explicit: if you want the lowest possible per-call latency and
-have a core to spare, DXcam and BetterCam are excellent. If capture is one stage
-of a pipeline that needs its CPU for something else, RapidShot delivers the same
-frame rate for a fraction of it — and can hand the frame to a GPU consumer
-without a round trip through system memory at all.
+**Most of the CPU gap is a default, not an achievement.** DXcam and BetterCam poll
+— over 100,000 empty returns in six seconds, a 0.3% hit rate — while RapidShot
+waits. Row two proves the point: set `timeout_ms=0` and RapidShot spends 95.9% CPU
+too. It is a better default for a pipeline, and you can have DXcam's latency at
+DXcam's price whenever you want it.
+
+**The part that is genuinely engineering** shows up when you isolate the colour
+conversion, by subtracting each library's BGRA cost (no conversion) from its RGB
+cost:
+
+| | CPU cost of BGRA→RGB conversion |
+| --- | --- |
+| **RapidShot** | **+28.2 points** |
+| BetterCam | +78.1 points |
+| DXcam | +89.0 points |
+
+**RapidShot converts colour for about a third of the CPU**, which is the AVX2
+kernels rather than a scheduling choice.
+
+### What this table cannot show
+
+It measures `grab()` — the CPU round trip. The capabilities RapidShot is actually
+built around have no column here because the other libraries have no equivalent:
+
+- **`grab_frame()`** hands back a GPU-resident frame in 0.17–0.21 ms that never
+  crosses to system memory.
+- **The GPU tensor path** turns a frame into NCHW float32 in one dispatch, 2 µs of
+  calling-thread time.
+- **Cross-adapter transfer** moves a frame to the discrete GPU on hybrid laptops,
+  which Desktop Duplication cannot capture from at all.
+- **Dirty-rect metadata**, so a consumer can skip regions that did not change.
+
+So "RapidShot is faster" is the wrong claim and these numbers will not support it.
+"Same frame rate for a fraction of the CPU, colour conversion for a third of it,
+and a route to the GPU the others do not have — at the price of ~40 MB more
+memory" is what the measurements say.
+
+### Reading the error bars
+
+Reproduce with `python benchmarks/compare_libraries.py --motion --with-motion`.
+Every library runs in its own process, because all three DXGI libraries declare
+the same COM interfaces and whichever imports first breaks the others.
+
+Treat the CPU column as directional. The dev machine was not quiet during this
+run — the control benchmark, whose code never changes, varied 42% across it — so
+the *gaps* are far larger than the noise and trustworthy, while the exact
+multiples are not. Longer windows and exact CPU accounting were both tried and
+did not tighten it; a quiet machine is what that needs.
 
 It began as a merge of several DXcam forks and keeps a broadly familiar API, but
 the capture path, the colour pipeline and the GPU interop have since been
@@ -721,7 +763,11 @@ Neither figure is a capture rate. They are what the *calling thread* pays per
 frame; frames still arrive only as fast as the compositor presents them. What
 they mean is that capture stops being your bottleneck.
 
-See `ROADMAP.md` section 3 for the full breakdown and how these are measured.
+For how these compare against DXcam, BetterCam and mss — including the two
+measurements where RapidShot loses — see the table at the top of this file, and
+run `python benchmarks/compare_libraries.py --motion --with-motion` to reproduce
+it on your own hardware. See `ROADMAP.md` section 3 for the full per-stage
+breakdown and how each figure is measured.
 
 ## System Requirements
 
