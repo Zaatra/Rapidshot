@@ -85,12 +85,24 @@ def _gather(image, ys, xs):
     the row take copies whole rows, and the column take then works on a much
     smaller array.
 
+    The order is chosen, not fixed. Whichever axis is taken first leaves an
+    intermediate of ``len(first) x full_other``, and always taking rows first
+    can make that enormous when the two axes scale in opposite directions --
+    ``(2, 5000, 3) -> (5000, 2)`` would materialise ``(5000, 5000, 3)`` before
+    reducing the width, where the paired index this replaced allocated only the
+    final shape. Picking the smaller intermediate also happens to win on the
+    ordinary capture case: 2560x1080 -> 640x640 is 1.02M elements columns-first
+    against 1.64M rows-first.
+
     This is the second correction to this code path for the same reason. See
     ROADMAP.md section 10: the first was widening to float32 before scaling,
     and both were found by pricing a stage against the bytes it actually has
     to move rather than by reading the code.
     """
-    return image.take(ys, axis=0).take(xs, axis=1)
+    source_height, source_width = image.shape[:2]
+    if len(ys) * source_width <= source_height * len(xs):
+        return image.take(ys, axis=0).take(xs, axis=1)
+    return image.take(xs, axis=1).take(ys, axis=0)
 
 
 def to_nchw(

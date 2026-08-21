@@ -818,7 +818,7 @@ P-core-pinned, 1920×1080 synthetic source, minimums):
 | --- | --- |
 | Colour conversion, BGRA→RGB | 0.198 ms |
 | Colour conversion, BGRA→GRAY | 0.252 ms |
-| CPU resize + normalise + NCHW | 3.07 ms |
+| CPU resize + normalise + NCHW | 3.09 ms |
 | **GPU dispatch → NCHW tensor, D3D12** | **0.070 ms** (2560×1600 source) |
 | GPU dispatch + forced readback | 2.20 ms |
 | `grab_frame()` — texture stays on the GPU | 0.099–0.156 ms |

@@ -38,7 +38,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -565,9 +565,9 @@ def machine_info() -> dict:
     # comparable on a hybrid CPU, and after the fact there is no way to tell
     # them apart from the numbers alone.
     try:
-        mask = performance_core_mask()
+        mask, topology = performance_core_mask()
         if mask is None:
-            info["cpu_topology"] = "uniform"
+            info["cpu_topology"] = topology
         else:
             k32 = ctypes.WinDLL("kernel32")
             k32.GetCurrentProcess.restype = ctypes.c_void_p
@@ -585,7 +585,7 @@ def machine_info() -> dict:
             k32.GetProcessAffinityMask(
                 k32.GetCurrentProcess(),
                 ctypes.byref(process_mask), ctypes.byref(system_mask))
-            info["cpu_topology"] = "hybrid"
+            info["cpu_topology"] = topology
             info["pinned_to_performance_cores"] = process_mask.value == mask
             info["affinity_mask"] = hex(process_mask.value)
     except Exception as e:
@@ -728,8 +728,13 @@ def print_comparison(current: List[Result], baseline_path: Path,
         base_machine.get(k) is not None and now_machine.get(k) is not None
         and base_machine[k] == now_machine[k]
         for k in ("processor", "platform", "gpu"))
+    # "unknown" counts alongside "hybrid": if the topology could not be read,
+    # neither can whether pinning mattered. The asymmetry is deliberate -- a
+    # needless "indicative only" label costs nothing, a false regression costs
+    # somebody an afternoon.
     unknown_scheduling = (same_hardware
-                          and now_machine.get("cpu_topology") == "hybrid"
+                          and now_machine.get("cpu_topology") in ("hybrid",
+                                                                 "unknown")
                           and base_machine.get("pinned_to_performance_cores")
                           is None)
     cross_machine = bool(hardware) or bool(scheduling) or unknown_scheduling
@@ -851,8 +856,13 @@ def print_comparison(current: List[Result], baseline_path: Path,
     return regressions
 
 
-def performance_core_mask() -> Optional[int]:
-    """Affinity mask covering only the fastest cores, or None if uniform.
+def performance_core_mask() -> Tuple[Optional[int], str]:
+    """Return ``(mask, topology)`` — the fastest cores, and how sure we are.
+
+    ``topology`` is ``"hybrid"``, ``"uniform"`` or ``"unknown"``. The third
+    matters: returning the uniform answer when detection *failed* records a
+    certainty we do not have, leaves a hybrid CPU silently unpinned, and lets
+    a later comparison gate noisy results as though scheduling were known.
 
     On a hybrid CPU Windows will happily migrate a benchmark thread onto an
     efficiency core, which reads as a 2-3x regression on compute-bound rows.
@@ -866,7 +876,7 @@ def performance_core_mask() -> Optional[int]:
     means faster. A uniform CPU has one class and needs no pinning.
     """
     if sys.platform != "win32":
-        return None
+        return None, "unknown"
     try:
         k32 = ctypes.WinDLL("kernel32", use_last_error=True)
         # Without an explicit restype the pseudo-handle (-1) is truncated to 32
@@ -881,11 +891,11 @@ def performance_core_mask() -> Optional[int]:
         needed = ctypes.c_ulong(0)
         k32.GetSystemCpuSetInformation(None, 0, ctypes.byref(needed), me, 0)
         if not needed.value:
-            return None
+            return None, "unknown"
         buf = (ctypes.c_ubyte * needed.value)()
         if not k32.GetSystemCpuSetInformation(
                 buf, needed.value, ctypes.byref(needed), me, 0):
-            return None
+            return None, "unknown"
 
         # SYSTEM_CPU_SET_INFORMATION: Size@0, Type@4, then the CpuSet struct,
         # of which LogicalProcessorIndex@14 and EfficiencyClass@18 matter here.
@@ -902,18 +912,21 @@ def performance_core_mask() -> Optional[int]:
                 by_class[efficiency] = by_class.get(efficiency, 0) | (1 << logical)
             offset += size
 
+        if not by_class:
+            return None, "unknown"
         if len(by_class) < 2:
-            return None
-        return by_class[max(by_class)]
+            return None, "uniform"
+        return by_class[max(by_class)], "hybrid"
     except Exception:
         # Pinning is an accuracy improvement, not a requirement. A CPU whose
-        # topology cannot be read still benchmarks, just more noisily.
-        return None
+        # topology cannot be read still benchmarks, just more noisily -- but the
+        # recording must say so rather than claim it was uniform.
+        return None, "unknown"
 
 
 def pin_to_performance_cores() -> None:
     """Restrict this process to the fastest cores, and say so."""
-    mask = performance_core_mask()
+    mask, _topology = performance_core_mask()
     if mask is None:
         return
     try:
