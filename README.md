@@ -167,9 +167,16 @@ pip install rapidshot[cv2]
 
 ### With NVIDIA GPU Acceleration
 
+Pick the extra matching your CUDA toolkit — the CuPy wheels are mutually
+exclusive, so there is no catch-all:
+
 ```bash
-pip install rapidshot[gpu]
+pip install rapidshot[gpu_cuda13]
 ```
+
+`[gpu_cuda12]` for CUDA 12, and `[gpu]` for CUDA 11. Check yours with
+`nvidia-smi`. These install CuPy alone: since 2.3.0 colour conversion on the GPU
+is pure CuPy and stays on the device, so OpenCV is no longer part of this path.
 
 ### With All Dependencies
 

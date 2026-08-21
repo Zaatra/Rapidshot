@@ -123,11 +123,24 @@ class RapidshotFactory(metaclass=Singleton):
 
             self.devices, self.outputs = [], []
             self.device_failures = []
+            # Every adapter that opened, whether or not it owns an output.
+            #
+            # These used to be dropped, on the assumption that the adapter
+            # owning the display is the one that can duplicate it. That is not
+            # true on a hybrid system: which adapter DDA will accept depends on
+            # where the desktop is actually composed, not on which adapter
+            # enumerates the output. Keeping render-only adapters gives
+            # _select_duplication_device something to fall back to, and is also
+            # what makes `prefer_integrated` reachable -- on the machine this
+            # was found on, the iGPU had zero outputs, so it was discarded here
+            # and `prefer_integrated=True` had nothing left to select.
+            self.all_devices = []
 
             for p_adapter in p_adapters:
                 try:
                     device = Device(p_adapter)
                     p_outputs = device.enum_outputs()
+                    self.all_devices.append(device)
                     if len(p_outputs) != 0:
                         self.devices.append(device)
                         self.outputs.append([Output(p_output) for p_output in p_outputs])
@@ -172,6 +185,30 @@ class RapidshotFactory(metaclass=Singleton):
             failures = "\n".join(f"  {f}" for f in self.device_failures)
             help_text += f"\n\nDevice creation errors:\n{failures}"
         return help_text
+
+    @staticmethod
+    def _is_integrated(device) -> bool:
+        """Best-effort "is this an iGPU", for candidate ordering only.
+
+        Deliberately not a capability check -- see util/topology.py: vendor is
+        not a capability and nothing branches capture behaviour on it. This
+        only decides which adapter to *try* first, and trying is what settles
+        the question.
+        """
+        desc = getattr(getattr(device, "desc", None), "Description", "") or ""
+        return "intel" in str(desc).lower()
+
+    def _duplication_candidates(self, chosen, prefer_integrated: bool):
+        """Adapters to try if `chosen` refuses to duplicate the output.
+
+        Includes adapters with no outputs of their own: which adapter Desktop
+        Duplication accepts depends on where the desktop is composed, not on
+        which adapter enumerates the output.
+        """
+        others = [d for d in self.all_devices if d is not chosen]
+        if prefer_integrated:
+            others.sort(key=lambda d: not self._is_integrated(d))
+        return others
 
     def create(
         self,
@@ -226,7 +263,16 @@ class RapidshotFactory(metaclass=Singleton):
                     logger.info(f"Selecting integrated GPU: {desc} at index {idx}")
                     break
             else:
-                logger.info("No integrated GPU found; using default device index.")
+                # Not necessarily absent -- on a hybrid system the iGPU often
+                # owns no output, so it is not in self.devices at all. It is
+                # still a valid duplication target, and the candidate ordering
+                # below puts it first so the pairing search reaches it before
+                # the discrete adapter.
+                logger.info(
+                    "No integrated GPU owns an output; keeping the default "
+                    "device index and trying integrated adapters first when "
+                    "duplication is set up."
+                )
         
         # Validate device index
         if device_idx >= len(self.devices):
@@ -282,6 +328,9 @@ class RapidshotFactory(metaclass=Singleton):
             screencapture = ScreenCapture(
                 output=output,
                 device=device,
+                fallback_devices=self._duplication_candidates(
+                    device, prefer_integrated
+                ),
                 region=region,
                 output_color=output_color,
                 nvidia_gpu=nvidia_gpu,
@@ -539,7 +588,7 @@ def get_version_info() -> Dict[str, Any]:
     return info
 
 # Version information
-__version__ = "2.3.0"
+__version__ = "2.4.0"
 __author__ = "Rapidshot Contributors"
 __description__ = "High-performance screencapture library for Windows using Desktop Duplication API"
 

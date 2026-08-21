@@ -26,7 +26,7 @@ mod swizzle;
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict};
+use pyo3::types::{PyBytes, PyDict, PyList};
 
 use std::sync::Mutex;
 
@@ -792,12 +792,19 @@ impl CrossAdapterTransfer {
     /// frame is readable on the destination adapter when this returns.
     fn transfer(&self, texture_ptr: usize) -> PyResult<()> {
         let inner = self.lock()?;
-        unsafe {
-            with_texture(texture_ptr, |texture| {
-                inner
-                    .transfer(texture)
-                    .map_err(|e| PyRuntimeError::new_err(format!("transfer failed: {e}")))
-            })
+        // NOTE: this holds the GIL for the whole copy (~6 ms at 2560x1600).
+        // The wait is buried between COM calls on interior-mutable state, so
+        // it cannot be released the way `wait_shared_fence` does without
+        // restructuring resource lifetimes. Use `transfer_async` +
+        // `wait_shared_fence` when other Python threads need to run.
+        {
+            unsafe {
+                with_texture(texture_ptr, |texture| {
+                    inner
+                        .transfer(texture)
+                        .map_err(|e| PyRuntimeError::new_err(format!("transfer failed: {e}")))
+                })
+            }
         }
     }
 
@@ -831,6 +838,159 @@ impl CrossAdapterTransfer {
         inner
             .read_back_destination()
             .map_err(|e| PyRuntimeError::new_err(format!("destination readback failed: {e}")))
+    }
+
+    /// Split one transfer into phases, in microseconds.
+    ///
+    /// Returns a dict of `{phase: {"min": us, "median": us}}` for `open`,
+    /// `record`, `submit`, `signal`, `wait` and `close`. **Read `wait` as the
+    /// median**: it is bimodal, ~0 whenever the GPU already finished.
+    ///
+    /// Sizes what a shared fence would buy -- only `wait` is removable.
+    #[pyo3(signature = (frame_texture_ptr, iterations=200, use_cache=true))]
+    fn probe_transfer_phases(
+        &self,
+        py: Python<'_>,
+        frame_texture_ptr: usize,
+        iterations: u32,
+        use_cache: bool,
+    ) -> PyResult<Py<PyDict>> {
+        let inner = self.lock()?;
+        let phases = unsafe {
+            with_texture(frame_texture_ptr, |texture| {
+                inner
+                    .probe_transfer_phases(texture, iterations, use_cache)
+                    .map_err(|e| PyRuntimeError::new_err(format!("phase probe failed: {e}")))
+            })?
+        };
+        let names = ["open", "record", "submit", "signal", "wait", "close"];
+        let out = PyDict::new(py);
+        for (name, (min, median)) in names.iter().zip(phases) {
+            let row = PyDict::new(py);
+            row.set_item("min", min)?;
+            row.set_item("median", median)?;
+            out.set_item(*name, row)?;
+        }
+        Ok(out.unbind())
+    }
+
+    /// Which objects will yield an NT handle for the transferred frame.
+    ///
+    /// Diagnostic, not a shipping API: it exists to settle empirically which
+    /// handle a CUDA consumer on the destination adapter can import, rather
+    /// than picking one from documentation that does not say. Returns a list of
+    /// dicts with `label`, `cuda_handle_type` (4 = D3D12_HEAP,
+    /// 5 = D3D12_RESOURCE), `ok`, and either `handle` or `error`.
+    ///
+    /// **Leaks nothing**: every handle minted is closed before returning, so
+    /// the result reports whether the call is permitted rather than handing
+    /// back a handle the caller did not ask to own. For a usable handle, see
+    /// `shared_destination_handle`.
+    ///
+    fn probe_shared_handles(&self, py: Python<'_>) -> PyResult<Py<PyList>> {
+        let inner = self.lock()?;
+        let out = PyList::empty(py);
+        for (label, kind, result) in inner.probe_shared_handles() {
+            let row = PyDict::new(py);
+            row.set_item("label", label)?;
+            row.set_item("cuda_handle_type", kind)?;
+            match result {
+                Ok(()) => {
+                    row.set_item("ok", true)?;
+                }
+                Err(e) => {
+                    row.set_item("ok", false)?;
+                    row.set_item("error", e)?;
+                }
+            }
+            out.append(row)?;
+        }
+        Ok(out.unbind())
+    }
+
+    /// Submit a transfer without blocking; returns the fence value to wait on.
+    ///
+    /// `transfer()` blocks until the copy completes, which is most of its cost.
+    /// This returns the calling thread instead and leaves synchronisation to
+    /// the caller: either `wait_shared_fence(value)`, or a GPU-side wait on the
+    /// destination adapter using `shared_fence_handle`.
+    ///
+    /// Still waits for the *previous* submission before recording, because the
+    /// command allocator cannot be reset while the GPU is reading it. Pipelines
+    /// to depth one.
+    fn transfer_async(&self, texture_ptr: usize) -> PyResult<u64> {
+        let inner = self.lock()?;
+        // Usually returns immediately; it waits for the *previous* submission
+        // before resetting the allocator, so on a saturated pipeline it can
+        // block with the GIL held. Same restructuring caveat as `transfer`.
+        {
+            unsafe {
+                with_texture(texture_ptr, |texture| {
+                    inner
+                        .transfer_async(texture)
+                        .map_err(|e| PyRuntimeError::new_err(format!("async transfer failed: {e}")))
+                })
+            }
+        }
+    }
+
+    /// Block until the shared fence reaches `value`.
+    fn wait_shared_fence(&self, py: Python<'_>, value: u64) -> PyResult<()> {
+        // Arm under the GIL -- that touches this object's state -- then drop
+        // the guard and release the interpreter for the blocking half. Only a
+        // raw event handle crosses into the detached closure, so nothing
+        // interior-mutable does.
+        //
+        // The whole point of the async path is handing the caller its thread
+        // back, and a thread that cannot run Python is no gift: measured
+        // 2026-08-22, a second thread made zero progress across a 7 ms wait
+        // before this.
+        let event = {
+            let inner = self.lock()?;
+            inner
+                .arm_shared_fence_wait(value)
+                .map_err(|e| PyRuntimeError::new_err(format!("fence wait failed: {e}")))?
+        };
+        if let Some(raw) = event {
+            py.detach(|| unsafe {
+                windows::Win32::System::Threading::WaitForSingleObject(
+                    windows::Win32::Foundation::HANDLE(raw as *mut core::ffi::c_void),
+                    windows::Win32::System::Threading::INFINITE,
+                )
+            });
+        }
+        Ok(())
+    }
+
+    /// NT handle for the cross-adapter fence, for a GPU-side wait on the
+    /// destination adapter. Borrowed: closed when this transfer is dropped.
+    #[getter]
+    fn shared_fence_handle(&self) -> PyResult<isize> {
+        Ok(self.lock()?.shared_fence_handle())
+    }
+
+    /// Raw pointer of the capture texture currently cached, or 0. For tests:
+    /// a change that disabled the per-frame handle cache would cost 411 us a
+    /// frame while producing identical output, so the assertion is on the key.
+    #[getter]
+    fn cached_texture_address(&self) -> PyResult<usize> {
+        Ok(self.lock()?.cached_texture_address())
+    }
+
+    /// NT handle for the destination heap, for a consumer on that adapter.
+    ///
+    /// Borrowed: closed when this transfer is dropped, and the heap goes with
+    /// it. A consumer holding only the integer, or a device pointer mapped
+    /// from it, has nothing that looks wrong afterwards -- keep the transfer
+    /// alive for as long as anything reads the frame.
+    ///
+    /// Import as a **heap** (`CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_HEAP` = 4),
+    /// size `total_bytes`, offset 0. Not as a resource: the transferred buffers
+    /// are *placed* resources and cannot be shared at all, which
+    /// `probe_shared_handles()` demonstrates.
+    #[getter]
+    fn shared_destination_handle(&self) -> PyResult<isize> {
+        Ok(self.lock()?.shared_destination_handle())
     }
 
     /// Address of the `ID3D12Resource` on the destination adapter. Borrowed,

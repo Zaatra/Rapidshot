@@ -44,6 +44,20 @@ CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE = 5
 CUDA_EXTERNAL_MEMORY_DEDICATED = 0x1
 
 
+class CrossAdapterRequired(RuntimeError):
+    """The captured frame is on an adapter CUDA cannot see.
+
+    Raised instead of a bare RuntimeError so a caller can tell "this frame is
+    on the wrong GPU, transfer it first" apart from "the import is broken".
+    They need different responses: the first is routine on any Optimus laptop
+    and is fixed by ``native.cross_adapter_transfer()``; the second is a bug.
+
+    Verified 2026-08-22 on a real Optimus system (ROADMAP section 6.1): capture
+    runs on the Intel iGPU, CUDA reports exactly one device, and that device is
+    the discrete GPU.
+    """
+
+
 class _Win32Handle(ctypes.Structure):
     _fields_ = [("handle", ctypes.c_void_p), ("name", ctypes.c_void_p)]
 
@@ -123,7 +137,7 @@ class CudaTensor:
         if device is None:
             device = self._device_for_adapter(preprocessor.adapter_luid)
             if device is None:
-                raise RuntimeError(
+                raise CrossAdapterRequired(
                     "no CUDA device owns the adapter this frame was captured "
                     "on. On a hybrid laptop that is expected: capture runs on "
                     "the integrated GPU and CUDA only sees the discrete one. "

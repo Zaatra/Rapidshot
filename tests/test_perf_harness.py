@@ -258,3 +258,153 @@ class TestReporting:
 
         assert perf_suite.annotate_duty_cycle([result]) == []
         assert result.note == "original"
+
+
+# ---------------------------------------------------------------------------
+# Rows whose definition changed must not be compared across that change
+# ---------------------------------------------------------------------------
+#
+# `pipeline.gpu_plus_readback` was substantially a CPython allocator benchmark
+# until 2.3.0 made `read_back` return bytes instead of a `Vec<f32>` that PyO3
+# expanded into 1.2M Python floats per call. Comparing a 2.3.0 run against the
+# 2.1.0 `baseline.json` therefore reports **FASTER 6.08x**, which reads as a
+# hardware result and is nothing of the kind -- it is a code change that had
+# already landed, on one of the two rows Stage 6 was promoted on.
+#
+# A spurious improvement is the dangerous direction: nobody investigates good
+# news. See ROADMAP.md section 10.
+
+class TestRedefinedRows:
+    def test_row_redefined_after_the_baseline_is_flagged(self):
+        assert perf_suite._redefined_since(
+            "pipeline.gpu_plus_readback", "2.1.0") == "2.3.0"
+        assert perf_suite._redefined_since(
+            "pipeline.cpu_to_nchw", "2.1.0") == "2.2.0"
+
+    def test_baseline_at_or_after_the_change_compares_normally(self):
+        # The whole point is to suppress only what is genuinely incomparable.
+        # Over-suppressing would quietly stop these rows ever gating again.
+        assert perf_suite._redefined_since(
+            "pipeline.gpu_plus_readback", "2.3.0") is None
+        assert perf_suite._redefined_since(
+            "pipeline.gpu_plus_readback", "2.4.0") is None
+        assert perf_suite._redefined_since(
+            "pipeline.cpu_to_nchw", "2.2.0") is None
+
+    def test_untouched_rows_are_never_flagged(self):
+        for name in ("convert.RGB", "shot.GRAY", "control.memcopy"):
+            assert perf_suite._redefined_since(name, "1.0.0") is None
+
+    def test_missing_version_counts_as_older(self):
+        """A recording from before the field existed cannot be trusted here.
+
+        Absent metadata must fail closed: treating it as "new enough" would
+        silently compare exactly the recordings least likely to be comparable.
+        """
+        for absent in ("", None, "not-a-version"):
+            assert perf_suite._redefined_since(
+                "pipeline.gpu_plus_readback", absent) == "2.3.0"
+
+    def test_version_ordering(self):
+        assert perf_suite._version_tuple("2.10.0") > perf_suite._version_tuple("2.9.0")
+        assert perf_suite._version_tuple("") < perf_suite._version_tuple("0.0.1")
+
+
+# ---------------------------------------------------------------------------
+# A caveat must apply in both directions
+# ---------------------------------------------------------------------------
+#
+# The FASTER branch used to carry a comment saying qualifiers were applied
+# "in both directions on purpose" while only implementing cross-machine, so a
+# live row could print a bare "FASTER 8.70x". Found 2026-08-22 by running the
+# verification pass section 2 requires after re-recording a baseline: the same
+# row read 8.70x faster on one run and 2.26x slower on the next, on identical
+# code, and only the second was labelled.
+#
+# Nobody investigates good news, which is exactly why the improvement
+# direction needs the label more, not less.
+
+def _compare(tmp_path, capsys, baseline_rows, current_rows, machine=None):
+    """Run print_comparison over hand-built rows and return its output."""
+    import json
+    from pathlib import Path
+
+    base_machine = dict(perf_suite.machine_info())
+    base_machine["rapidshot"] = "2.3.0"
+    base_machine.update(machine or {})
+
+    path = Path(tmp_path) / "baseline.json"
+    path.write_text(json.dumps({"machine": base_machine, "results": baseline_rows}))
+
+    current = []
+    for row in current_rows:
+        result = perf_suite.Result(
+            row["name"], row.get("kind", "synthetic"), [row["min_ms"] / 1000.0])
+        result.median_ms = row["min_ms"]
+        current.append(result)
+    perf_suite.print_comparison(current, path)
+    return capsys.readouterr().out
+
+
+class TestCaveatsApplyBothWays:
+    def test_a_live_row_is_labelled_when_it_reports_faster(self, tmp_path, capsys):
+        out = _compare(
+            tmp_path, capsys,
+            [{"name": "live.x", "kind": "live", "min_ms": 8.0, "median_ms": 8.0}],
+            [{"name": "live.x", "kind": "live", "min_ms": 1.0}],
+        )
+        assert "FASTER" in out
+        assert "live: informational" in out, (
+            "a live row reported an unqualified speed-up; the improvement "
+            "direction needs the caveat more, not less")
+
+    def test_a_live_row_is_labelled_when_it_reports_slower(self, tmp_path, capsys):
+        out = _compare(
+            tmp_path, capsys,
+            [{"name": "live.x", "kind": "live", "min_ms": 1.0, "median_ms": 1.0}],
+            [{"name": "live.x", "kind": "live", "min_ms": 8.0}],
+        )
+        assert "SLOWER" in out and "live: informational" in out
+
+    def test_a_redefined_row_is_labelled_when_it_reports_faster(self, tmp_path, capsys):
+        out = _compare(
+            tmp_path, capsys,
+            [{"name": "pipeline.gpu_plus_readback", "min_ms": 14.8, "median_ms": 14.8}],
+            [{"name": "pipeline.gpu_plus_readback", "min_ms": 2.8}],
+            machine={"rapidshot": "2.1.0"},
+        )
+        assert "NOT COMPARABLE" in out
+
+    def test_a_caveated_row_never_counts_as_a_regression(self, tmp_path, capsys):
+        """The caveat and the gate must agree, or the suite gates on noise."""
+        import json
+        from pathlib import Path
+        base_machine = dict(perf_suite.machine_info())
+        base_machine["rapidshot"] = "2.3.0"
+        path = Path(tmp_path) / "b.json"
+        path.write_text(json.dumps({
+            "machine": base_machine,
+            "results": [{"name": "live.x", "kind": "live",
+                         "min_ms": 1.0, "median_ms": 1.0}],
+        }))
+        result = perf_suite.Result("live.x", "live", [0.008])
+        result.median_ms = 8.0
+        assert perf_suite.print_comparison([result], path) == 0
+        capsys.readouterr()
+
+    def test_an_ordinary_row_still_gates(self, tmp_path, capsys):
+        """The fix must not have made everything informational."""
+        import json
+        from pathlib import Path
+        base_machine = dict(perf_suite.machine_info())
+        base_machine["rapidshot"] = "2.3.0"
+        path = Path(tmp_path) / "b.json"
+        path.write_text(json.dumps({
+            "machine": base_machine,
+            "results": [{"name": "convert.RGB", "kind": "synthetic",
+                         "min_ms": 1.0, "median_ms": 1.0}],
+        }))
+        result = perf_suite.Result("convert.RGB", "synthetic", [0.008])
+        result.median_ms = 8.0
+        assert perf_suite.print_comparison([result], path) == 1
+        capsys.readouterr()
