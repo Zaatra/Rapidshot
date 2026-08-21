@@ -345,7 +345,8 @@ impl Preprocessor12 {
         // describes the captured texture and is rebuilt in `process` whenever
         // that texture changes identity.
         let uav_handle = D3D12_CPU_DESCRIPTOR_HANDLE {
-            ptr: unsafe { heap.GetCPUDescriptorHandleForHeapStart() }.ptr + descriptor_size as usize,
+            ptr: unsafe { heap.GetCPUDescriptorHandleForHeapStart() }.ptr
+                + descriptor_size as usize,
         };
         let mut uav_desc = D3D12_UNORDERED_ACCESS_VIEW_DESC {
             Format: DXGI_FORMAT_UNKNOWN,
@@ -427,59 +428,53 @@ impl Preprocessor12 {
             .expect("open_texture populates the cache or returns Err");
         let (src_width, src_height) = self.cached_src_size.get();
 
-        let result = (|| -> windows::core::Result<()> {
-            let constants: [u32; 8] = [
-                self.out_width,
-                self.out_height,
-                src_width,
-                src_height,
-                scale.to_bits(),
-                bias.to_bits(),
-                channel_order,
-                0,
-            ];
+        let constants: [u32; 8] = [
+            self.out_width,
+            self.out_height,
+            src_width,
+            src_height,
+            scale.to_bits(),
+            bias.to_bits(),
+            channel_order,
+            0,
+        ];
 
-            unsafe {
-                self.allocator.Reset()?;
-                self.list.Reset(&self.allocator, &self.pso)?;
+        unsafe {
+            self.allocator.Reset()?;
+            self.list.Reset(&self.allocator, &self.pso)?;
 
-                // A resource opened from a shared handle arrives in COMMON.
-                transition(
-                    &self.list,
-                    shared,
-                    D3D12_RESOURCE_STATE_COMMON,
-                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                );
+            // A resource opened from a shared handle arrives in COMMON.
+            transition(
+                &self.list,
+                shared,
+                D3D12_RESOURCE_STATE_COMMON,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            );
 
-                self.list.SetComputeRootSignature(&self.root_signature);
-                self.list.SetDescriptorHeaps(&[Some(self.heap.clone())]);
-                self.list
-                    .SetComputeRoot32BitConstants(0, 8, constants.as_ptr() as *const _, 0);
-                self.list.SetComputeRootDescriptorTable(
-                    1,
-                    self.heap.GetGPUDescriptorHandleForHeapStart(),
-                );
+            self.list.SetComputeRootSignature(&self.root_signature);
+            self.list.SetDescriptorHeaps(&[Some(self.heap.clone())]);
+            self.list
+                .SetComputeRoot32BitConstants(0, 8, constants.as_ptr() as *const _, 0);
+            self.list
+                .SetComputeRootDescriptorTable(1, self.heap.GetGPUDescriptorHandleForHeapStart());
 
-                let groups_x = self.out_width.div_ceil(8);
-                let groups_y = self.out_height.div_ceil(8);
-                self.list.Dispatch(groups_x, groups_y, 1);
+            let groups_x = self.out_width.div_ceil(8);
+            let groups_y = self.out_height.div_ceil(8);
+            self.list.Dispatch(groups_x, groups_y, 1);
 
-                // Hand the texture back in the state D3D11 expects.
-                transition(
-                    &self.list,
-                    shared,
-                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                    D3D12_RESOURCE_STATE_COMMON,
-                );
+            // Hand the texture back in the state D3D11 expects.
+            transition(
+                &self.list,
+                shared,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_COMMON,
+            );
 
-                self.list.Close()?;
-                self.queue
-                    .ExecuteCommandLists(&[Some(self.list.cast::<ID3D12CommandList>()?)]);
-            }
-            self.wait_for_gpu()
-        })();
-
-        result
+            self.list.Close()?;
+            self.queue
+                .ExecuteCommandLists(&[Some(self.list.cast::<ID3D12CommandList>()?)]);
+        }
+        self.wait_for_gpu()
     }
 
     /// Break the per-dispatch cost into phases. Diagnostic only.
@@ -548,8 +543,10 @@ impl Preprocessor12 {
                 self.list.SetDescriptorHeaps(&[Some(self.heap.clone())]);
                 self.list
                     .SetComputeRoot32BitConstants(0, 8, constants.as_ptr() as *const _, 0);
-                self.list
-                    .SetComputeRootDescriptorTable(1, self.heap.GetGPUDescriptorHandleForHeapStart());
+                self.list.SetComputeRootDescriptorTable(
+                    1,
+                    self.heap.GetGPUDescriptorHandleForHeapStart(),
+                );
                 self.list
                     .Dispatch(self.out_width.div_ceil(8), self.out_height.div_ceil(8), 1);
                 transition(
@@ -621,8 +618,7 @@ impl Preprocessor12 {
             let shared = shared.expect("OpenSharedHandle reported success");
 
             let desc = unsafe { shared.GetDesc() };
-            self.cached_src_size
-                .set((desc.Width as u32, desc.Height));
+            self.cached_src_size.set((desc.Width as u32, desc.Height));
 
             // The SRV describes this texture, so it is rebuilt with it. The UAV
             // was built once in the constructor and is untouched here.
