@@ -24,6 +24,10 @@ use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIDevice, IDXGIResource1};
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject, INFINITE};
 
 const DXGI_SHARED_RESOURCE_READ: u32 = 0x8000_0000;
+/// Access mask for `ID3D12Device::CreateSharedHandle`. Declared here rather
+/// than imported because `cross_adapter.rs` keeps its own copy private; the
+/// value is fixed by the Windows headers.
+const GENERIC_ALL: u32 = 0x1000_0000;
 
 /// Same conversion as the D3D11 path. Params arrive as root constants rather
 /// than a constant buffer, which removes a resource and an upload per frame.
@@ -125,9 +129,18 @@ pub struct Preprocessor12 {
     root_signature: ID3D12RootSignature,
     pso: ID3D12PipelineState,
     heap: ID3D12DescriptorHeap,
-    descriptor_size: u32,
     output: ID3D12Resource,
     readback: ID3D12Resource,
+    /// Shared NT handle for `output`, created once and closed in `Drop`.
+    /// Borrowed by importers; see the note where it is created.
+    shared_output_handle: HANDLE,
+    /// The captured texture most recently opened on this device, keyed by raw
+    /// pointer. Desktop Duplication reuses its surfaces, so this hits on nearly
+    /// every frame — but it is a cache, not an assumption: a different pointer
+    /// reopens rather than reusing a stale resource.
+    cached_texture: std::cell::Cell<usize>,
+    cached_shared: std::cell::RefCell<Option<ID3D12Resource>>,
+    cached_src_size: std::cell::Cell<(u32, u32)>,
     pub out_width: u32,
     pub out_height: u32,
 }
@@ -293,10 +306,18 @@ impl Preprocessor12 {
 
         // Output lives in the DEFAULT heap: device-local, and exactly the kind
         // of resource DirectML binds to.
+        //
+        // `SHARED` is what lets anything outside this device reach the tensor.
+        // Without it `CreateSharedHandle` fails, and without a shared NT handle
+        // CUDA's `cudaImportExternalMemory` has nothing to import — so a CuPy or
+        // PyTorch consumer would have no route to the result at all. It costs
+        // nothing when unused: the flag governs whether a handle *can* be
+        // created, not how the memory is placed.
         let output = create_buffer(
             &device,
             byte_size,
             D3D12_HEAP_TYPE_DEFAULT,
+            D3D12_HEAP_FLAG_SHARED,
             D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
         )?;
@@ -305,9 +326,42 @@ impl Preprocessor12 {
             &device,
             byte_size,
             D3D12_HEAP_TYPE_READBACK,
+            D3D12_HEAP_FLAG_NONE,
             D3D12_RESOURCE_FLAG_NONE,
             D3D12_RESOURCE_STATE_COPY_DEST,
         )?;
+
+        // One handle for the lifetime of the preprocessor, closed in Drop.
+        //
+        // Minting one per call would be tidier to reason about but wrong in
+        // practice: an importing API (CUDA, another D3D12 device) references the
+        // handle rather than taking ownership, so the caller would be left
+        // holding something it must close at a moment it cannot determine. A
+        // single borrowed handle has one owner and one lifetime.
+        let shared_output_handle =
+            unsafe { device.CreateSharedHandle(&output, None, GENERIC_ALL, None)? };
+
+        // The UAV describes the output buffer only, so it never changes. The SRV
+        // describes the captured texture and is rebuilt in `process` whenever
+        // that texture changes identity.
+        let uav_handle = D3D12_CPU_DESCRIPTOR_HANDLE {
+            ptr: unsafe { heap.GetCPUDescriptorHandleForHeapStart() }.ptr + descriptor_size as usize,
+        };
+        let mut uav_desc = D3D12_UNORDERED_ACCESS_VIEW_DESC {
+            Format: DXGI_FORMAT_UNKNOWN,
+            ViewDimension: D3D12_UAV_DIMENSION_BUFFER,
+            ..Default::default()
+        };
+        uav_desc.Anonymous.Buffer = D3D12_BUFFER_UAV {
+            FirstElement: 0,
+            NumElements: out_width * out_height * 3,
+            StructureByteStride: 4,
+            CounterOffsetInBytes: 0,
+            Flags: D3D12_BUFFER_UAV_FLAG_NONE,
+        };
+        unsafe {
+            device.CreateUnorderedAccessView(&output, None, Some(&uav_desc), uav_handle);
+        }
 
         Ok(Self {
             device,
@@ -320,9 +374,12 @@ impl Preprocessor12 {
             root_signature,
             pso,
             heap,
-            descriptor_size,
             output,
             readback,
+            shared_output_handle,
+            cached_texture: std::cell::Cell::new(0),
+            cached_shared: std::cell::RefCell::new(None),
+            cached_src_size: std::cell::Cell::new((0, 0)),
             out_width,
             out_height,
         })
@@ -349,66 +406,28 @@ impl Preprocessor12 {
         bias: f32,
         channel_order: u32,
     ) -> windows::core::Result<()> {
-        // Share the captured texture across to D3D12. Textures are the one
-        // resource type D3D11 can share, which is why the shader lives here.
-        let resource: IDXGIResource1 = d3d11_texture.cast()?;
-        let handle = unsafe { resource.CreateSharedHandle(None, DXGI_SHARED_RESOURCE_READ, None)? };
+        // Opening the captured texture on this device is per-*texture* work, not
+        // per-frame work: Desktop Duplication hands back the same surface over
+        // and over, so reopening it every call bought nothing and cost most of
+        // the dispatch. Measured before hoisting: 185 us of fixed cost against
+        // ~12 us of actual shader work at 640x640 (ROADMAP s10).
+        //
+        // Keyed on the raw pointer rather than assumed stable. If DXGI ever
+        // hands back a different surface — device reset, mode change, a second
+        // camera — the key misses and the texture is reopened. Silently reusing
+        // a stale resource would produce a tensor from the wrong pixels, which
+        // is exactly the class of bug s11 says correctness checks exist for.
+        let key = d3d11_texture.as_raw() as usize;
+        if self.cached_texture.get() != key || self.cached_shared.borrow().is_none() {
+            self.open_texture(d3d11_texture, key)?;
+        }
+        let borrowed = self.cached_shared.borrow();
+        let shared = borrowed
+            .as_ref()
+            .expect("open_texture populates the cache or returns Err");
+        let (src_width, src_height) = self.cached_src_size.get();
 
         let result = (|| -> windows::core::Result<()> {
-            let mut shared: Option<ID3D12Resource> = None;
-            unsafe { self.device.OpenSharedHandle(handle, &mut shared)? };
-            let shared = shared.expect("OpenSharedHandle reported success");
-
-            let desc = unsafe { shared.GetDesc() };
-            let src_width = desc.Width as u32;
-            let src_height = desc.Height;
-
-            // Descriptors: SRV over the shared texture, UAV over the output.
-            let cpu_start = unsafe { self.heap.GetCPUDescriptorHandleForHeapStart() };
-            let srv_handle = cpu_start;
-            let uav_handle = D3D12_CPU_DESCRIPTOR_HANDLE {
-                ptr: cpu_start.ptr + self.descriptor_size as usize,
-            };
-
-            let mut srv_desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
-                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
-                Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                ..Default::default()
-            };
-            srv_desc.Anonymous.Texture2D = D3D12_TEX2D_SRV {
-                MostDetailedMip: 0,
-                MipLevels: 1,
-                PlaneSlice: 0,
-                ResourceMinLODClamp: 0.0,
-            };
-            unsafe {
-                self.device
-                    .CreateShaderResourceView(&shared, Some(&srv_desc), srv_handle)
-            };
-
-            let element_count = self.out_width * self.out_height * 3;
-            let mut uav_desc = D3D12_UNORDERED_ACCESS_VIEW_DESC {
-                Format: DXGI_FORMAT_UNKNOWN,
-                ViewDimension: D3D12_UAV_DIMENSION_BUFFER,
-                ..Default::default()
-            };
-            uav_desc.Anonymous.Buffer = D3D12_BUFFER_UAV {
-                FirstElement: 0,
-                NumElements: element_count,
-                StructureByteStride: 4,
-                CounterOffsetInBytes: 0,
-                Flags: D3D12_BUFFER_UAV_FLAG_NONE,
-            };
-            unsafe {
-                self.device.CreateUnorderedAccessView(
-                    &self.output,
-                    None,
-                    Some(&uav_desc),
-                    uav_handle,
-                )
-            };
-
             let constants: [u32; 8] = [
                 self.out_width,
                 self.out_height,
@@ -427,7 +446,7 @@ impl Preprocessor12 {
                 // A resource opened from a shared handle arrives in COMMON.
                 transition(
                     &self.list,
-                    &shared,
+                    shared,
                     D3D12_RESOURCE_STATE_COMMON,
                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 );
@@ -448,7 +467,7 @@ impl Preprocessor12 {
                 // Hand the texture back in the state D3D11 expects.
                 transition(
                     &self.list,
-                    &shared,
+                    shared,
                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                     D3D12_RESOURCE_STATE_COMMON,
                 );
@@ -460,10 +479,215 @@ impl Preprocessor12 {
             self.wait_for_gpu()
         })();
 
+        result
+    }
+
+    /// Break the per-dispatch cost into phases. Diagnostic only.
+    ///
+    /// After hoisting the shared-handle work out of `process`, a ~65 us floor
+    /// remained that does not track output size — known not to be shader work,
+    /// but not attributed to anything either. Guessing is cheap and wrong; this
+    /// times each phase over `iterations` runs and reports the **minimum** of
+    /// each, which is the statistic ROADMAP § 3 treats as robust.
+    ///
+    /// The phases are the four things a blocking dispatch actually does:
+    /// record the command list, submit it, signal the fence, wait on it. Only
+    /// the last is removable without changing what `process` promises.
+    ///
+    /// Returns `(min, median)` per phase, and both are needed. The three CPU
+    /// phases are near-constant, so their minimum is the honest figure. The
+    /// fence wait is **bimodal**: whenever the GPU happens to have finished
+    /// already, `GetCompletedValue` clears immediately and the sample is ~0.
+    /// Its minimum therefore reports zero on a fast enough run and says
+    /// nothing about what a caller pays — the same "a minimum is monotonically
+    /// non-increasing in sample count" trap § 3 records for the live rows.
+    pub fn probe_dispatch_phases(
+        &self,
+        d3d11_texture: &ID3D11Texture2D,
+        iterations: u32,
+    ) -> windows::core::Result<[(f64, f64); 4]> {
+        let key = d3d11_texture.as_raw() as usize;
+        if self.cached_texture.get() != key || self.cached_shared.borrow().is_none() {
+            self.open_texture(d3d11_texture, key)?;
+        }
+        let borrowed = self.cached_shared.borrow();
+        let shared = borrowed
+            .as_ref()
+            .expect("open_texture populates the cache or returns Err");
+        let (src_width, src_height) = self.cached_src_size.get();
+
+        let constants: [u32; 8] = [
+            self.out_width,
+            self.out_height,
+            src_width,
+            src_height,
+            1.0f32.to_bits(),
+            0.0f32.to_bits(),
+            0,
+            0,
+        ];
+
+        let count = iterations.max(1) as usize;
+        let mut records = Vec::with_capacity(count);
+        let mut submits = Vec::with_capacity(count);
+        let mut signals = Vec::with_capacity(count);
+        let mut waits = Vec::with_capacity(count);
+
+        for _ in 0..count {
+            let t0 = std::time::Instant::now();
+            unsafe {
+                self.allocator.Reset()?;
+                self.list.Reset(&self.allocator, &self.pso)?;
+                transition(
+                    &self.list,
+                    shared,
+                    D3D12_RESOURCE_STATE_COMMON,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                );
+                self.list.SetComputeRootSignature(&self.root_signature);
+                self.list.SetDescriptorHeaps(&[Some(self.heap.clone())]);
+                self.list
+                    .SetComputeRoot32BitConstants(0, 8, constants.as_ptr() as *const _, 0);
+                self.list
+                    .SetComputeRootDescriptorTable(1, self.heap.GetGPUDescriptorHandleForHeapStart());
+                self.list
+                    .Dispatch(self.out_width.div_ceil(8), self.out_height.div_ceil(8), 1);
+                transition(
+                    &self.list,
+                    shared,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_COMMON,
+                );
+                self.list.Close()?;
+            }
+            let t1 = std::time::Instant::now();
+
+            unsafe {
+                self.queue
+                    .ExecuteCommandLists(&[Some(self.list.cast::<ID3D12CommandList>()?)]);
+            }
+            let t2 = std::time::Instant::now();
+
+            let value = self.fence_value.get() + 1;
+            self.fence_value.set(value);
+            unsafe { self.queue.Signal(&self.fence, value)? };
+            let t3 = std::time::Instant::now();
+
+            unsafe {
+                if self.fence.GetCompletedValue() < value {
+                    self.fence.SetEventOnCompletion(value, self.fence_event)?;
+                    WaitForSingleObject(self.fence_event, INFINITE);
+                }
+            }
+            let t4 = std::time::Instant::now();
+
+            records.push(t1.duration_since(t0).as_secs_f64() * 1e6);
+            submits.push(t2.duration_since(t1).as_secs_f64() * 1e6);
+            signals.push(t3.duration_since(t2).as_secs_f64() * 1e6);
+            waits.push(t4.duration_since(t3).as_secs_f64() * 1e6);
+        }
+
+        fn min_and_median(mut xs: Vec<f64>) -> (f64, f64) {
+            xs.sort_by(|a, b| a.partial_cmp(b).expect("no NaN in a duration"));
+            (xs[0], xs[xs.len() / 2])
+        }
+
+        Ok([
+            min_and_median(records),
+            min_and_median(submits),
+            min_and_median(signals),
+            min_and_median(waits),
+        ])
+    }
+
+    /// Open a captured texture on this device and cache it under `key`.
+    ///
+    /// The NT handle is closed immediately: `OpenSharedHandle` gives the D3D12
+    /// resource its own reference, so the handle is needed only for the crossing
+    /// itself. What is cached is the resource, not the handle.
+    fn open_texture(
+        &self,
+        d3d11_texture: &ID3D11Texture2D,
+        key: usize,
+    ) -> windows::core::Result<()> {
+        // Textures are the one resource type D3D11 can share, which is why the
+        // shader lives on D3D12 at all.
+        let resource: IDXGIResource1 = d3d11_texture.cast()?;
+        let handle = unsafe { resource.CreateSharedHandle(None, DXGI_SHARED_RESOURCE_READ, None)? };
+
+        let result = (|| -> windows::core::Result<()> {
+            let mut shared: Option<ID3D12Resource> = None;
+            unsafe { self.device.OpenSharedHandle(handle, &mut shared)? };
+            let shared = shared.expect("OpenSharedHandle reported success");
+
+            let desc = unsafe { shared.GetDesc() };
+            self.cached_src_size
+                .set((desc.Width as u32, desc.Height));
+
+            // The SRV describes this texture, so it is rebuilt with it. The UAV
+            // was built once in the constructor and is untouched here.
+            let srv_handle = unsafe { self.heap.GetCPUDescriptorHandleForHeapStart() };
+            let mut srv_desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
+                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
+                Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+                ..Default::default()
+            };
+            srv_desc.Anonymous.Texture2D = D3D12_TEX2D_SRV {
+                MostDetailedMip: 0,
+                MipLevels: 1,
+                PlaneSlice: 0,
+                ResourceMinLODClamp: 0.0,
+            };
+            unsafe {
+                self.device
+                    .CreateShaderResourceView(&shared, Some(&srv_desc), srv_handle)
+            };
+
+            *self.cached_shared.borrow_mut() = Some(shared);
+            self.cached_texture.set(key);
+            Ok(())
+        })();
+
         unsafe {
             let _ = CloseHandle(handle);
         }
+
+        // Leave no half-populated cache behind: a failed open must not let the
+        // next call reuse a resource that belongs to a different texture.
+        if result.is_err() {
+            *self.cached_shared.borrow_mut() = None;
+            self.cached_texture.set(0);
+        }
         result
+    }
+
+    /// Shared NT handle for the output tensor, as an integer.
+    ///
+    /// This is what `cudaImportExternalMemory` takes with
+    /// `cudaExternalMemoryHandleTypeD3D12Resource`, and what another D3D12
+    /// device would pass to `OpenSharedHandle`.
+    ///
+    /// **Borrowed, not owned.** The handle is closed when this preprocessor is
+    /// dropped. Importers reference it rather than taking ownership, so callers
+    /// must not close it — and must not use it after the preprocessor dies.
+    pub fn shared_output_handle(&self) -> isize {
+        self.shared_output_handle.0 as isize
+    }
+
+    /// Size of the output tensor in bytes — what an importer must map.
+    pub fn output_byte_size(&self) -> u64 {
+        (self.out_width * self.out_height * 3 * 4) as u64
+    }
+
+    /// Address of the capture texture currently cached, or 0 if none is.
+    ///
+    /// Diagnostic. Exists so a test can assert the cache genuinely re-keyed
+    /// after being handed a different texture, rather than inferring it from
+    /// output that would look correct either way — a resource released
+    /// underneath us keeps reading plausibly until something claims the memory.
+    pub fn cached_texture_address(&self) -> usize {
+        self.cached_texture.get()
     }
 
     /// Copy the tensor to the CPU. Verification only.
@@ -516,6 +740,13 @@ impl Drop for Preprocessor12 {
     fn drop(&mut self) {
         // Never destroy resources the GPU is still reading.
         let _ = self.wait_for_gpu();
+        // Drop the cached view of the captured texture before the device goes.
+        *self.cached_shared.borrow_mut() = None;
+        if !self.shared_output_handle.is_invalid() {
+            unsafe {
+                let _ = CloseHandle(self.shared_output_handle);
+            }
+        }
         if !self.fence_event.is_invalid() {
             unsafe {
                 let _ = CloseHandle(self.fence_event);
@@ -528,6 +759,7 @@ fn create_buffer(
     device: &ID3D12Device,
     size: u64,
     heap_type: D3D12_HEAP_TYPE,
+    heap_flags: D3D12_HEAP_FLAGS,
     flags: D3D12_RESOURCE_FLAGS,
     state: D3D12_RESOURCE_STATES,
 ) -> windows::core::Result<ID3D12Resource> {
@@ -557,7 +789,7 @@ fn create_buffer(
     unsafe {
         device.CreateCommittedResource(
             &heap_props,
-            D3D12_HEAP_FLAG_NONE,
+            heap_flags,
             &desc,
             state,
             None,

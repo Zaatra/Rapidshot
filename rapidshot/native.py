@@ -254,7 +254,10 @@ class GpuPreprocessor:
         """
         import numpy as np
 
-        flat = np.asarray(self._impl.read_back(), dtype=np.float32)
+        # The extension hands back raw bytes, not a list of floats: a list cost
+        # one Python object per element and dominated the readback benchmark it
+        # was meant to price. `frombuffer` is a reinterpret, not a conversion.
+        flat = np.frombuffer(self._impl.read_back(), dtype=np.float32)
         return flat.reshape(1, 3, self.out_height, self.out_width)
 
     @property
@@ -325,12 +328,33 @@ class GpuPreprocessor12:
         """Copy the tensor to the CPU as (1, 3, H, W). Verification only."""
         import numpy as np
 
-        flat = np.asarray(self._impl.read_back(), dtype=np.float32)
+        # Raw bytes rather than a list of floats — see the note on the D3D11
+        # preprocessor's read_back.
+        flat = np.frombuffer(self._impl.read_back(), dtype=np.float32)
         return flat.reshape(1, 3, self.out_height, self.out_width)
 
     @property
     def shape(self):
         return tuple(self._impl.shape)
+
+    @property
+    def shared_output_handle(self) -> int:
+        """
+        Shared NT handle for the tensor, for a consumer on another device or API.
+
+        This is what CUDA's ``cudaImportExternalMemory`` takes with
+        ``cudaExternalMemoryHandleTypeD3D12Resource``. Pair it with
+        :attr:`output_byte_size`, which is the size such an importer must map.
+
+        **Borrowed, not owned.** It is closed when this preprocessor is dropped;
+        do not close it yourself, and do not use it after that point.
+        """
+        return int(self._impl.shared_output_handle)
+
+    @property
+    def output_byte_size(self) -> int:
+        """Size of the tensor in bytes — what an importer must map."""
+        return int(self._impl.output_byte_size)
 
     @property
     def output_resource_address(self) -> int:
