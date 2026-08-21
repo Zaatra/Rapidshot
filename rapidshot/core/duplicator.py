@@ -33,8 +33,10 @@ from rapidshot._libs.dxgi import (
     IDXGIResource,
     RECT,
 )
+from rapidshot._libs.dxgi import E_ACCESSDENIED
 from rapidshot.core.device import Device
 from rapidshot.core.output import Output
+from rapidshot.util.desktop import describe_desktop_access
 from rapidshot.util.errors import (
     RapidShotError,
     RapidShotDXGIError,
@@ -77,6 +79,37 @@ def _format_hresult(hresult) -> str:
     if isinstance(hresult, int):
         return f"{hresult & 0xFFFFFFFF:#010x}"
     return str(hresult)
+
+
+def _desktop_refusal(hresult, detail: str = "") -> Optional[RapidShotError]:
+    """Return a desktop-specific error if that is what a refusal really means.
+
+    ``DuplicateOutput`` reports both "protected content is on screen" and "you
+    are not on the input desktop" as a bare ``E_ACCESSDENIED``. Reporting the
+    second as the first is actively misleading: a locked workstation, an open
+    UAC prompt, and a Session 0 service all told the user to close a protected
+    player window that does not exist. Measured 2026-08-06 by moving a thread
+    to a fresh desktop with ``CreateDesktop``, which reproduces the HRESULT
+    exactly.
+
+    Only plain ``E_ACCESSDENIED`` is ambiguous. ``DXGI_ERROR_ACCESS_DENIED``
+    and ``DXGI_ERROR_CANNOT_PROTECT_CONTENT`` are specific to protected
+    content, so they are left alone.
+
+    Returns:
+        A ``RapidShotConfigError`` naming the real cause, or None to let the
+        caller report protected content.
+    """
+    if hresult != E_ACCESSDENIED:
+        return None
+    state = describe_desktop_access()
+    if state.blocked_reason is None:
+        return None
+    prefix = f"{detail} — " if detail else ""
+    return RapidShotConfigError(
+        f"{prefix}Desktop duplication was denied: {state.blocked_reason}",
+        hresult=hresult,
+    )
 
 
 def _legacy_duplication_forced() -> bool:
@@ -232,6 +265,13 @@ class Duplicator:
                 except comtypes.COMError as ce:
                     hresult = ce.args[0] if ce.args else None
                     if hresult in DXGI_PROTECTED_CONTENT_ERRORS:
+                        # A bare E_ACCESSDENIED means one of two unrelated
+                        # things, and blaming protected content for both sends
+                        # people hunting for a player window that is not there.
+                        # Ask the window station before deciding.
+                        desktop_error = _desktop_refusal(hresult)
+                        if desktop_error is not None:
+                            raise desktop_error from ce
                         # Protected surfaces are a permanent refusal for this
                         # output, not something the legacy path can work around.
                         self.protected_content_detected = True
@@ -263,6 +303,9 @@ class Duplicator:
         detail = f"{context}: {ce}"
 
         if hresult in DXGI_PROTECTED_CONTENT_ERRORS:
+            desktop_error = _desktop_refusal(hresult, detail)
+            if desktop_error is not None:
+                return desktop_error
             self.protected_content_detected = True
             return RapidShotProtectedContentError(
                 f"{detail} (protected/HDCP content is blocking duplication)",
