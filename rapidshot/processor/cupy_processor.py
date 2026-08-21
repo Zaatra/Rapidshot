@@ -10,6 +10,14 @@ from rapidshot.util.ctypes_helpers import pointer_to_address
 # Configure logging
 logger = logging.getLogger(__name__)
 
+# Q8 luma coefficients, identical to `numpy_processor`. Duplicated rather than
+# imported so the two paths cannot drift apart silently through a refactor of
+# the other module -- the tests assert they agree.
+_LUMA_R, _LUMA_G, _LUMA_B = 77, 150, 29
+_LUMA_ROUND, _LUMA_SHIFT = 128, 8
+
+_SUPPORTED_MODES = {"BGRA", "RGB", "BGR", "RGBA", "GRAY"}
+
 class CupyProcessor:
     """
     CUDA-accelerated processor using CuPy.
@@ -58,18 +66,20 @@ class CupyProcessor:
             logger.error(error_msg)
             raise ImportError(error_msg) from e
             
+        # Reject an unsupported mode here rather than on the first frame that
+        # happens to arrive. The same reasoning as `_validate_destination` in
+        # the `shot()` fix (ROADMAP § 10): deferring the check to the processor
+        # made it fire only on calls that received new content, so a bad
+        # configuration looked fine on a static desktop and blew up later, when
+        # something happened to move.
+        if color_mode is not None and color_mode not in _SUPPORTED_MODES:
+            raise ValueError(
+                f"Unsupported color mode: {color_mode!r}. "
+                f"Supported modes: {sorted(_SUPPORTED_MODES)}")
+
         self.cvtcolor = None
         self.color_mode = color_mode
-        
-        # Try importing cuCV now to give early warning
-        try:
-            import cucv.cv2
-            self._has_cucv = True
-            logger.info("Using cuCV for color conversion (GPU accelerated)")
-        except ImportError:
-            self._has_cucv = False
-            logger.info("cuCV not found, falling back to regular OpenCV for color conversion")
-            
+
         # Simplified processing for BGRA
         if self.color_mode == 'BGRA':
             self.color_mode = None
@@ -141,66 +151,60 @@ class CupyProcessor:
 
     def process_cvtcolor(self, image):
         """
-        Convert color format using cuCV or OpenCV.
-        
+        Convert a BGRA CuPy array to this processor's colour mode, on the GPU.
+
+        Every mode is expressed in CuPy, so this needs no OpenCV and no cuCV.
+        That is not only a dependency saving: the OpenCV path this replaced
+        copied the frame **off** the GPU with ``cp.asnumpy``, converted it on the
+        CPU, and copied it back — three PCIe crossings for a frame that was
+        already resident, on a code path whose entire premise is GPU residency.
+
+        The arithmetic is byte-for-byte the same as
+        :meth:`NumpyProcessor.convert_into`. That matters more than it looks:
+        it is what lets a caller switch ``nvidia_gpu`` on or off without any
+        pixel changing, and OpenCV could not have offered it — its luma rounds
+        differently and is off by up to 1 LSB (ROADMAP § 10).
+
         Args:
-            image: Image to convert
-            
+            image: (H, W, 4) uint8 BGRA CuPy array.
+
         Returns:
-            Converted image
+            A new CuPy array in the configured mode.
         """
-        # Use the already imported cuCV if available, otherwise use regular OpenCV
-        if self._has_cucv:
-            try:
-                import cucv.cv2 as cv2
-            except ImportError as e:
-                logger.warning(f"Failed to import cuCV, falling back to regular OpenCV: {e}")
-                import cv2  # type: ignore[import-not-found]
-        else:
-            try:
-                import cv2  # type: ignore[import-not-found]
-            except ImportError as e:
-                error_msg = (
-                    f"OpenCV is required for color conversion. Error: {e}\n"
-                    f"Install OpenCV: pip install opencv-python"
-                )
-                logger.error(error_msg)
-                raise ImportError(error_msg) from e
-            
-        # Initialize color conversion function once
-        if self.cvtcolor is None:
-            try:
-                color_mapping = {
-                    "RGB": cv2.COLOR_BGRA2RGB,
-                    "RGBA": cv2.COLOR_BGRA2RGBA,
-                    "BGR": cv2.COLOR_BGRA2BGR,
-                    "GRAY": cv2.COLOR_BGRA2GRAY
-                }
-                
-                if self.color_mode not in color_mapping:
-                    error_msg = f"Unsupported color mode: {self.color_mode}. Supported modes: {list(color_mapping.keys())}"
-                    logger.error(error_msg)
-                    raise ValueError(error_msg)
-                    
-                cv2_code = color_mapping[self.color_mode]
-                
-                # Create appropriate converter function
-                if cv2_code != cv2.COLOR_BGRA2GRAY:
-                    self.cvtcolor = lambda img: cv2.cvtColor(img, cv2_code)
-                else:
-                    # Add axis for grayscale to maintain shape consistency
-                    self.cvtcolor = lambda img: cv2.cvtColor(img, cv2_code)[..., self.cp.newaxis]
-            except Exception as e:
-                error_msg = f"Failed to initialize color conversion: {e}"
-                logger.error(error_msg)
-                raise RuntimeError(error_msg) from e
-                
-        try:
-            return self.cvtcolor(image)
-        except Exception as e:
-            error_msg = f"Error during color conversion: {e}"
-            logger.error(error_msg)
-            raise RuntimeError(error_msg) from e
+        cp = self.cp
+        mode = self.color_mode
+
+        if mode is None or mode == "BGRA":
+            return image
+        if mode == "RGB":
+            return cp.ascontiguousarray(image[..., 2::-1])
+        if mode == "BGR":
+            return cp.ascontiguousarray(image[..., :3])
+        if mode == "RGBA":
+            out = cp.empty_like(image)
+            out[..., 0] = image[..., 2]
+            out[..., 1] = image[..., 1]
+            out[..., 2] = image[..., 0]
+            out[..., 3] = image[..., 3]
+            return out
+        if mode == "GRAY":
+            # Q8 luma, identical to the NumPy path. The whole intermediate stays
+            # in uint16 because 255*(77+150+29) + 128 = 65408, just inside the
+            # limit; the +128 is round-to-nearest, and dropping it biases every
+            # pixel dark. Accumulating in a single uint16 buffer keeps this to
+            # one allocation rather than one per channel.
+            acc = image[..., 2].astype(cp.uint16)
+            acc *= cp.uint16(_LUMA_R)
+            acc += cp.uint16(_LUMA_ROUND)
+            acc += image[..., 1].astype(cp.uint16) * cp.uint16(_LUMA_G)
+            acc += image[..., 0].astype(cp.uint16) * cp.uint16(_LUMA_B)
+            acc >>= _LUMA_SHIFT
+            # Trailing axis kept so GRAY frames index like every other mode.
+            return acc.astype(cp.uint8)[..., cp.newaxis]
+
+        raise ValueError(
+            f"Unsupported color mode: {mode!r}. "
+            f"Supported modes: {sorted(_SUPPORTED_MODES)}")
 
     def process(self, rect, width, height, region, rotation_angle, output_buffer=None):
         """
@@ -271,43 +275,31 @@ class CupyProcessor:
             current_array = output_buffer # Start with the pooled buffer (already has BGRA data)
             is_still_pooled_buffer = is_pooled_buffer
 
-            # Color Conversion
+            # Color Conversion — entirely on the device. The array stays a CuPy
+            # array from here to the caller; there is no host round-trip.
             if self.color_mode is not None: # Not 'BGRA', so conversion is intended
-                # process_cvtcolor expects a CuPy array if _has_cucv, or NumPy if falling back to cv2
-                # Since current_array is CuPy, this is fine for cuCV.
-                # For OpenCV fallback, process_cvtcolor would need a NumPy array.
-                # Let's assume process_cvtcolor is adapted or handles CuPy array input.
-                # For now, we pass current_array. If it's OpenCV, it might involve implicit DtoH copy.
-                
-                # If using OpenCV (non-cuCV path), it's better to convert from the CPU numpy array
-                # *before* copying to output_buffer, or copy output_buffer to CPU, convert, copy back.
-                # This logic assumes process_cvtcolor can handle a CuPy array and returns a CuPy array.
-                
-                temp_for_conversion = current_array
-                # If not using cuCV, and process_cvtcolor expects NumPy, we need a DtoH copy
-                if not self._has_cucv:
-                    logger.debug("CupyProcessor: Using OpenCV for color conversion, involves DtoH copy.")
-                    temp_for_conversion = self.cp.asnumpy(current_array)
+                converted_array = self.process_cvtcolor(current_array)
 
-                converted_array = self.process_cvtcolor(temp_for_conversion) # process_cvtcolor returns array
-
-                # If OpenCV was used, converted_array is NumPy, convert back to CuPy
-                if not self._has_cucv and isinstance(converted_array, np.ndarray):
-                    converted_array = self.cp.asarray(converted_array)
-
-                if converted_array.shape[0] == current_array.shape[0] and \
-                   converted_array.shape[1] == current_array.shape[1]:
-                    if converted_array.shape[2] != current_array.shape[2]: # Channel change
-                        current_array = converted_array
-                        is_still_pooled_buffer = False
-                    elif converted_array.data.ptr != current_array.data.ptr: # Different memory block
-                        if is_still_pooled_buffer:
-                            current_array[:] = converted_array
-                        # else current_array is already new, no need to copy to original output_buffer
-                else: # Height/width changed
-                    logger.warning("CuPy color conversion changed height/width, which is unexpected.")
-                    current_array = converted_array
-                    is_still_pooled_buffer = False
+                # Never copy the result back into the pooled staging buffer.
+                #
+                # Doing that for same-shape conversions (RGBA) made the frame
+                # alias pooled storage the pool had already recycled: holding
+                # six frames against a two-buffer pool yielded two distinct
+                # allocations, and frame one had been overwritten by frame six
+                # while the caller still held it. That is the frame-aliasing
+                # corruption ROADMAP section 5 records being fixed once already
+                # on the NumPy path, arriving here by another route -- and it
+                # stays invisible until a consumer holds a frame for longer
+                # than the pool depth.
+                #
+                # The converted array owns its storage, so returning it costs
+                # one allocation and cannot alias anything.
+                if converted_array.shape[:2] != current_array.shape[:2]:
+                    logger.warning(
+                        "CuPy color conversion changed height/width, which is "
+                        "unexpected.")
+                current_array = converted_array
+                is_still_pooled_buffer = False
             
             # Rotation
             if rotation_angle != 0:
@@ -327,11 +319,17 @@ class CupyProcessor:
             return current_array, is_still_pooled_buffer
 
         except Exception as e:
-            error_msg = f"Error processing frame with CuPy: {e}"
-            logger.error(error_msg)
-            if output_buffer is not None and hasattr(output_buffer, 'fill'):
-                try:
-                    output_buffer.fill(0)
-                except Exception as fill_e:
-                    logger.error(f"Error filling CuPy output_buffer after another error: {fill_e}")
-            return output_buffer, False # Indicate buffer might be invalid
+            # Raise, do not return the buffer.
+            #
+            # This used to log the error, zero the buffer and hand it back. The
+            # result was that `create(output_color="RGB", nvidia_gpu=True)`
+            # returned a **4-channel BGRA array** and reported success whenever
+            # conversion failed — wrong shape, wrong channel order, no
+            # exception. A caller feeding that to a model got silent garbage,
+            # and only a log line said otherwise.
+            #
+            # ROADMAP § 11: a fast wrong answer is worthless. A frame that
+            # cannot be produced in the requested format is an error, not a
+            # frame.
+            logger.error(f"Error processing frame with CuPy: {e}")
+            raise

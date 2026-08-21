@@ -26,12 +26,34 @@ mod swizzle;
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyBytes, PyDict};
 
 use std::sync::Mutex;
 
 use windows::core::Interface;
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D, D3D11_TEXTURE2D_DESC};
+
+/// Hand a float tensor to Python as raw bytes rather than as a list.
+///
+/// Returning `Vec<f32>` makes PyO3 build a Python list — one heap-allocated
+/// `float` object per element, so a 640×640 tensor produced 1,228,800 of them
+/// per call. That cost *dominated* `pipeline.gpu_plus_readback`, the benchmark
+/// whose entire purpose is to price the GPU→CPU round-trip: `np.asarray` over
+/// the resulting list measured 21 ms on its own, against a 4.92 MB copy that
+/// should cost a fraction of that (ROADMAP § 10).
+///
+/// Bytes are one memcpy, and `np.frombuffer` reinterprets them with no
+/// per-element work. Callers get the same numbers with the measurement noise
+/// removed.
+fn floats_as_bytes<'py>(py: Python<'py>, data: &[f32]) -> Bound<'py, PyBytes> {
+    // f32 has no padding or invalid bit patterns, so viewing it as bytes is
+    // always well-defined; the length is taken from the slice rather than
+    // recomputed, so it cannot disagree with the data.
+    let raw = unsafe {
+        std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data))
+    };
+    PyBytes::new(py, raw)
+}
 
 /// Human-readable name for the DXGI formats desktop duplication can produce.
 fn format_name(format: u32) -> &'static str {
@@ -408,13 +430,14 @@ impl GpuPreprocessor {
     ///
     /// Verification and debugging only — reading back reintroduces exactly the
     /// CPU round-trip this path exists to avoid.
-    fn read_back(&self) -> PyResult<Vec<f32>> {
+    fn read_back<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         let inner = self.inner.lock().map_err(|_| {
             PyRuntimeError::new_err("preprocessor lock poisoned by an earlier panic")
         })?;
-        inner
+        let data = inner
             .read_back()
-            .map_err(|e| PyRuntimeError::new_err(format!("readback failed: {e}")))
+            .map_err(|e| PyRuntimeError::new_err(format!("readback failed: {e}")))?;
+        Ok(floats_as_bytes(py, &data))
     }
 
     /// Shape of the produced tensor, as (1, 3, H, W).
@@ -559,8 +582,19 @@ impl GpuPreprocessor12 {
         })
     }
 
-    #[pyo3(signature = (texture_ptr, scale=1.0, bias=0.0, bgr=false))]
-    fn process(&self, texture_ptr: usize, scale: f32, bias: f32, bgr: bool) -> PyResult<()> {
+    // `source_id` is keyword-only and last: inserting it among the positional
+    // parameters silently repurposed existing callers' `scale` as the id, which
+    // broke `benchmarks/cross_adapter_ordering.py` with a TypeError. A new
+    // optional argument must not move the ones already in use.
+    #[pyo3(signature = (texture_ptr, scale=1.0, bias=0.0, bgr=false, *, source_id=0))]
+    fn process(
+        &self,
+        texture_ptr: usize,
+        scale: f32,
+        bias: f32,
+        bgr: bool,
+        source_id: u64,
+    ) -> PyResult<()> {
         let inner = self
             .inner
             .lock()
@@ -568,22 +602,30 @@ impl GpuPreprocessor12 {
         unsafe {
             with_texture(texture_ptr, |texture| {
                 inner
-                    .process(texture, scale, bias, if bgr { 1 } else { 0 })
+                    .process(texture, source_id, scale, bias, if bgr { 1 } else { 0 })
                     .map_err(|e| PyRuntimeError::new_err(format!("D3D12 dispatch failed: {e}")))
             })
         }
     }
 
-    /// Copy the tensor back to the CPU. Verification only — doing this in
-    /// production reintroduces the round-trip the whole path exists to avoid.
-    fn read_back(&self) -> PyResult<Vec<f32>> {
+    /// Copy the tensor back to the CPU as **raw float32 bytes**, not a list.
+    ///
+    /// `np.frombuffer(..., dtype=np.float32)` reinterprets them; the shape is
+    /// `(1, 3, H, W)`. Bytes rather than a `Vec<f32>` because PyO3 turns the
+    /// latter into one Python float per element — 1.2M for a 640×640 tensor,
+    /// which dominated the benchmark meant to price the readback.
+    ///
+    /// Verification only — doing this in production reintroduces the
+    /// round-trip the whole path exists to avoid.
+    fn read_back<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         let inner = self
             .inner
             .lock()
             .map_err(|_| PyRuntimeError::new_err("preprocessor lock poisoned"))?;
-        inner
+        let data = inner
             .read_back()
-            .map_err(|e| PyRuntimeError::new_err(format!("D3D12 readback failed: {e}")))
+            .map_err(|e| PyRuntimeError::new_err(format!("D3D12 readback failed: {e}")))?;
+        Ok(floats_as_bytes(py, &data))
     }
 
     #[getter]
@@ -593,6 +635,105 @@ impl GpuPreprocessor12 {
             .lock()
             .map_err(|_| PyRuntimeError::new_err("preprocessor lock poisoned"))?;
         Ok((1, 3, inner.out_height, inner.out_width))
+    }
+
+    /// Break the per-dispatch cost into phases. Diagnostic only.
+    ///
+    /// Returns microseconds per phase over `iterations` runs, each as both a
+    /// minimum and a median.
+    ///
+    /// `wait` is the fence, and it is the only phase that could be removed
+    /// without changing what `process` promises — so it is the one worth
+    /// sizing before anyone tries. **Read its median, not its minimum**: the
+    /// wait is bimodal, clearing instantly whenever the GPU already finished,
+    /// so its minimum reports ~0 and describes nothing a caller experiences.
+    #[pyo3(signature = (texture_ptr, iterations=200, *, source_id=0))]
+    fn probe_dispatch_phases<'py>(
+        &self,
+        py: Python<'py>,
+        texture_ptr: usize,
+        iterations: u32,
+        source_id: u64,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("preprocessor lock poisoned"))?;
+        let phases = unsafe {
+            with_texture(texture_ptr, |texture| {
+                inner
+                    .probe_dispatch_phases(texture, source_id, iterations)
+                    .map_err(|e| PyRuntimeError::new_err(format!("probe failed: {e}")))
+            })?
+        };
+        let out = PyDict::new(py);
+        for (name, (min, median)) in ["record", "submit", "signal", "wait"]
+            .iter()
+            .zip(phases.iter())
+        {
+            out.set_item(format!("{name}_us_min"), *min)?;
+            out.set_item(format!("{name}_us_p50"), *median)?;
+        }
+        out.set_item(
+            "total_us_p50",
+            phases.iter().map(|(_, median)| median).sum::<f64>(),
+        )?;
+        Ok(out)
+    }
+
+    /// Shared NT handle for the output tensor, as an integer.
+    ///
+    /// This is what CUDA's `cudaImportExternalMemory` takes with
+    /// `cudaExternalMemoryHandleTypeD3D12Resource`, and what a second D3D12
+    /// device would pass to `OpenSharedHandle`. Without it a GPU consumer
+    /// outside this device has no route to the tensor at all.
+    ///
+    /// **Borrowed, not owned.** Closed when this preprocessor is dropped;
+    /// importing APIs reference the handle rather than taking ownership, so
+    /// callers must not close it and must not use it afterwards.
+    #[getter]
+    fn shared_output_handle(&self) -> PyResult<isize> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("preprocessor lock poisoned"))?;
+        Ok(inner.shared_output_handle())
+    }
+
+    /// Address of the capture texture currently cached, or 0. Diagnostic:
+    /// lets a test assert the cache re-keyed rather than infer it.
+    #[getter]
+    fn cached_texture_address(&self) -> PyResult<usize> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("preprocessor lock poisoned"))?;
+        Ok(inner.cached_texture_address())
+    }
+
+    /// Size of the output tensor in bytes — what an importer must map.
+    #[getter]
+    fn output_byte_size(&self) -> PyResult<u64> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("preprocessor lock poisoned"))?;
+        Ok(inner.output_byte_size())
+    }
+
+    /// LUID of the adapter holding the tensor, as 8 little-endian bytes.
+    ///
+    /// Compare against `cuDeviceGetLuid` to find the CUDA device that can
+    /// import this tensor — or to discover that none can, which is the normal
+    /// case on a hybrid laptop capturing on the iGPU. Counting CUDA devices
+    /// does not detect that: there is exactly one, and it is the wrong one.
+    #[getter]
+    fn adapter_luid<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("preprocessor lock poisoned"))?;
+        Ok(PyBytes::new(py, &inner.adapter_luid()))
     }
 
     /// Address of the `ID3D12Resource` holding the tensor. This is what

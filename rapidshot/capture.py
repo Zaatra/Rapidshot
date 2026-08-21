@@ -610,6 +610,7 @@ class ScreenCapture:
             rotation_angle=self.rotation_angle,
             present_time_qpc=duplicator.last_present_time,
             accumulated_frames=duplicator.accumulated_frames,
+            source_id=duplicator.instance_id,
             protected_content=duplicator.protected_content_detected,
             cursor_visible=duplicator.cursor_visible,
             dirty_rects=duplicator.dirty_rects,

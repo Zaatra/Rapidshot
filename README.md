@@ -83,8 +83,9 @@ built around have no column here because the other libraries have no equivalent:
 
 - **`grab_frame()`** hands back a GPU-resident frame in 0.17–0.21 ms that never
   crosses to system memory.
-- **The GPU tensor path** turns a frame into NCHW float32 in one dispatch, 2 µs of
-  calling-thread time.
+- **The GPU tensor path** turns a frame into model-ready NCHW float32 in one
+  dispatch — 0.075 ms for a 2560×1600 frame, against 3.1 ms to do the same work
+  on the CPU — and the result stays in VRAM, where CUDA or DirectML can read it.
 - **Cross-adapter transfer** moves a frame to the discrete GPU on hybrid laptops,
   which Desktop Duplication cannot capture from at all.
 - **Dirty-rect metadata**, so a consumer can skip regions that did not change.
@@ -130,6 +131,10 @@ rewritten.
   the memory system can move, and byte-identical to the pure-Python path
 - **Only process what changed**: frames carry the compositor's dirty-rect
   metadata, typically under 1% of the screen on a normal desktop
+- **Feed CUDA directly**: the GPU tensor exposes a shared NT handle, so CuPy or
+  PyTorch can read it in place via `cudaImportExternalMemory` — capture to
+  `cupy.ndarray` with no CPU round-trip. One dispatch costs **0.075 ms** at
+  2560×1600 → 640×640, against 3.1 ms for the same work on the CPU
 - **Hybrid GPU laptops**: move a frame to the discrete GPU that Desktop
   Duplication cannot capture from
 - **Multi-backend support**: NumPy, PIL, and CUDA/CuPy backends
@@ -140,8 +145,9 @@ rewritten.
 - **Flexible output formats**: RGB, RGBA, BGR, BGRA, and grayscale support
 - **Region-based capture**: Efficient capture of specific screen regions
 - **Rotation handling**: Automatic handling of rotated displays
-- **Actionable diagnostics**: headless machines and hybrid GPU setups are
-  detected and explained rather than failing opaquely
+- **Actionable diagnostics**: headless machines, hybrid GPU setups, locked
+  workstations, UAC prompts and Session 0 services are detected and named
+  rather than failing opaquely
 
 ## Installation
 
@@ -253,13 +259,23 @@ writer.release()
 ### NVIDIA GPU Acceleration
 
 ```python
-# Create a ScreenCapture instance with NVIDIA GPU acceleration
-screencapture = rapidshot.create(nvidia_gpu=True)
+# Frames come back as cupy.ndarray, converted on the device
+screencapture = rapidshot.create(output_color="RGB", nvidia_gpu=True)
 
-# Screenshots will be processed on the GPU for improved performance
-frame = screencapture.grab()
-frame.release()
+frame = screencapture.grab()        # cupy.ndarray, stays in VRAM
 ```
+
+> **Note:** unlike the CPU path, `nvidia_gpu=True` returns a bare
+> `cupy.ndarray` rather than a pooled buffer, so there is no `.release()` to
+> call — CuPy's allocator owns it. `pool_size_frames` does not apply.
+
+Colour conversion runs in CuPy on the GPU and is **byte-identical** to the CPU
+path, so turning `nvidia_gpu` on changes no pixel. OpenCV is not required.
+
+> **Fixed in 2.3.0:** before this release, any `output_color` other than
+> `"BGRA"` silently returned an unconverted 4-channel BGRA array — wrong shape
+> and wrong channel order, reported as success. Conversion went through OpenCV,
+> which is not a dependency, and the failure was swallowed.
 
 ### Cursor Capture
 
@@ -616,6 +632,7 @@ with screencapture.grab_frame() as frame:
     print(pre.shape)                        # (1, 3, 640, 640)
     resource = pre.output_resource_address  # ID3D12Resource*
     gpu_va = pre.output_gpu_address         # GPU virtual address
+    handle = pre.shared_output_handle       # shared NT handle, for CUDA etc.
 ```
 
 `process()` resizes, normalises, converts BGRA→RGB and transposes to NCHW in a
@@ -623,6 +640,49 @@ single compute shader. On the CPU that same work costs about **8 ms per 1080p
 frame**; here it is one dispatch and the result stays in VRAM. Optional
 arguments cover the usual normalisation ranges (`scale=2.0, bias=-1.0` for
 −1..1) and channel order (`bgr=True`).
+
+#### Reading the tensor from CuPy / CUDA
+
+`shared_output_handle` is a shared NT handle for the tensor, which CUDA imports
+with `cudaImportExternalMemory` — so the frame reaches a CUDA consumer without
+ever touching the CPU. **`examples/gpu_tensor_to_cupy.py` is a complete, working
+version** of the ~60 lines of `ctypes` this takes; it verifies the resulting
+`cupy.ndarray` is byte-identical to a readback of the same dispatch.
+
+`CudaTensor` is defined in `examples/gpu_tensor_to_cupy.py`, not exported by
+the package — copy it into your project rather than importing it:
+
+```python
+with CudaTensor(pre, (1, 3, 640, 640)) as view:
+    tensor = view.array                          # a cupy.ndarray in VRAM
+    while capturing:
+        with screencapture.grab_frame() as frame:   # a *new* frame each pass
+            if frame is None:
+                continue                         # nothing changed on screen
+            view.sync()                          # queued CUDA work must finish
+            pre.process(frame)                   # overwrites tensor's buffer
+        model(tensor)
+```
+
+Note the fresh `grab_frame()` inside the loop. The preprocessor and the CUDA
+import are built once and reused; the *frame* is not — a released frame raises
+`FrameReleasedError`, and reusing a live one just re-processes the same image.
+Releasing it before `model()` also matters: DXGI cannot acquire the next frame
+while a reference to the previous surface is outstanding.
+
+`sync()` is not optional. `process()` waits on the D3D12 fence but knows
+nothing about CUDA work you have queued against the same memory, so a kernel
+still reading the tensor when the next dispatch lands sees a half-overwritten
+frame — with no error, just wrong numbers.
+
+Keep the `CudaTensor` for as long as you use the array: it owns the CUDA
+import and the preprocessor that owns the VRAM. On a machine with more than
+one CUDA device, pass `device=N` — the tensor can only be imported by the
+device that owns the adapter which captured the frame.
+
+The import is paid once. After that `pre.process(frame)` overwrites the same
+buffer the CuPy array points at, so a capture loop pays nothing per frame to
+keep the view.
 
 **Where Rapidshot stops.** The output is an `ID3D12Resource` on the DirectML
 device — exactly what ONNX Runtime's DirectML provider consumes. Rapidshot
@@ -760,6 +820,25 @@ What is measured, reproducibly, is the per-frame cost of RapidShot's own paths
 The first three are synthetic and deterministic: they move when the library
 changes and not otherwise, which is why they are the ones on the badges above.
 
+**Second machine, NVIDIA RTX 4060 Laptop** (`benchmarks/baseline-rtx4060.json`,
+P-core-pinned, 1920×1080 synthetic source, minimums):
+
+| Path | Per frame |
+| --- | --- |
+| Colour conversion, BGRA→RGB | 0.198 ms |
+| Colour conversion, BGRA→GRAY | 0.252 ms |
+| CPU resize + normalise + NCHW | 3.09 ms |
+| **GPU dispatch → NCHW tensor, D3D12** | **0.070 ms** (2560×1600 source) |
+| GPU dispatch + forced readback | 2.20 ms |
+| `grab_frame()` — texture stays on the GPU | 0.099–0.156 ms |
+
+Cross-machine comparison is not valid — different CPU, GPU, panel and, on two
+rows, different code. Both recordings are kept so each answers for its own
+machine.
+
+Sustained-load check: 211,726 frames of `grab_frame()` → GPU tensor in 12
+minutes, zero errors, VRAM flat, no throughput decay.
+
 **The last two are not stable measurements and should not be quoted as single
 numbers.** `grab()` converts only the parts of the frame that changed, so its
 cost tracks what is happening on screen; across seven recordings on unchanged
@@ -785,11 +864,42 @@ breakdown and how each figure is measured.
   only for the optional CuPy acceleration.
 - **RAM:** 8 GB+ (depending on the resolution and number of screencapture instances used)
 
+### Tested configurations
+
+Nothing in RapidShot branches on GPU vendor. This is what has actually been
+run, which is not the same claim:
+
+| Configuration | State |
+| --- | --- |
+| Intel iGPU, single adapter | Verified |
+| NVIDIA dGPU, single adapter, native extension built | Verified |
+| NVIDIA dGPU, single adapter, no extension | Verified |
+| Any AMD GPU | **Not tested** |
+| Hybrid / switchable graphics (Optimus, AMD) | **Not tested** |
+| Headless with a virtual display | **Not tested** |
+
+CuPy is the only NVIDIA-bound feature, because CUDA is; `nvidia_gpu=True` falls
+back to the CPU processor when CuPy is unavailable. AMD and Intel consumers
+reach the same GPU tensor through DirectML via `output_resource_address`.
+
 ### Troubleshooting
 
 - **ImportError with CuPy:** Ensure you have compatible CUDA drivers installed.
-- **Black screens when capturing:** Verify the application isn't running in exclusive fullscreen mode.
+  `pip install cupy-cuda13x[ctk]` installs no headers against `cuda-toolkit`
+  13.3.x and CuPy then fails at its first JIT; use
+  `pip install "cuda-toolkit[cudart,nvrtc]==13.2.*"` instead.
+- **"Desktop duplication was denied":** the message names the cause. A
+  non-input desktop, a locked workstation, an open UAC prompt and a Session 0
+  service cannot capture the user's screen; protected (HDCP/DRM) content is a
+  separate case and is reported as such.
+- **Black screens when capturing:** protected content is blanked by the OS —
+  check `frame.protected_content`. Exclusive fullscreen is handled: capture
+  detects the transition, rebuilds, and continues.
 - **Low performance:** Experiment with different backends (NUMPY vs. CUPY) to optimize performance.
+- **Unstable benchmark numbers:** on a hybrid P-core/E-core CPU, pin the
+  process to the performance cores. `benchmarks/perf_suite.py` does this
+  itself; unpinned it reported false regressions up to 2.57× against
+  unchanged code.
 
 ## Contributing
 

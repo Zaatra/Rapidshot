@@ -254,7 +254,10 @@ class GpuPreprocessor:
         """
         import numpy as np
 
-        flat = np.asarray(self._impl.read_back(), dtype=np.float32)
+        # The extension hands back raw bytes, not a list of floats: a list cost
+        # one Python object per element and dominated the readback benchmark it
+        # was meant to price. `frombuffer` is a reinterpret, not a conversion.
+        flat = np.frombuffer(self._impl.read_back(), dtype=np.float32)
         return flat.reshape(1, 3, self.out_height, self.out_width)
 
     @property
@@ -319,18 +322,56 @@ class GpuPreprocessor12:
     def process(self, frame, scale: float = 1.0, bias: float = 0.0,
                 bgr: bool = False) -> None:
         """Convert one frame. The result stays on the DirectML device."""
-        self._impl.process(_texture_address(frame), scale, bias, bgr)
+        # The texture address alone is not an identity -- COM addresses get
+        # recycled -- so the frame's source_id goes with it. See Frame.source_id.
+        self._impl.process(_texture_address(frame), scale, bias, bgr,
+                           source_id=getattr(frame, "source_id", 0))
 
     def read_back(self):
         """Copy the tensor to the CPU as (1, 3, H, W). Verification only."""
         import numpy as np
 
-        flat = np.asarray(self._impl.read_back(), dtype=np.float32)
+        # Raw bytes rather than a list of floats — see the note on the D3D11
+        # preprocessor's read_back.
+        flat = np.frombuffer(self._impl.read_back(), dtype=np.float32)
         return flat.reshape(1, 3, self.out_height, self.out_width)
 
     @property
     def shape(self):
         return tuple(self._impl.shape)
+
+    @property
+    def shared_output_handle(self) -> int:
+        """
+        Shared NT handle for the tensor, for a consumer on another device or API.
+
+        This is what CUDA's ``cudaImportExternalMemory`` takes with
+        ``cudaExternalMemoryHandleTypeD3D12Resource``. Pair it with
+        :attr:`output_byte_size`, which is the size such an importer must map.
+
+        **Borrowed, not owned.** It is closed when this preprocessor is dropped;
+        do not close it yourself, and do not use it after that point.
+        """
+        return int(self._impl.shared_output_handle)
+
+    @property
+    def output_byte_size(self) -> int:
+        """Size of the tensor in bytes — what an importer must map."""
+        return int(self._impl.output_byte_size)
+
+    @property
+    def adapter_luid(self) -> bytes:
+        """
+        LUID of the adapter holding the tensor, as 8 little-endian bytes.
+
+        The tensor is not cross-adapter, so only a consumer on *this* adapter
+        can import it. CUDA exposes the same identity via ``cuDeviceGetLuid``,
+        which is how a caller picks the right device — and how it finds out
+        there isn't one. That is the ordinary hybrid-laptop case: capture runs
+        on the iGPU, CUDA reports exactly one device, and it is the wrong one,
+        so counting devices cannot detect the mismatch.
+        """
+        return bytes(self._impl.adapter_luid)
 
     @property
     def output_resource_address(self) -> int:

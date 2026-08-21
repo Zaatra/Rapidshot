@@ -56,7 +56,7 @@ fn luma_px(b: u8, g: u8, r: u8) -> u8 {
 /// itself.
 #[inline]
 fn luma_row(src: &[u8], dst: &mut [u8]) {
-    for (px, out) in src.chunks_exact(4).zip(dst.iter_mut()) {
+    for (px, out) in src.as_chunks::<4>().0.iter().zip(dst.iter_mut()) {
         *out = luma_px(px[0], px[1], px[2]);
     }
 }
