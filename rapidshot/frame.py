@@ -78,7 +78,7 @@ class Frame:
         "_texture", "_on_release", "_released", "_region", "_rotation_angle",
         "_present_time_qpc", "_accumulated_frames", "_protected_content",
         "_cursor_visible", "_width", "_height", "_dirty_rects",
-        "_rects_coalesced",
+        "_rects_coalesced", "_source_id",
     )
 
     def __init__(
@@ -93,6 +93,7 @@ class Frame:
         cursor_visible: bool = False,
         dirty_rects: Optional[List[Tuple[int, int, int, int]]] = None,
         rects_coalesced: bool = False,
+        source_id: int = 0,
     ) -> None:
         self._texture = texture
         self._on_release = on_release
@@ -107,6 +108,7 @@ class Frame:
         self._height = region[3] - region[1]
         self._dirty_rects = self._clip_to_region(dirty_rects)
         self._rects_coalesced = rects_coalesced
+        self._source_id = source_id
 
     def _clip_to_region(self, rects):
         """Translate desktop-coordinate rects into this frame's coordinates.
@@ -204,6 +206,17 @@ class Frame:
         intermediate frames were dropped by the OS.
         """
         return self._accumulated_frames
+
+    @property
+    def source_id(self) -> int:
+        """Which duplicator produced this frame's texture.
+
+        Consumers caching anything keyed on the texture address need this too:
+        COM addresses are recycled, so a released surface and a later unrelated
+        one can share a pointer. The pair is a sound identity; the pointer
+        alone is not.
+        """
+        return self._source_id
 
     @property
     def protected_content(self) -> bool:

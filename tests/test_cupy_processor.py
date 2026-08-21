@@ -118,3 +118,54 @@ def test_conversion_needs_no_opencv(monkeypatch):
     for mode in MODES:
         got = cp.asnumpy(CupyProcessor(mode).process_cvtcolor(cp.asarray(pattern)))
         assert np.array_equal(got, numpy_reference(pattern, mode)), mode
+
+
+# --------------------------------------------------------------------------
+# frame aliasing, through the public API
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("mode", ["RGBA", "RGB", "GRAY"])
+def test_held_frames_do_not_share_storage(mode):
+    """A frame the caller still holds must never be overwritten.
+
+    Found by review, then reproduced: same-shape conversions (RGBA) copied the
+    result back into the pooled staging buffer, so `grab()` returned a bare
+    array pointing at storage the pool had already recycled. Holding six frames
+    against a two-buffer pool gave two distinct allocations, and frame one had
+    been overwritten by frame six.
+
+    This is the frame-aliasing corruption ROADMAP section 5 records being fixed
+    once on the NumPy path, reappearing on the CuPy one. It is invisible unless
+    a consumer holds a frame for longer than the pool depth, which is exactly
+    what a batching or async pipeline does — hence a deliberately shallow pool
+    and more frames than it can serve.
+    """
+    import rapidshot
+
+    camera = rapidshot.create(output_color=mode, nvidia_gpu=True,
+                              pool_size_frames=2)
+    held, pointers = [], []
+    try:
+        for _ in range(1500):
+            frame = camera.grab()
+            if frame is None:
+                continue
+            array = frame.array if hasattr(frame, "array") else frame
+            held.append(frame)
+            pointers.append(int(array.data.ptr))
+            if len(held) >= 6:
+                break
+        if len(pointers) < 3:
+            pytest.skip("not enough frames — the screen must be changing")
+
+        assert len(set(pointers)) == len(pointers), (
+            f"{mode}: {len(pointers) - len(set(pointers))} of {len(pointers)} "
+            f"held frames share storage with an earlier one, so an earlier "
+            f"frame was overwritten while the caller still held it")
+    finally:
+        for frame in held:
+            release = getattr(frame, "release", None)
+            if release:
+                release()
+        camera.release()
+        rapidshot.reset()

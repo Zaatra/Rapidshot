@@ -78,6 +78,20 @@ class CudaTensor:
     The import happens once. After that the device pointer stays valid for the
     preprocessor's lifetime, so a capture loop pays nothing per frame to keep
     the view — `process()` overwrites the same buffer the CuPy array points at.
+
+    **That reuse needs ordering, and the two APIs do not provide it for each
+    other.** `pre.process()` blocks on the D3D12 fence, so the tensor is
+    complete when it returns — but it knows nothing about CUDA work you have
+    queued against the same memory. A kernel still reading the array when the
+    next dispatch lands reads a half-overwritten frame, and `close()` can
+    destroy the mapping out from under pending work. Neither shows up as an
+    error; both show up as wrong numbers.
+
+    Call `sync()` before reusing the buffer and before closing. It is a full
+    stream synchronise, which is the blunt-but-correct option; a shared D3D12
+    fence imported with `cuImportExternalSemaphore` is the version that would
+    overlap instead of stalling, and is the same work ROADMAP § 6.1 defers for
+    the cross-adapter path.
     """
 
     def __init__(self, preprocessor, shape, device=None):
@@ -132,33 +146,55 @@ class CudaTensor:
                 ctypes.byref(self._ext), ctypes.byref(desc)),
             "cuImportExternalMemory")
 
-        buf = ExternalMemoryBufferDesc()
-        buf.offset = 0
-        buf.size = preprocessor.output_byte_size
-        buf.flags = 0
+        # Everything past the import must undo it on failure. Without this an
+        # exception here leaves an imported external-memory object with no
+        # reference to close it, so repeated setup failures leak handles.
+        try:
+            # The caller supplies `shape`, but the mapping is only
+            # output_byte_size. A larger shape would build a perfectly ordinary
+            # CuPy array that reads past the end of mapped GPU memory.
+            elements = 1
+            for dimension in shape:
+                elements *= int(dimension)
+            needed = elements * 4                      # float32
+            if needed != preprocessor.output_byte_size:
+                raise ValueError(
+                    f"shape {tuple(shape)} is {needed} bytes but the tensor is "
+                    f"{preprocessor.output_byte_size}; the view must match the "
+                    f"mapping exactly")
 
-        ptr = ctypes.c_ulonglong()
-        self._check(
-            self._cuda.cuExternalMemoryGetMappedBuffer(
-                ctypes.byref(ptr), self._ext, ctypes.byref(buf)),
-            "cuExternalMemoryGetMappedBuffer")
+            buf = ExternalMemoryBufferDesc()
+            buf.offset = 0
+            buf.size = preprocessor.output_byte_size
+            buf.flags = 0
 
-        # `UnownedMemory` because the allocation belongs to D3D12 and CuPy must
-        # never free it. `owner=self` is what keeps the chain alive: the array
-        # holds the memory, which holds this object, which holds both the CUDA
-        # external-memory handle and the preprocessor. Hand back an array whose
-        # owner is None and the caller can drop everything that keeps its
-        # storage mapped while still holding a perfectly normal-looking array.
-        # CUDA requires this pointer be released with cuMemFree *before* the
-        # external-memory object is destroyed; destroying the object does not
-        # release the mapping. Held so close() can do that in the right order.
-        self._device_ptr = ptr.value
+            ptr = ctypes.c_ulonglong()
+            self._check(
+                self._cuda.cuExternalMemoryGetMappedBuffer(
+                    ctypes.byref(ptr), self._ext, ctypes.byref(buf)),
+                "cuExternalMemoryGetMappedBuffer")
 
-        memory = cp.cuda.UnownedMemory(
-            ptr.value, preprocessor.output_byte_size, owner=self)
-        self.array = cp.ndarray(
-            shape, dtype=cp.float32, memptr=cp.cuda.MemoryPointer(memory, 0))
-        self.device_ptr = ptr.value
+            # `UnownedMemory` because the allocation belongs to D3D12 and
+            # CuPy must never free it. `owner=self` keeps the chain alive: the
+            # array holds the memory, which holds this object, which holds both
+            # the CUDA import and the preprocessor. Hand back an array whose
+            # owner is None and the caller can drop everything keeping its
+            # storage mapped while still holding a normal-looking array.
+            #
+            # CUDA requires this pointer be released with cuMemFree *before*
+            # the external-memory object is destroyed; destroying the object
+            # does not release the mapping. Held so close() can order that.
+            self._device_ptr = ptr.value
+
+            memory = cp.cuda.UnownedMemory(
+                ptr.value, preprocessor.output_byte_size, owner=self)
+            self.array = cp.ndarray(
+                shape, dtype=cp.float32,
+                memptr=cp.cuda.MemoryPointer(memory, 0))
+            self.device_ptr = ptr.value
+        except BaseException:
+            self.close()
+            raise
 
     def _check(self, code, what):
         if code != 0:
@@ -167,6 +203,14 @@ class CudaTensor:
             raise RuntimeError(
                 f"{what} failed: {code} "
                 f"({name.value.decode() if name.value else '?'})")
+
+    def sync(self):
+        """Wait for queued CUDA work on this array to finish.
+
+        Required before letting `process()` overwrite the buffer, and before
+        `close()`. See the class docstring for why neither API does it for you.
+        """
+        cp.cuda.get_current_stream().synchronize()
 
     def close(self):
         """Release the CUDA mapping.
@@ -177,6 +221,11 @@ class CudaTensor:
         will catch for you.
         """
         # Order matters: free the mapping, then destroy the object that owns it.
+        # Never unmap while CUDA work is still queued against the pointer.
+        try:
+            self.sync()
+        except Exception:
+            pass
         if self._device_ptr is not None:
             self._cuda.cuMemFree(ctypes.c_ulonglong(self._device_ptr))
             self._device_ptr = None
@@ -261,6 +310,9 @@ def main() -> int:
             def gpu_then_touch():
                 # Include a CUDA kernel so the timing covers a consumer really
                 # reading the tensor, not just the dispatch that produced it.
+                # sync() first: the previous iteration's reduction may still be
+                # queued against the buffer this dispatch is about to overwrite.
+                view.sync()
                 pre.process(frame)
                 float(tensor.sum())
 

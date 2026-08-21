@@ -656,9 +656,15 @@ the package — copy it into your project rather than importing it:
 with CudaTensor(pre, (1, 3, 640, 640)) as view:
     tensor = view.array          # a cupy.ndarray in VRAM
     for _ in range(frames):
+        view.sync()              # let queued CUDA work finish first
         pre.process(frame)       # overwrites the buffer tensor points at
         model(tensor)
 ```
+
+`sync()` is not optional. `process()` waits on the D3D12 fence but knows
+nothing about CUDA work you have queued against the same memory, so a kernel
+still reading the tensor when the next dispatch lands sees a half-overwritten
+frame — with no error, just wrong numbers.
 
 Keep the `CudaTensor` for as long as you use the array: it owns the CUDA
 import and the preprocessor that owns the VRAM. On a machine with more than

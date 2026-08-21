@@ -61,11 +61,11 @@ def rebuilt_cameras():
         pytest.skip("no frame from the rebuilt camera")
 
     address_b = native._texture_address(frame_b)
-    if address_b == address_a:
-        frame_b.release()
-        camera_b.release()
-        pytest.skip("DXGI reused the surface address; cannot force a miss")
-
+    # Deliberately NOT skipped when the addresses match. An earlier version of
+    # this fixture did, which meant the one case the cache key has to survive --
+    # Windows recycling a released COM address for an unrelated texture -- was
+    # the case the test stepped around. The key is (address, source_id) now, so
+    # a recycled address still misses because the duplicator differs.
     yield pre, address_a, frame_b, address_b
 
     frame_b.release()
@@ -89,6 +89,38 @@ def test_cache_rekeys_on_a_different_texture(rebuilt_cameras):
     pre, _, frame_b, address_b = rebuilt_cameras
     pre.process(frame_b)
     assert pre._impl.cached_texture_address == address_b
+
+
+def test_frames_from_different_duplicators_have_different_source_ids():
+    """What makes the cache key sound when an address is recycled.
+
+    The address alone cannot distinguish a live surface from a released one
+    whose pointer has been handed to something else, so the key pairs it with
+    the duplicator that produced the frame.
+    """
+    camera_a = rapidshot.create(output_color="BGRA")
+    frame_a = first_frame(camera_a)
+    if frame_a is None:
+        camera_a.release()
+        pytest.skip("no frame captured — the screen must be changing")
+    id_a = frame_a.source_id
+    frame_a.release()
+    camera_a.release()
+    rapidshot.reset()
+
+    camera_b = rapidshot.create(output_color="BGRA")
+    frame_b = first_frame(camera_b)
+    if frame_b is None:
+        camera_b.release()
+        pytest.skip("no frame from the rebuilt camera")
+    try:
+        assert frame_b.source_id != id_a, (
+            "a rebuilt duplicator reused a source id, so a recycled texture "
+            "address would produce a false cache hit")
+    finally:
+        frame_b.release()
+        camera_b.release()
+        rapidshot.reset()
 
 
 def test_tensor_is_valid_after_a_miss(rebuilt_cameras):

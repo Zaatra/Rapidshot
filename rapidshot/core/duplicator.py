@@ -1,4 +1,5 @@
 import ctypes
+import itertools
 import logging
 import os
 import comtypes  # type: ignore[import-untyped]
@@ -72,6 +73,13 @@ DUPLICATE_OUTPUT1_FORMATS = (
 # Env var escape hatch: set RAPIDSHOT_DUPLICATE_OUTPUT=legacy to force the
 # pre-1.5 DuplicateOutput path if a driver misbehaves on DuplicateOutput1.
 _DUPLICATE_OUTPUT_ENV = "RAPIDSHOT_DUPLICATE_OUTPUT"
+
+# Process-unique id per Duplicator. Consumers that cache anything keyed on a
+# captured texture's address need this: COM addresses are recycled, so a
+# released surface and a later unrelated one can share a pointer. Pairing the
+# pointer with the duplicator that produced it makes the identity sound,
+# because a recycled address necessarily belongs to a different duplicator.
+_duplicator_ids = itertools.count(1)
 
 
 def _format_hresult(hresult) -> str:
@@ -185,6 +193,8 @@ class Duplicator:
     # True when the driver merged rects rather than reporting them individually,
     # so the regions are an over-estimate of what actually changed.
     rects_coalesced: bool = False
+    # See _duplicator_ids: identifies which duplicator a texture came from.
+    instance_id: int = field(default_factory=lambda: next(_duplicator_ids))
     _frame_acquired: bool = False
 
     def __post_init__(self, output: Output, device: Device) -> None:

@@ -280,19 +280,26 @@ class CupyProcessor:
             if self.color_mode is not None: # Not 'BGRA', so conversion is intended
                 converted_array = self.process_cvtcolor(current_array)
 
-                if converted_array.shape[0] == current_array.shape[0] and \
-                   converted_array.shape[1] == current_array.shape[1]:
-                    if converted_array.shape[2] != current_array.shape[2]: # Channel change
-                        current_array = converted_array
-                        is_still_pooled_buffer = False
-                    elif converted_array.data.ptr != current_array.data.ptr: # Different memory block
-                        if is_still_pooled_buffer:
-                            current_array[:] = converted_array
-                        # else current_array is already new, no need to copy to original output_buffer
-                else: # Height/width changed
-                    logger.warning("CuPy color conversion changed height/width, which is unexpected.")
-                    current_array = converted_array
-                    is_still_pooled_buffer = False
+                # Never copy the result back into the pooled staging buffer.
+                #
+                # Doing that for same-shape conversions (RGBA) made the frame
+                # alias pooled storage the pool had already recycled: holding
+                # six frames against a two-buffer pool yielded two distinct
+                # allocations, and frame one had been overwritten by frame six
+                # while the caller still held it. That is the frame-aliasing
+                # corruption ROADMAP section 5 records being fixed once already
+                # on the NumPy path, arriving here by another route -- and it
+                # stays invisible until a consumer holds a frame for longer
+                # than the pool depth.
+                #
+                # The converted array owns its storage, so returning it costs
+                # one allocation and cannot alias anything.
+                if converted_array.shape[:2] != current_array.shape[:2]:
+                    logger.warning(
+                        "CuPy color conversion changed height/width, which is "
+                        "unexpected.")
+                current_array = converted_array
+                is_still_pooled_buffer = False
             
             # Rotation
             if rotation_angle != 0:

@@ -582,8 +582,15 @@ impl GpuPreprocessor12 {
         })
     }
 
-    #[pyo3(signature = (texture_ptr, scale=1.0, bias=0.0, bgr=false))]
-    fn process(&self, texture_ptr: usize, scale: f32, bias: f32, bgr: bool) -> PyResult<()> {
+    #[pyo3(signature = (texture_ptr, source_id=0, scale=1.0, bias=0.0, bgr=false))]
+    fn process(
+        &self,
+        texture_ptr: usize,
+        source_id: u64,
+        scale: f32,
+        bias: f32,
+        bgr: bool,
+    ) -> PyResult<()> {
         let inner = self
             .inner
             .lock()
@@ -591,14 +598,21 @@ impl GpuPreprocessor12 {
         unsafe {
             with_texture(texture_ptr, |texture| {
                 inner
-                    .process(texture, scale, bias, if bgr { 1 } else { 0 })
+                    .process(texture, source_id, scale, bias, if bgr { 1 } else { 0 })
                     .map_err(|e| PyRuntimeError::new_err(format!("D3D12 dispatch failed: {e}")))
             })
         }
     }
 
-    /// Copy the tensor back to the CPU. Verification only — doing this in
-    /// production reintroduces the round-trip the whole path exists to avoid.
+    /// Copy the tensor back to the CPU as **raw float32 bytes**, not a list.
+    ///
+    /// `np.frombuffer(..., dtype=np.float32)` reinterprets them; the shape is
+    /// `(1, 3, H, W)`. Bytes rather than a `Vec<f32>` because PyO3 turns the
+    /// latter into one Python float per element — 1.2M for a 640×640 tensor,
+    /// which dominated the benchmark meant to price the readback.
+    ///
+    /// Verification only — doing this in production reintroduces the
+    /// round-trip the whole path exists to avoid.
     fn read_back<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         let inner = self
             .inner
@@ -629,11 +643,12 @@ impl GpuPreprocessor12 {
     /// sizing before anyone tries. **Read its median, not its minimum**: the
     /// wait is bimodal, clearing instantly whenever the GPU already finished,
     /// so its minimum reports ~0 and describes nothing a caller experiences.
-    #[pyo3(signature = (texture_ptr, iterations=200))]
+    #[pyo3(signature = (texture_ptr, source_id=0, iterations=200))]
     fn probe_dispatch_phases<'py>(
         &self,
         py: Python<'py>,
         texture_ptr: usize,
+        source_id: u64,
         iterations: u32,
     ) -> PyResult<Bound<'py, PyDict>> {
         let inner = self
@@ -643,7 +658,7 @@ impl GpuPreprocessor12 {
         let phases = unsafe {
             with_texture(texture_ptr, |texture| {
                 inner
-                    .probe_dispatch_phases(texture, iterations)
+                    .probe_dispatch_phases(texture, source_id, iterations)
                     .map_err(|e| PyRuntimeError::new_err(format!("probe failed: {e}")))
             })?
         };

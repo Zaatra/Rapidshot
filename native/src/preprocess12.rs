@@ -138,7 +138,7 @@ pub struct Preprocessor12 {
     /// pointer. Desktop Duplication reuses its surfaces, so this hits on nearly
     /// every frame — but it is a cache, not an assumption: a different pointer
     /// reopens rather than reusing a stale resource.
-    cached_texture: std::cell::Cell<usize>,
+    cached_texture: std::cell::Cell<(usize, u64)>,
     cached_shared: std::cell::RefCell<Option<ID3D12Resource>>,
     cached_src_size: std::cell::Cell<(u32, u32)>,
     pub out_width: u32,
@@ -378,7 +378,7 @@ impl Preprocessor12 {
             output,
             readback,
             shared_output_handle,
-            cached_texture: std::cell::Cell::new(0),
+            cached_texture: std::cell::Cell::new((0, 0)),
             cached_shared: std::cell::RefCell::new(None),
             cached_src_size: std::cell::Cell::new((0, 0)),
             out_width,
@@ -403,6 +403,7 @@ impl Preprocessor12 {
     pub fn process(
         &self,
         d3d11_texture: &ID3D11Texture2D,
+        source_id: u64,
         scale: f32,
         bias: f32,
         channel_order: u32,
@@ -413,12 +414,16 @@ impl Preprocessor12 {
         // the dispatch. Measured before hoisting: 185 us of fixed cost against
         // ~12 us of actual shader work at 640x640 (ROADMAP s10).
         //
-        // Keyed on the raw pointer rather than assumed stable. If DXGI ever
-        // hands back a different surface — device reset, mode change, a second
-        // camera — the key misses and the texture is reopened. Silently reusing
-        // a stale resource would produce a tensor from the wrong pixels, which
-        // is exactly the class of bug s11 says correctness checks exist for.
-        let key = d3d11_texture.as_raw() as usize;
+        // Keyed on the pointer *paired with the duplicator that produced it*,
+        // not assumed stable. The pointer alone is not an identity: COM
+        // addresses get recycled, so a released surface and a later unrelated
+        // one can share one, and the equality check would then skip reopening
+        // and build a tensor from a resource describing a surface nobody is
+        // capturing any more. A recycled address necessarily belongs to a
+        // different duplicator, which is what closes that. Silently reusing a
+        // stale resource is exactly the class of bug s11 says correctness
+        // checks exist for.
+        let key = (d3d11_texture.as_raw() as usize, source_id);
         if self.cached_texture.get() != key || self.cached_shared.borrow().is_none() {
             self.open_texture(d3d11_texture, key)?;
         }
@@ -499,9 +504,10 @@ impl Preprocessor12 {
     pub fn probe_dispatch_phases(
         &self,
         d3d11_texture: &ID3D11Texture2D,
+        source_id: u64,
         iterations: u32,
     ) -> windows::core::Result<[(f64, f64); 4]> {
-        let key = d3d11_texture.as_raw() as usize;
+        let key = (d3d11_texture.as_raw() as usize, source_id);
         if self.cached_texture.get() != key || self.cached_shared.borrow().is_none() {
             self.open_texture(d3d11_texture, key)?;
         }
@@ -605,7 +611,7 @@ impl Preprocessor12 {
     fn open_texture(
         &self,
         d3d11_texture: &ID3D11Texture2D,
-        key: usize,
+        key: (usize, u64),
     ) -> windows::core::Result<()> {
         // Textures are the one resource type D3D11 can share, which is why the
         // shader lives on D3D12 at all.
@@ -618,6 +624,24 @@ impl Preprocessor12 {
             let shared = shared.expect("OpenSharedHandle reported success");
 
             let desc = unsafe { shared.GetDesc() };
+
+            // The SRV below is declared BGRA8, and the shader reads it on that
+            // basis. Desktop Duplication can hand back R8G8B8A8, R10G10B10A2 or
+            // R16G16B16A16_FLOAT as well -- see DUPLICATE_OUTPUT1_FORMATS on the
+            // Python side -- and on an HDR or 10-bit desktop those bits would be
+            // reinterpreted rather than converted. The result is a plausible
+            // tensor built from the wrong numbers, which no test of shape, speed
+            // or stability would catch (s11). Refuse instead.
+            if desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM {
+                return Err(windows::core::Error::new(
+                    windows::Win32::Foundation::E_INVALIDARG,
+                    format!(
+                        "captured surface is DXGI format {}, but the GPU tensor                          path only handles B8G8R8A8_UNORM (87). This is an HDR                          or 10-bit desktop; use grab() and convert on the CPU,                          or capture an SDR output.",
+                        desc.Format.0
+                    ),
+                ));
+            }
+
             self.cached_src_size.set((desc.Width as u32, desc.Height));
 
             // The SRV describes this texture, so it is rebuilt with it. The UAV
@@ -653,7 +677,7 @@ impl Preprocessor12 {
         // next call reuse a resource that belongs to a different texture.
         if result.is_err() {
             *self.cached_shared.borrow_mut() = None;
-            self.cached_texture.set(0);
+            self.cached_texture.set((0, 0));
         }
         result
     }
@@ -683,7 +707,7 @@ impl Preprocessor12 {
     /// output that would look correct either way — a resource released
     /// underneath us keeps reading plausibly until something claims the memory.
     pub fn cached_texture_address(&self) -> usize {
-        self.cached_texture.get()
+        self.cached_texture.get().0
     }
 
     /// Copy the tensor to the CPU. Verification only.

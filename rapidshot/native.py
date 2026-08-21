@@ -322,7 +322,10 @@ class GpuPreprocessor12:
     def process(self, frame, scale: float = 1.0, bias: float = 0.0,
                 bgr: bool = False) -> None:
         """Convert one frame. The result stays on the DirectML device."""
-        self._impl.process(_texture_address(frame), scale, bias, bgr)
+        # The texture address alone is not an identity -- COM addresses get
+        # recycled -- so the frame's source_id goes with it. See Frame.source_id.
+        self._impl.process(_texture_address(frame), getattr(frame, "source_id", 0),
+                           scale, bias, bgr)
 
     def read_back(self):
         """Copy the tensor to the CPU as (1, 3, H, W). Verification only."""
