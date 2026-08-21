@@ -399,11 +399,15 @@ def bench_preprocess_pipeline(reps: int) -> List[Result]:
     #
     # Preallocating is the fair comparison: the GPU arm reuses its buffers, and
     # any real consumer in a capture loop would reuse this one.
-    index = np.ix_(ys, xs)
+    sample_ys, sample_xs = ys, xs
     nchw = np.empty((1, 3, OUT_H, OUT_W), np.float32)
 
     def cpu_pipeline():
-        sampled = src[index]                       # gather stays uint8
+        # Two sequential takes, not `src[np.ix_(ys, xs)]`. Byte-identical and
+        # 2.5x faster: two-dimensional advanced indexing measured 0.88 GB/s,
+        # ~1% of the memory ceiling, and was 73% of this row. See `_gather` in
+        # `rapidshot/preprocess.py`, which this mirrors.
+        sampled = src.take(sample_ys, axis=0).take(sample_xs, axis=1)
         np.divide(sampled[..., 2], 255.0, out=nchw[0, 0])   # R
         np.divide(sampled[..., 1], 255.0, out=nchw[0, 1])   # G
         np.divide(sampled[..., 0], 255.0, out=nchw[0, 2])   # B
@@ -557,6 +561,39 @@ def machine_info() -> dict:
         "numpy": np.__version__,
         "frame": f"{FRAME_W}x{FRAME_H}",
     }
+    # Provenance, not decoration: a pinned and an unpinned recording are not
+    # comparable on a hybrid CPU, and after the fact there is no way to tell
+    # them apart from the numbers alone.
+    try:
+        mask = performance_core_mask()
+        if mask is None:
+            info["cpu_topology"] = "uniform"
+        else:
+            k32 = ctypes.WinDLL("kernel32")
+            k32.GetCurrentProcess.restype = ctypes.c_void_p
+            # Declare these. Without argtypes ctypes coerces the process
+            # pseudo-handle to a C int and raises OverflowError, which the
+            # `except` below would then hide -- costing a recording whose
+            # provenance silently reads `None` instead of failing loudly.
+            k32.GetProcessAffinityMask.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_size_t),
+                ctypes.POINTER(ctypes.c_size_t),
+            ]
+            process_mask = ctypes.c_size_t()
+            system_mask = ctypes.c_size_t()
+            k32.GetProcessAffinityMask(
+                k32.GetCurrentProcess(),
+                ctypes.byref(process_mask), ctypes.byref(system_mask))
+            info["cpu_topology"] = "hybrid"
+            info["pinned_to_performance_cores"] = process_mask.value == mask
+            info["affinity_mask"] = hex(process_mask.value)
+    except Exception as e:
+        # Record the failure rather than dropping the keys. A recording with no
+        # affinity provenance is indistinguishable from one taken before this
+        # existed, and on a hybrid CPU that difference decides whether the
+        # numbers mean anything (§ 2).
+        info["cpu_topology"] = f"unknown ({type(e).__name__})"
     try:
         import rapidshot
         info["rapidshot"] = rapidshot.__version__
@@ -770,6 +807,86 @@ def print_comparison(current: List[Result], baseline_path: Path,
     return regressions
 
 
+def performance_core_mask() -> Optional[int]:
+    """Affinity mask covering only the fastest cores, or None if uniform.
+
+    On a hybrid CPU Windows will happily migrate a benchmark thread onto an
+    efficiency core, which reads as a 2-3x regression on compute-bound rows.
+    Measured on an i9-14900HX (8 P-cores, 16 E-cores): comparing the suite to
+    *itself* reported verdicts up to `SLOWER 2.57x` unpinned and none at all
+    pinned. The control benchmark does not rescue this -- it reported "machine
+    state comparable, 1.01x" in the same run, because the control happened to
+    be scheduled well and the others did not.
+
+    Windows reports an `EfficiencyClass` per logical processor, where higher
+    means faster. A uniform CPU has one class and needs no pinning.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        # Without an explicit restype the pseudo-handle (-1) is truncated to 32
+        # bits and the call fails with ERROR_INVALID_HANDLE.
+        k32.GetCurrentProcess.restype = ctypes.c_void_p
+        k32.GetSystemCpuSetInformation.argtypes = [
+            ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong),
+            ctypes.c_void_p, ctypes.c_ulong,
+        ]
+        me = k32.GetCurrentProcess()
+
+        needed = ctypes.c_ulong(0)
+        k32.GetSystemCpuSetInformation(None, 0, ctypes.byref(needed), me, 0)
+        if not needed.value:
+            return None
+        buf = (ctypes.c_ubyte * needed.value)()
+        if not k32.GetSystemCpuSetInformation(
+                buf, needed.value, ctypes.byref(needed), me, 0):
+            return None
+
+        # SYSTEM_CPU_SET_INFORMATION: Size@0, Type@4, then the CpuSet struct,
+        # of which LogicalProcessorIndex@14 and EfficiencyClass@18 matter here.
+        raw = bytes(buf)
+        by_class: Dict[int, int] = {}
+        offset = 0
+        while offset + 20 <= len(raw):
+            size = int.from_bytes(raw[offset:offset + 4], "little")
+            if size == 0:
+                break
+            if int.from_bytes(raw[offset + 4:offset + 8], "little") == 0:
+                logical = raw[offset + 14]
+                efficiency = raw[offset + 18]
+                by_class[efficiency] = by_class.get(efficiency, 0) | (1 << logical)
+            offset += size
+
+        if len(by_class) < 2:
+            return None
+        return by_class[max(by_class)]
+    except Exception:
+        # Pinning is an accuracy improvement, not a requirement. A CPU whose
+        # topology cannot be read still benchmarks, just more noisily.
+        return None
+
+
+def pin_to_performance_cores() -> None:
+    """Restrict this process to the fastest cores, and say so."""
+    mask = performance_core_mask()
+    if mask is None:
+        return
+    try:
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.GetCurrentProcess.restype = ctypes.c_void_p
+        k32.SetProcessAffinityMask.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+        if k32.SetProcessAffinityMask(k32.GetCurrentProcess(), mask):
+            print(f"  affinity   pinned to {bin(mask).count('1')} performance "
+                  f"cores (mask 0x{mask:X}) — hybrid CPU detected")
+        else:
+            print("  affinity   could not pin to performance cores; "
+                  "results will be noisier (see ROADMAP § 2)")
+    except Exception:
+        print("  affinity   could not pin to performance cores; "
+              "results will be noisier (see ROADMAP § 2)")
+
+
 def warn_if_machine_is_busy() -> None:
     """Loud warning if the machine is too loaded for trustworthy numbers."""
     try:
@@ -808,10 +925,19 @@ def main() -> int:
                     help="measure the noise floor by comparing the suite to "
                          "itself; any 'change' reported is pure measurement error")
     ap.add_argument("--live-seconds", type=float, default=3.0)
+    ap.add_argument("--no-pin", action="store_true",
+                    help="do not restrict the process to performance cores. "
+                         "On a hybrid P-core/E-core CPU this reintroduces "
+                         "2-3x false verdicts; see ROADMAP § 2.")
     args = ap.parse_args()
 
-    info = machine_info()
     print(f"Rapidshot performance suite")
+    # Pin *before* reading machine info: the recording's affinity provenance
+    # has to describe the run, and reading it first records the state the
+    # process started in rather than the one it benchmarked in.
+    if not args.no_pin:
+        pin_to_performance_cores()
+    info = machine_info()
     for k in ("timestamp", "platform", "gpu", "python", "numpy", "frame"):
         if k in info:
             print(f"  {k:<10} {info[k]}")

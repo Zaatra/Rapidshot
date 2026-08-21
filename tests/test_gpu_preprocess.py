@@ -38,7 +38,9 @@ def preprocess(pattern, out_w, out_h, scale=1.0, bias=0.0, bgr=False):
     tex = texture_from(pattern)
     pre = ext.GpuPreprocessor(tex.pointer, out_w, out_h)
     pre.process(tex.pointer, scale, bias, bgr)
-    flat = np.asarray(pre.read_back(), dtype=np.float32)
+    # read_back returns raw bytes, not a list of floats — a list cost one Python
+    # object per element and swamped the benchmark that priced it.
+    flat = np.frombuffer(pre.read_back(), dtype=np.float32)
     return flat.reshape(1, 3, out_h, out_w)
 
 
@@ -166,7 +168,7 @@ def test_reported_shape_matches_output():
     pre = ext.GpuPreprocessor(tex.pointer, 24, 12)
     assert tuple(pre.shape) == (1, 3, 12, 24)
     pre.process(tex.pointer, 1.0, 0.0, False)
-    assert np.asarray(pre.read_back()).size == 3 * 12 * 24
+    assert np.frombuffer(pre.read_back(), dtype=np.float32).size == 3 * 12 * 24
 
 
 def test_repeated_dispatch_is_deterministic():
@@ -174,10 +176,11 @@ def test_repeated_dispatch_is_deterministic():
     tex = texture_from(make_pattern(32, 32))
     pre = ext.GpuPreprocessor(tex.pointer, 16, 16)
     pre.process(tex.pointer, 1.0, 0.0, False)
-    first = np.asarray(pre.read_back())
+    first = np.frombuffer(pre.read_back(), dtype=np.float32)
     for _ in range(5):
         pre.process(tex.pointer, 1.0, 0.0, False)
-        assert np.array_equal(np.asarray(pre.read_back()), first)
+        assert np.array_equal(
+            np.frombuffer(pre.read_back(), dtype=np.float32), first)
 
 
 def test_output_buffer_has_a_gpu_address():
