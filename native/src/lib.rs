@@ -582,14 +582,18 @@ impl GpuPreprocessor12 {
         })
     }
 
-    #[pyo3(signature = (texture_ptr, source_id=0, scale=1.0, bias=0.0, bgr=false))]
+    // `source_id` is keyword-only and last: inserting it among the positional
+    // parameters silently repurposed existing callers' `scale` as the id, which
+    // broke `benchmarks/cross_adapter_ordering.py` with a TypeError. A new
+    // optional argument must not move the ones already in use.
+    #[pyo3(signature = (texture_ptr, scale=1.0, bias=0.0, bgr=false, *, source_id=0))]
     fn process(
         &self,
         texture_ptr: usize,
-        source_id: u64,
         scale: f32,
         bias: f32,
         bgr: bool,
+        source_id: u64,
     ) -> PyResult<()> {
         let inner = self
             .inner
@@ -643,13 +647,13 @@ impl GpuPreprocessor12 {
     /// sizing before anyone tries. **Read its median, not its minimum**: the
     /// wait is bimodal, clearing instantly whenever the GPU already finished,
     /// so its minimum reports ~0 and describes nothing a caller experiences.
-    #[pyo3(signature = (texture_ptr, source_id=0, iterations=200))]
+    #[pyo3(signature = (texture_ptr, iterations=200, *, source_id=0))]
     fn probe_dispatch_phases<'py>(
         &self,
         py: Python<'py>,
         texture_ptr: usize,
-        source_id: u64,
         iterations: u32,
+        source_id: u64,
     ) -> PyResult<Bound<'py, PyDict>> {
         let inner = self
             .inner

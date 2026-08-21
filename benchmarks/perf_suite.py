@@ -713,7 +713,26 @@ def print_comparison(current: List[Result], baseline_path: Path,
     # otherwise a pinned baseline silently gates verdicts against an unpinned
     # run and the metadata documents a hazard that nothing acts on.
     scheduling = _differing(("cpu_topology", "pinned_to_performance_cores"))
-    cross_machine = bool(hardware) or bool(scheduling)
+
+    # A baseline recorded before this provenance existed carries neither field,
+    # and `_differing` ignores a key unless both sides have it -- so on a hybrid
+    # CPU the pinned-now-versus-unpinned-then comparison this is meant to reject
+    # would sail straight through and gate verdicts. Absence is not agreement:
+    # if we are hybrid and the baseline cannot say how it was scheduled, it is
+    # not comparable.
+    # Only when the baseline is identifiably *this* machine. A recording that
+    # names no hardware at all says nothing about scheduling either, and
+    # refusing to gate against it would exempt every synthetic baseline rather
+    # than the real pre-provenance ones this is aimed at.
+    same_hardware = any(
+        base_machine.get(k) is not None and now_machine.get(k) is not None
+        and base_machine[k] == now_machine[k]
+        for k in ("processor", "platform", "gpu"))
+    unknown_scheduling = (same_hardware
+                          and now_machine.get("cpu_topology") == "hybrid"
+                          and base_machine.get("pinned_to_performance_cores")
+                          is None)
+    cross_machine = bool(hardware) or bool(scheduling) or unknown_scheduling
 
     if cross_machine or environment:
         print()
@@ -721,7 +740,15 @@ def print_comparison(current: List[Result], baseline_path: Path,
             print(f"  {key}: baseline {base_machine[key]!r} vs now "
                   f"{now_machine[key]!r}")
     if cross_machine:
-        reason = "CROSS-MACHINE" if hardware else "DIFFERENT CPU SCHEDULING"
+        if hardware:
+            reason = "CROSS-MACHINE"
+        elif unknown_scheduling:
+            reason = "UNKNOWN BASELINE SCHEDULING"
+            print("")
+            print("  the baseline predates CPU-scheduling provenance, and this")
+            print("  is a hybrid CPU — how it was pinned cannot be recovered")
+        else:
+            reason = "DIFFERENT CPU SCHEDULING"
         print("")
         print(f"{reason} COMPARISON: verdicts below are indicative only")
         print("and nothing here gates. Re-record a baseline on this machine,")

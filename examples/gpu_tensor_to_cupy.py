@@ -97,6 +97,9 @@ class CudaTensor:
     def __init__(self, preprocessor, shape, device=None):
         self._cuda = ctypes.WinDLL("nvcuda.dll")
         self._cuda.cuMemFree.argtypes = [ctypes.c_ulonglong]
+        # Set before anything can fail, so close() on a partial construction
+        # still knows which device to synchronise.
+        self._device = 0
         self._ext = ctypes.c_void_p()
         self._device_ptr = None
         # Hold the preprocessor. It owns the D3D12 resource this array points
@@ -129,6 +132,7 @@ class CudaTensor:
         # CuPy's primary context must exist before anything is imported into it.
         cp.cuda.Device(device).use()
         cp.zeros(1)
+        self._device = device
 
         desc = ExternalMemoryHandleDesc()
         desc.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE
@@ -209,8 +213,16 @@ class CudaTensor:
 
         Required before letting `process()` overwrite the buffer, and before
         `close()`. See the class docstring for why neither API does it for you.
+
+        Synchronises the **device**, not the current stream. A consumer that
+        launches on its own stream -- a PyTorch stream, or
+        `cp.cuda.Stream(non_blocking=True)` -- has usually left that stream's
+        context by the time this is called, so the current stream is the
+        default one and the stream actually reading the tensor would not be
+        waited on. That failure is silent: the next dispatch overwrites the
+        buffer mid-read and the model sees a blend of two frames.
         """
-        cp.cuda.get_current_stream().synchronize()
+        cp.cuda.Device(self._device).synchronize()
 
     def close(self):
         """Release the CUDA mapping.

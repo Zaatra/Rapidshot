@@ -19,6 +19,13 @@ import textwrap
 
 import pytest
 
+# comtypes raises "COM technology not available" on import off Windows, and the
+# dxgi import below reaches it during *collection* -- aborting the whole suite
+# rather than skipping this module. The other window-based modules guard before
+# their Windows imports; this one did not.
+if sys.platform != "win32":
+    pytest.skip("Windows-only", allow_module_level=True)
+
 from rapidshot._libs.dxgi import (
     DXGI_ERROR_ACCESS_DENIED,
     DXGI_ERROR_CANNOT_PROTECT_CONTENT,
