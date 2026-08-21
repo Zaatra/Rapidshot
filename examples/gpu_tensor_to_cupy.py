@@ -110,24 +110,25 @@ class CudaTensor:
         # it would look wrong afterwards.
         self._preprocessor = preprocessor
 
-        # The tensor is NOT cross-adapter: it can only be imported by the CUDA
-        # device that owns the D3D12 adapter which captured the frame. Assuming
-        # ordinal 0 is wrong on a machine with more than one CUDA GPU, and the
-        # symptom is an opaque cuImportExternalMemory failure -- so refuse the
-        # ambiguous case rather than guess it.
+        # The tensor is NOT cross-adapter: only the CUDA device owning the D3D12
+        # adapter that captured the frame can import it. Find that device by
+        # LUID rather than guessing an ordinal.
         #
-        # Matching properly means comparing the D3D12 adapter's LUID against
-        # cuDeviceGetLuid for each device. That needs the adapter LUID exposed
-        # from the extension, and hybrid hardware to test it on; see ROADMAP
-        # section 6.1.
+        # Counting devices is not enough, and the case it misses is the common
+        # one. On an Optimus laptop Desktop Duplication captures on the Intel
+        # iGPU while CUDA reports exactly one device — the discrete GPU. A count
+        # of 1 looks unambiguous, ordinal 0 gets selected, and the import fails
+        # with an opaque error because the resource belongs to an adapter CUDA
+        # cannot see at all.
         if device is None:
-            count = cp.cuda.runtime.getDeviceCount()
-            if count != 1:
+            device = self._device_for_adapter(preprocessor.adapter_luid)
+            if device is None:
                 raise RuntimeError(
-                    f"{count} CUDA devices are present, so which one owns the "
-                    f"captured adapter is ambiguous. Pass device=N explicitly "
-                    f"— the import fails opaquely if N is the wrong one.")
-            device = 0
+                    "no CUDA device owns the adapter this frame was captured "
+                    "on. On a hybrid laptop that is expected: capture runs on "
+                    "the integrated GPU and CUDA only sees the discrete one. "
+                    "The frame has to cross adapters first — see "
+                    "native.cross_adapter_transfer() and ROADMAP § 6.1.")
 
         # CuPy's primary context must exist before anything is imported into it.
         cp.cuda.Device(device).use()
@@ -199,6 +200,32 @@ class CudaTensor:
         except BaseException:
             self.close()
             raise
+
+    def _device_for_adapter(self, luid):
+        """Ordinal of the CUDA device on `luid`, or None if there isn't one.
+
+        `cuDeviceGetLuid` reports the same 8-byte adapter identity D3D12 does,
+        so this is an equality test rather than a heuristic — and a clean "no"
+        when the capturing adapter has no CUDA device at all.
+        """
+        cuda = self._cuda
+        cuda.cuInit(0)                       # idempotent; CuPy may not have run
+        count = ctypes.c_int()
+        if cuda.cuDeviceGetCount(ctypes.byref(count)) != 0:
+            return None
+
+        buffer = ctypes.create_string_buffer(8)
+        node_mask = ctypes.c_uint()
+        for ordinal in range(count.value):
+            handle = ctypes.c_int()
+            if cuda.cuDeviceGet(ctypes.byref(handle), ordinal) != 0:
+                continue
+            if cuda.cuDeviceGetLuid(buffer, ctypes.byref(node_mask),
+                                    handle) != 0:
+                continue
+            if buffer.raw[:8] == luid:
+                return ordinal
+        return None
 
     def _check(self, code, what):
         if code != 0:

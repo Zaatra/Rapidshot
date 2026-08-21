@@ -360,6 +360,20 @@ class GpuPreprocessor12:
         return int(self._impl.output_byte_size)
 
     @property
+    def adapter_luid(self) -> bytes:
+        """
+        LUID of the adapter holding the tensor, as 8 little-endian bytes.
+
+        The tensor is not cross-adapter, so only a consumer on *this* adapter
+        can import it. CUDA exposes the same identity via ``cuDeviceGetLuid``,
+        which is how a caller picks the right device — and how it finds out
+        there isn't one. That is the ordinary hybrid-laptop case: capture runs
+        on the iGPU, CUDA reports exactly one device, and it is the wrong one,
+        so counting devices cannot detect the mismatch.
+        """
+        return bytes(self._impl.adapter_luid)
+
+    @property
     def output_resource_address(self) -> int:
         """
         Address of the ``ID3D12Resource`` holding the tensor.

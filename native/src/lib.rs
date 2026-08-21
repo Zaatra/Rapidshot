@@ -721,6 +721,21 @@ impl GpuPreprocessor12 {
         Ok(inner.output_byte_size())
     }
 
+    /// LUID of the adapter holding the tensor, as 8 little-endian bytes.
+    ///
+    /// Compare against `cuDeviceGetLuid` to find the CUDA device that can
+    /// import this tensor — or to discover that none can, which is the normal
+    /// case on a hybrid laptop capturing on the iGPU. Counting CUDA devices
+    /// does not detect that: there is exactly one, and it is the wrong one.
+    #[getter]
+    fn adapter_luid<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("preprocessor lock poisoned"))?;
+        Ok(PyBytes::new(py, &inner.adapter_luid()))
+    }
+
     /// Address of the `ID3D12Resource` holding the tensor. This is what
     /// `OrtDmlApi::CreateGPUAllocationFromD3DResource` will take.
     #[getter]

@@ -732,9 +732,16 @@ def print_comparison(current: List[Result], baseline_path: Path,
     # neither can whether pinning mattered. The asymmetry is deliberate -- a
     # needless "indicative only" label costs nothing, a false regression costs
     # somebody an afternoon.
+    #
+    # `startswith`, not equality: `machine_info()` records the *reason* on a
+    # failure, as `unknown (OSError)`. An exact match against "unknown" never
+    # fired for the very case the branch was added to catch, which is what
+    # happens when the producer and the consumer of a string are written in
+    # separate passes and never compared.
+    topology = now_machine.get("cpu_topology") or ""
     unknown_scheduling = (same_hardware
-                          and now_machine.get("cpu_topology") in ("hybrid",
-                                                                 "unknown")
+                          and (topology == "hybrid"
+                               or topology.startswith("unknown"))
                           and base_machine.get("pinned_to_performance_cores")
                           is None)
     cross_machine = bool(hardware) or bool(scheduling) or unknown_scheduling

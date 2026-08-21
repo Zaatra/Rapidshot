@@ -700,6 +700,23 @@ impl Preprocessor12 {
         (self.out_width * self.out_height * 3 * 4) as u64
     }
 
+    /// LUID of the adapter this preprocessor runs on, as 8 little-endian bytes.
+    ///
+    /// The tensor is not cross-adapter: only the consumer owning *this* adapter
+    /// can import it. CUDA exposes the matching identity through
+    /// `cuDeviceGetLuid`, so comparing the two is how a caller finds the right
+    /// device — and how it discovers there isn't one, which is the ordinary
+    /// case on a hybrid laptop where capture runs on the iGPU and the only CUDA
+    /// device is the discrete GPU. Counting CUDA devices cannot detect that:
+    /// there is exactly one, and it is the wrong one.
+    pub fn adapter_luid(&self) -> [u8; 8] {
+        let luid = unsafe { self.device.GetAdapterLuid() };
+        let mut out = [0u8; 8];
+        out[..4].copy_from_slice(&luid.LowPart.to_le_bytes());
+        out[4..].copy_from_slice(&luid.HighPart.to_le_bytes());
+        out
+    }
+
     /// Address of the capture texture currently cached, or 0 if none is.
     ///
     /// Diagnostic. Exists so a test can assert the cache genuinely re-keyed
