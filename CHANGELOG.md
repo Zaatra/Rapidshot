@@ -12,6 +12,71 @@ each release can be traced back to the plan it implements.
 
 Nothing yet.
 
+## [2.3.0] - 2026-08-06
+
+**First release verified on NVIDIA hardware.** Development had been on an Intel
+iGPU with no CUDA-capable GPU, so every CuPy and CUDA path shipped untested. Run
+on an RTX 4060, the suite went from 273 passed / 9 skipped to **323 passed / 1 skipped**, and two shipped bugs turned up — one of them silently returning
+wrong pixels.
+
+**Capture can now feed CUDA directly.** The GPU tensor exposes a shared NT
+handle, so CuPy or PyTorch can map it with `cudaImportExternalMemory` and read
+it in place: `grab_frame()` → `cupy.ndarray` with no CPU round-trip.
+`examples/gpu_tensor_to_cupy.py` is a complete working consumer.
+
+### Fixed
+
+- **`create(nvidia_gpu=True)` returned wrong pixels for every colour mode
+  except BGRA.** Conversion went through OpenCV, which is not a dependency; the
+  resulting failure was logged and the *unconverted* 4-channel BGRA buffer
+  returned as success. Callers asking for RGB got the wrong shape and the wrong
+  channel order with no exception. Conversion is now pure CuPy, runs on the
+  device, and is byte-identical to the NumPy path.
+- **Every `E_ACCESSDENIED` from `DuplicateOutput` was reported as
+  protected content.** A locked workstation, an open UAC prompt, a non-input
+  desktop and a Session 0 service all advised closing a protected player window
+  that did not exist. The real cause is now identified and named.
+- `CupyProcessor.process()` no longer swallows failures and returns a
+  possibly-invalid buffer; it raises. Unsupported colour modes are rejected at
+  construction rather than on the first frame that arrives.
+
+### Added
+
+- `GpuPreprocessor12.shared_output_handle` and `.output_byte_size` for
+  importing the tensor into CUDA or another D3D12 device.
+- `GpuPreprocessor12.probe_dispatch_phases()` — per-phase dispatch timing.
+- `examples/gpu_tensor_to_cupy.py`, verified byte-identical to a readback.
+- `rapidshot/util/desktop.py` — reports which desktop is receiving input.
+- 42 tests, including five paths previously reachable only by fault injection:
+  protected content, the `DuplicateOutput` refusal, real exclusive fullscreen,
+  the access-loss rebuild, and the preprocessor's cache-miss branch.
+- `benchmarks/baseline-rtx4060.json`.
+
+### Changed
+
+- **`to_nchw()` is 1.6–1.8× faster at 640×640, bit-identical.** Its gather ran
+  at ~1% of memory bandwidth and was 73% of the call; two sequential `take`
+  calls replace two-dimensional advanced indexing.
+- **D3D12 dispatch is 2.4× faster.** Opening the captured texture is cached per
+  texture instead of repeated per frame, and the UAV moved to construction.
+  Keyed on the texture pointer, so a changed surface reopens.
+- **`read_back()` is 6.3× faster.** It returns bytes rather than a `Vec<f32>`
+  that PyO3 turned into 1.2 million Python floats per call.
+- The GPU tensor's output heap is `D3D12_HEAP_FLAG_SHARED`.
+- `benchmarks/perf_suite.py` pins itself to the performance cores on a hybrid
+  CPU and records the fact. Unpinned, it reported false regressions up to 2.57×
+  against unchanged code.
+
+### Notes
+
+- `pip install cupy-cuda13x[ctk]` installs no CUDA headers against
+  `cuda-toolkit` 13.3.x. Use `pip install "cuda-toolkit[cudart,nvrtc]==13.2.*"`.
+- Cross-adapter transfer with an NVIDIA source: 0.68 ms per 1080p frame. NVIDIA
+  does **not** support cross-adapter row-major textures, confirming the buffer
+  path was required rather than merely safe.
+- Hybrid (Optimus) topology remains unverified: the test machine's MUX is set
+  to discrete-only, so it reports as a single-adapter system.
+
 ## [2.2.0] - 2026-08-06
 
 **Capture that gets out of your way.** No library beats the compositor -- every
