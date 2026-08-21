@@ -332,7 +332,12 @@ def main() -> int:
                 return 1
             print("verified: CuPy view is byte-identical to read_back()")
 
-            # --- what a capture loop actually costs -------------------------
+            # --- what the tensor path costs, per frame -----------------------
+            #
+            # Deliberately one frame reprocessed, not a capture loop: the
+            # figures below are the dispatch and the consumer read, isolated
+            # from however long DXGI happens to make you wait for new content.
+            # A real loop reacquires each pass -- see the README snippet.
             def timed(fn, reps=100):
                 fn()
                 xs = []

@@ -654,12 +654,21 @@ the package — copy it into your project rather than importing it:
 
 ```python
 with CudaTensor(pre, (1, 3, 640, 640)) as view:
-    tensor = view.array          # a cupy.ndarray in VRAM
-    for _ in range(frames):
-        view.sync()              # let queued CUDA work finish first
-        pre.process(frame)       # overwrites the buffer tensor points at
+    tensor = view.array                          # a cupy.ndarray in VRAM
+    while capturing:
+        with screencapture.grab_frame() as frame:   # a *new* frame each pass
+            if frame is None:
+                continue                         # nothing changed on screen
+            view.sync()                          # queued CUDA work must finish
+            pre.process(frame)                   # overwrites tensor's buffer
         model(tensor)
 ```
+
+Note the fresh `grab_frame()` inside the loop. The preprocessor and the CUDA
+import are built once and reused; the *frame* is not — a released frame raises
+`FrameReleasedError`, and reusing a live one just re-processes the same image.
+Releasing it before `model()` also matters: DXGI cannot acquire the next frame
+while a reference to the previous surface is outstanding.
 
 `sync()` is not optional. `process()` waits on the D3D12 fence but knows
 nothing about CUDA work you have queued against the same memory, so a kernel
