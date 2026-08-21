@@ -29,6 +29,13 @@ import pytest
 
 import rapidshot
 
+# ctypes.windll does not exist off Windows, and these modules reach for it
+# at import time -- without this the suite errors during collection rather
+# than skipping. CI only runs Windows, so this is about not breaking a
+# contributor's machine.
+if not hasattr(ctypes, "windll"):
+    pytest.skip("Windows-only", allow_module_level=True)
+
 tk = pytest.importorskip("tkinter", reason="needs tkinter for a window")
 
 D3D_DRIVER_TYPE_HARDWARE = 1
@@ -40,6 +47,7 @@ DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH = 2
 
 # IDXGISwapChain vtable: IUnknown(0-2), IDXGIObject(3-6),
 # IDXGIDeviceSubObject(7), Present(8), GetBuffer(9), SetFullscreenState(10).
+VT_RELEASE = 2
 VT_PRESENT = 8
 VT_SET_FULLSCREEN = 10
 
@@ -174,13 +182,31 @@ def exclusive_fullscreen(tk_root):
             root.update()
             time.sleep(0.02)
 
+    def leave():
+        """Leave fullscreen on demand, so a test can watch that half too.
+
+        Leaving is a second access-loss event, and relying on teardown to do
+        it meant no capture thread was running when it happened -- the release
+        notes claimed both transitions were covered when only entry was.
+        """
+        if not entered["value"]:
+            return
+        vcall(swapchain, VT_SET_FULLSCREEN, ctypes.c_long,
+              [ctypes.c_int, ctypes.c_void_p], 0, None)
+        entered["value"] = False
+        time.sleep(0.8)
+
+    enter.leave = leave
+
     try:
         yield enter
     finally:
-        if entered["value"]:
-            vcall(swapchain, VT_SET_FULLSCREEN, ctypes.c_long,
-                  [ctypes.c_int, ctypes.c_void_p], 0, None)
-            time.sleep(0.8)
+        leave()
+        # Raw ctypes pointers: nothing releases these for us, and leaking a
+        # swap chain per test keeps the window and its surfaces alive.
+        for interface in (swapchain, context, device):
+            if interface:
+                vcall(interface, VT_RELEASE, ctypes.c_ulong, [])
         try:
             root.destroy()
         except tk.TclError:
@@ -197,13 +223,21 @@ def test_capture_survives_exclusive_fullscreen(exclusive_fullscreen):
 
         exclusive_fullscreen()
         during = loop.frames
+        assert during > before, (
+            "capture stopped producing frames in exclusive fullscreen")
 
-        time.sleep(0.5)
+        # Leaving is a *second* access-loss event, and the more likely half of
+        # a real session -- a game being closed. Letting teardown do it meant
+        # no capture thread was running when it happened, so only entry was
+        # ever covered.
+        exclusive_fullscreen.leave()
+        time.sleep(1.0)
+        after = loop.frames
 
-    assert during > before, (
-        "capture stopped producing frames in exclusive fullscreen")
+    assert after > during, (
+        "capture did not recover after leaving exclusive fullscreen")
     assert loop.errors == [], (
-        f"errors reached the caller across the transition: {loop.errors[:3]}")
+        f"errors reached the caller across the transitions: {loop.errors[:3]}")
 
 
 def test_access_loss_recovery_actually_runs(exclusive_fullscreen, caplog):

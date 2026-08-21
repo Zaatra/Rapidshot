@@ -1,6 +1,6 @@
 {
   "machine": {
-    "timestamp": "2026-08-06T19:30:24.638290+00:00",
+    "timestamp": "2026-08-21T15:21:18.815913+00:00",
     "python": "3.13.15",
     "platform": "Windows-11-10.0.26200-SP0",
     "processor": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
@@ -9,7 +9,7 @@
     "cpu_topology": "hybrid",
     "pinned_to_performance_cores": true,
     "affinity_mask": "0xffff",
-    "rapidshot": "2.2.0",
+    "rapidshot": "2.3.0",
     "gpu": "NVIDIA GeForce RTX 4060 Laptop GPU"
   },
   "results": [
@@ -17,161 +17,161 @@
       "name": "convert.BGRA",
       "kind": "synthetic",
       "samples": 75,
-      "median_ms": 0.3229,
-      "min_ms": 0.2352,
-      "p95_ms": 0.6638,
-      "stdev_ms": 0.191214,
-      "gb_per_s": 25.687
+      "median_ms": 0.3623,
+      "min_ms": 0.2411,
+      "p95_ms": 0.5046,
+      "stdev_ms": 0.076523,
+      "gb_per_s": 22.894
     },
     {
       "name": "convert.RGBA",
       "kind": "synthetic",
       "samples": 75,
-      "median_ms": 0.3193,
-      "min_ms": 0.2603,
-      "p95_ms": 0.669,
-      "stdev_ms": 0.118893,
-      "gb_per_s": 25.977
+      "median_ms": 0.3122,
+      "min_ms": 0.2849,
+      "p95_ms": 0.5018,
+      "stdev_ms": 0.090821,
+      "gb_per_s": 26.568
     },
     {
       "name": "convert.RGB",
       "kind": "synthetic",
       "samples": 75,
-      "median_ms": 0.2994,
-      "min_ms": 0.2347,
-      "p95_ms": 0.8856,
-      "stdev_ms": 0.185374,
-      "gb_per_s": 27.703
+      "median_ms": 0.2807,
+      "min_ms": 0.2499,
+      "p95_ms": 0.457,
+      "stdev_ms": 0.09375,
+      "gb_per_s": 29.549
     },
     {
       "name": "convert.BGR",
       "kind": "synthetic",
       "samples": 75,
-      "median_ms": 0.2764,
-      "min_ms": 0.2436,
-      "p95_ms": 0.6504,
-      "stdev_ms": 0.146889,
-      "gb_per_s": 30.009
+      "median_ms": 0.282,
+      "min_ms": 0.2499,
+      "p95_ms": 0.4756,
+      "stdev_ms": 0.119515,
+      "gb_per_s": 29.413
     },
     {
       "name": "convert.GRAY",
       "kind": "synthetic",
       "samples": 75,
-      "median_ms": 0.3466,
-      "min_ms": 0.2631,
-      "p95_ms": 0.641,
-      "stdev_ms": 0.240434,
-      "gb_per_s": 23.931
+      "median_ms": 0.3418,
+      "min_ms": 0.2746,
+      "p95_ms": 0.7014,
+      "stdev_ms": 0.139493,
+      "gb_per_s": 24.267
     },
     {
       "name": "shot.BGRA",
       "kind": "synthetic",
       "samples": 75,
-      "median_ms": 0.3429,
-      "min_ms": 0.2375,
-      "p95_ms": 0.5352,
-      "stdev_ms": 0.181262,
-      "gb_per_s": 24.189
+      "median_ms": 0.3485,
+      "min_ms": 0.2619,
+      "p95_ms": 0.6986,
+      "stdev_ms": 0.171696,
+      "gb_per_s": 23.8
     },
     {
       "name": "shot.RGBA",
       "kind": "synthetic",
       "samples": 75,
-      "median_ms": 0.3054,
-      "min_ms": 0.2648,
-      "p95_ms": 0.5833,
-      "stdev_ms": 0.094021,
-      "gb_per_s": 27.159
+      "median_ms": 0.3492,
+      "min_ms": 0.3011,
+      "p95_ms": 0.5717,
+      "stdev_ms": 0.126939,
+      "gb_per_s": 23.753
     },
     {
       "name": "shot.RGB",
       "kind": "synthetic",
       "samples": 75,
-      "median_ms": 0.2669,
-      "min_ms": 0.2262,
-      "p95_ms": 0.4122,
-      "stdev_ms": 0.103482,
-      "gb_per_s": 31.077
+      "median_ms": 0.2924,
+      "min_ms": 0.2506,
+      "p95_ms": 0.6529,
+      "stdev_ms": 0.154878,
+      "gb_per_s": 28.367
     },
     {
       "name": "shot.BGR",
       "kind": "synthetic",
       "samples": 75,
-      "median_ms": 0.279,
-      "min_ms": 0.2304,
-      "p95_ms": 0.4063,
-      "stdev_ms": 0.108692,
-      "gb_per_s": 29.729
+      "median_ms": 0.2932,
+      "min_ms": 0.2465,
+      "p95_ms": 0.8101,
+      "stdev_ms": 0.169612,
+      "gb_per_s": 28.289
     },
     {
       "name": "shot.GRAY",
       "kind": "synthetic",
       "samples": 75,
-      "median_ms": 0.31,
-      "min_ms": 0.2631,
-      "p95_ms": 0.5246,
-      "stdev_ms": 0.122154,
-      "gb_per_s": 26.756
+      "median_ms": 0.4194,
+      "min_ms": 0.291,
+      "p95_ms": 0.8882,
+      "stdev_ms": 0.247879,
+      "gb_per_s": 19.777
     },
     {
       "name": "process.BGRA",
       "kind": "synthetic",
       "samples": 75,
-      "median_ms": 0.3457,
-      "min_ms": 0.2437,
-      "p95_ms": 0.5604,
-      "stdev_ms": 0.104987,
-      "gb_per_s": 23.993
+      "median_ms": 0.3625,
+      "min_ms": 0.2485,
+      "p95_ms": 0.5346,
+      "stdev_ms": 0.083995,
+      "gb_per_s": 22.881
     },
     {
       "name": "process.RGB",
       "kind": "synthetic",
       "samples": 75,
-      "median_ms": 2.3735,
-      "min_ms": 1.9243,
-      "p95_ms": 3.1537,
-      "stdev_ms": 0.384351,
-      "gb_per_s": 3.495
+      "median_ms": 2.3641,
+      "min_ms": 1.9628,
+      "p95_ms": 3.0235,
+      "stdev_ms": 0.313691,
+      "gb_per_s": 3.508
     },
     {
       "name": "pipeline.cpu_to_nchw",
       "kind": "synthetic",
       "samples": 36,
-      "median_ms": 3.54875,
-      "min_ms": 3.0676,
-      "p95_ms": 4.5672,
-      "stdev_ms": 0.429515,
+      "median_ms": 3.7047,
+      "min_ms": 3.1955,
+      "p95_ms": 4.4549,
+      "stdev_ms": 0.40453,
       "note": "resize + normalise + transpose to NCHW on the CPU; reimplemented 2026-08-05, 1.78x faster and bit-identical -- not comparable with recordings before that date"
     },
     {
       "name": "pipeline.gpu_dispatch",
       "kind": "synthetic",
       "samples": 75,
-      "median_ms": 0.0017,
+      "median_ms": 0.0019,
       "min_ms": 0.0014,
-      "p95_ms": 0.0169,
-      "stdev_ms": 0.008291,
+      "p95_ms": 0.0232,
+      "stdev_ms": 0.007518,
       "note": "one compute dispatch; result stays on the GPU"
     },
     {
       "name": "pipeline.gpu_plus_readback",
       "kind": "synthetic",
       "samples": 36,
-      "median_ms": 2.8877,
-      "min_ms": 2.1988,
-      "p95_ms": 3.7679,
-      "stdev_ms": 0.467382,
+      "median_ms": 2.7048,
+      "min_ms": 2.3447,
+      "p95_ms": 3.3444,
+      "stdev_ms": 0.312082,
       "note": "dispatch + full GPU->CPU readback (the round-trip we avoid)"
     },
     {
       "name": "control.memcopy",
       "kind": "control",
       "samples": 75,
-      "median_ms": 0.3286,
-      "min_ms": 0.2435,
-      "p95_ms": 0.4604,
-      "stdev_ms": 0.072152,
-      "gb_per_s": 25.242,
+      "median_ms": 0.3538,
+      "min_ms": 0.2607,
+      "p95_ms": 0.5017,
+      "stdev_ms": 0.082503,
+      "gb_per_s": 23.444,
       "note": "CONTROL: a plain memory copy whose implementation never changes. Its movement between runs measures machine drift (background load, thermal state), which is used to normalise the other comparisons."
     },
     {
@@ -181,28 +181,28 @@
       "median_ms": 0.0009,
       "min_ms": 0.0007,
       "p95_ms": 0.001,
-      "stdev_ms": 0.00258,
+      "stdev_ms": 0.00265,
       "note": "trivial COM method; approximates pure binding overhead"
     },
     {
       "name": "live.grab_with_frame",
       "kind": "live",
-      "samples": 493,
-      "median_ms": 5.7538,
-      "min_ms": 4.0168,
-      "p95_ms": 9.095,
-      "stdev_ms": 1.434708,
-      "note": "493 frame-producing calls (0 returned no new content) in 3s. DDA only reports changed content, so this depends on screen activity \u2014 compare across runs with caution."
+      "samples": 487,
+      "median_ms": 6.0534,
+      "min_ms": 3.9003,
+      "p95_ms": 7.2415,
+      "stdev_ms": 1.480752,
+      "note": "487 frame-producing calls (0 returned no new content) in 3s. DDA only reports changed content, so this depends on screen activity \u2014 compare across runs with caution."
     },
     {
       "name": "live.grab_frame_gpu",
       "kind": "live",
-      "samples": 692,
-      "median_ms": 5.67265,
-      "min_ms": 0.1577,
-      "p95_ms": 6.9765,
-      "stdev_ms": 2.567049,
-      "note": "692 frame-producing calls (0 empty) in 3s; GPU-resident, no CPU round-trip"
+      "samples": 819,
+      "median_ms": 4.8373,
+      "min_ms": 0.5435,
+      "p95_ms": 6.4135,
+      "stdev_ms": 2.299498,
+      "note": "819 frame-producing calls (0 empty) in 3s; GPU-resident, no CPU round-trip"
     }
   ]
 }

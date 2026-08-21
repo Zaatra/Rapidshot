@@ -693,23 +693,40 @@ def print_comparison(current: List[Result], baseline_path: Path,
     now_machine = machine_info()
 
     def _differing(keys):
+        # `is not None`, not truthiness: `pinned_to_performance_cores` is a
+        # bool, and a falsy-but-present value is a difference worth reporting,
+        # not a missing field. Testing truthiness here made an unpinned run
+        # compare cleanly against a pinned baseline -- exactly the case the
+        # field was added to catch.
         return [k for k in keys
-                if base_machine.get(k) and now_machine.get(k)
+                if base_machine.get(k) is not None
+                and now_machine.get(k) is not None
                 and base_machine[k] != now_machine[k]]
 
     hardware = _differing(("processor", "platform", "gpu"))
     environment = _differing(("python", "numpy"))
-    cross_machine = bool(hardware)
+
+    # A pinned and an unpinned recording are not comparable even on identical
+    # hardware: unpinned, this suite reported false regressions up to 2.57x
+    # against its own output (ROADMAP.md section 2). The provenance is recorded
+    # precisely so that difference is visible, so it has to be *read* here --
+    # otherwise a pinned baseline silently gates verdicts against an unpinned
+    # run and the metadata documents a hazard that nothing acts on.
+    scheduling = _differing(("cpu_topology", "pinned_to_performance_cores"))
+    cross_machine = bool(hardware) or bool(scheduling)
 
     if cross_machine or environment:
         print()
-        for key in hardware + environment:
+        for key in hardware + scheduling + environment:
             print(f"  {key}: baseline {base_machine[key]!r} vs now "
                   f"{now_machine[key]!r}")
     if cross_machine:
-        print("\nCROSS-MACHINE COMPARISON: verdicts below are indicative only and")
-        print("nothing here gates. Re-record a baseline on this machine to compare")
-        print("code against code rather than hardware against hardware.")
+        reason = "CROSS-MACHINE" if hardware else "DIFFERENT CPU SCHEDULING"
+        print("")
+        print(f"{reason} COMPARISON: verdicts below are indicative only")
+        print("and nothing here gates. Re-record a baseline on this machine,")
+        print("pinned the same way, to compare code against code rather than")
+        print("conditions against conditions.")
 
     # Calibrate against the control benchmark: its code is identical in both
     # runs, so any movement is the machine, not us.

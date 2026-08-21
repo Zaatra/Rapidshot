@@ -263,8 +263,11 @@ writer.release()
 screencapture = rapidshot.create(output_color="RGB", nvidia_gpu=True)
 
 frame = screencapture.grab()        # cupy.ndarray, stays in VRAM
-frame.release()
 ```
+
+> **Note:** unlike the CPU path, `nvidia_gpu=True` returns a bare
+> `cupy.ndarray` rather than a pooled buffer, so there is no `.release()` to
+> call — CuPy's allocator owns it. `pool_size_frames` does not apply.
 
 Colour conversion runs in CuPy on the GPU and is **byte-identical** to the CPU
 path, so turning `nvidia_gpu` on changes no pixel. OpenCV is not required.
@@ -645,6 +648,9 @@ with `cudaImportExternalMemory` — so the frame reaches a CUDA consumer without
 ever touching the CPU. **`examples/gpu_tensor_to_cupy.py` is a complete, working
 version** of the ~60 lines of `ctypes` this takes; it verifies the resulting
 `cupy.ndarray` is byte-identical to a readback of the same dispatch.
+
+`CudaTensor` is defined in `examples/gpu_tensor_to_cupy.py`, not exported by
+the package — copy it into your project rather than importing it:
 
 ```python
 with CudaTensor(pre, (1, 3, 640, 640)) as view:

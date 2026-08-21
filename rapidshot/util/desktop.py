@@ -129,7 +129,14 @@ def describe_desktop_access() -> DesktopState:
                 f"thread moved with SetThreadDesktop cannot capture the user's "
                 f"screen directly.")
 
-        return DesktopState(thread_name, input_name, True, None)
+        # Only a confirmed match. If either name could not be read the
+        # situation is unknown, and reporting unknown as "yes, this is the
+        # input desktop" is the failure mode this whole module exists to
+        # avoid -- a diagnostic that guesses is worse than one that abstains.
+        is_input = (thread_name == input_name
+                    if thread_name is not None and input_name is not None
+                    else None)
+        return DesktopState(thread_name, input_name, is_input, None)
     except Exception:  # pragma: no cover - diagnostic must never raise
         return DesktopState(None, None, None, None)
     finally:

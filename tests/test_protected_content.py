@@ -23,6 +23,13 @@ import pytest
 
 import rapidshot
 
+# ctypes.windll does not exist off Windows, and these modules reach for it
+# at import time -- without this the suite errors during collection rather
+# than skipping. CI only runs Windows, so this is about not breaking a
+# contributor's machine.
+if not hasattr(ctypes, "windll"):
+    pytest.skip("Windows-only", allow_module_level=True)
+
 tk = pytest.importorskip("tkinter", reason="needs tkinter to make a window")
 
 WDA_NONE = 0x00000000
