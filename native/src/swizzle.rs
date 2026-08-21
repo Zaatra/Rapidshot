@@ -63,7 +63,12 @@ impl Mode {
 
 #[inline]
 fn row_rgb(src: &[u8], dst: &mut [u8]) {
-    for (px, out) in src.chunks_exact(4).zip(dst.chunks_exact_mut(3)) {
+    for (px, out) in src
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(dst.as_chunks_mut::<3>().0.iter_mut())
+    {
         out[0] = px[2];
         out[1] = px[1];
         out[2] = px[0];
@@ -72,7 +77,12 @@ fn row_rgb(src: &[u8], dst: &mut [u8]) {
 
 #[inline]
 fn row_bgr(src: &[u8], dst: &mut [u8]) {
-    for (px, out) in src.chunks_exact(4).zip(dst.chunks_exact_mut(3)) {
+    for (px, out) in src
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(dst.as_chunks_mut::<3>().0.iter_mut())
+    {
         out[0] = px[0];
         out[1] = px[1];
         out[2] = px[2];
@@ -81,7 +91,12 @@ fn row_bgr(src: &[u8], dst: &mut [u8]) {
 
 #[inline]
 fn row_rgba(src: &[u8], dst: &mut [u8]) {
-    for (px, out) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
+    for (px, out) in src
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(dst.as_chunks_mut::<4>().0.iter_mut())
+    {
         out[0] = px[2];
         out[1] = px[1];
         out[2] = px[0];

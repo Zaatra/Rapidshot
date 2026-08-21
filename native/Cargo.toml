@@ -2,6 +2,10 @@
 name = "rapidshot-native"
 version = "0.1.0"
 edition = "2021"
+# `as_chunks` (used by the scalar kernels in luma.rs / swizzle.rs)
+# stabilised in 1.88. Clippy since 1.98 rejects the `chunks_exact`
+# form it replaced under -D warnings, which is what set this floor.
+rust-version = "1.88"
 description = "Native GPU interop shim for Rapidshot (Stage 6)"
 license = "MIT"
 

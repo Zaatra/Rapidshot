@@ -647,8 +647,17 @@ version** of the ~60 lines of `ctypes` this takes; it verifies the resulting
 `cupy.ndarray` is byte-identical to a readback of the same dispatch.
 
 ```python
-tensor = CudaTensor(pre, (1, 3, 640, 640)).array   # a cupy.ndarray in VRAM
+with CudaTensor(pre, (1, 3, 640, 640)) as view:
+    tensor = view.array          # a cupy.ndarray in VRAM
+    for _ in range(frames):
+        pre.process(frame)       # overwrites the buffer tensor points at
+        model(tensor)
 ```
+
+Keep the `CudaTensor` for as long as you use the array: it owns the CUDA
+import and the preprocessor that owns the VRAM. On a machine with more than
+one CUDA device, pass `device=N` — the tensor can only be imported by the
+device that owns the adapter which captured the frame.
 
 The import is paid once. After that `pre.process(frame)` overwrites the same
 buffer the CuPy array points at, so a capture loop pays nothing per frame to

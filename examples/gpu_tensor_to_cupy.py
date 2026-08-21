@@ -80,9 +80,11 @@ class CudaTensor:
     the view — `process()` overwrites the same buffer the CuPy array points at.
     """
 
-    def __init__(self, preprocessor, shape):
+    def __init__(self, preprocessor, shape, device=None):
         self._cuda = ctypes.WinDLL("nvcuda.dll")
+        self._cuda.cuMemFree.argtypes = [ctypes.c_ulonglong]
         self._ext = ctypes.c_void_p()
+        self._device_ptr = None
         # Hold the preprocessor. It owns the D3D12 resource this array points
         # into *and* the shared handle, both released when it is collected --
         # so without this reference `CudaTensor(native.GpuPreprocessor12(...))`
@@ -91,8 +93,27 @@ class CudaTensor:
         # it would look wrong afterwards.
         self._preprocessor = preprocessor
 
+        # The tensor is NOT cross-adapter: it can only be imported by the CUDA
+        # device that owns the D3D12 adapter which captured the frame. Assuming
+        # ordinal 0 is wrong on a machine with more than one CUDA GPU, and the
+        # symptom is an opaque cuImportExternalMemory failure -- so refuse the
+        # ambiguous case rather than guess it.
+        #
+        # Matching properly means comparing the D3D12 adapter's LUID against
+        # cuDeviceGetLuid for each device. That needs the adapter LUID exposed
+        # from the extension, and hybrid hardware to test it on; see ROADMAP
+        # section 6.1.
+        if device is None:
+            count = cp.cuda.runtime.getDeviceCount()
+            if count != 1:
+                raise RuntimeError(
+                    f"{count} CUDA devices are present, so which one owns the "
+                    f"captured adapter is ambiguous. Pass device=N explicitly "
+                    f"— the import fails opaquely if N is the wrong one.")
+            device = 0
+
         # CuPy's primary context must exist before anything is imported into it.
-        cp.cuda.Device(0).use()
+        cp.cuda.Device(device).use()
         cp.zeros(1)
 
         desc = ExternalMemoryHandleDesc()
@@ -128,6 +149,11 @@ class CudaTensor:
         # external-memory handle and the preprocessor. Hand back an array whose
         # owner is None and the caller can drop everything that keeps its
         # storage mapped while still holding a perfectly normal-looking array.
+        # CUDA requires this pointer be released with cuMemFree *before* the
+        # external-memory object is destroyed; destroying the object does not
+        # release the mapping. Held so close() can do that in the right order.
+        self._device_ptr = ptr.value
+
         memory = cp.cuda.UnownedMemory(
             ptr.value, preprocessor.output_byte_size, owner=self)
         self.array = cp.ndarray(
@@ -150,10 +176,23 @@ class CudaTensor:
         something else claims that memory — so this is not a mistake testing
         will catch for you.
         """
+        # Order matters: free the mapping, then destroy the object that owns it.
+        if self._device_ptr is not None:
+            self._cuda.cuMemFree(ctypes.c_ulonglong(self._device_ptr))
+            self._device_ptr = None
         if self._ext:
             self._cuda.cuDestroyExternalMemory(self._ext)
             self._ext = ctypes.c_void_p()
-            self.array = None
+        self.array = None
+
+    def __del__(self):
+        # The documented one-liner keeps only `.array`, which holds this object
+        # alive through UnownedMemory(owner=self) but gives the caller nothing
+        # to close. Without this, dropping the array would leak the import.
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def __enter__(self):
         return self
