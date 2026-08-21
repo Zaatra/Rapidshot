@@ -10,6 +10,8 @@ asking for RGB got a 4-channel BGRA array and no exception.
 The byte-exactness requirement is the point of the whole file: `nvidia_gpu` is
 a performance switch, so turning it on must not change a single pixel.
 """
+import sys
+
 import numpy as np
 import pytest
 
@@ -124,6 +126,8 @@ def test_conversion_needs_no_opencv(monkeypatch):
 # frame aliasing, through the public API
 # --------------------------------------------------------------------------
 
+@pytest.mark.skipif(sys.platform != "win32",
+                    reason="captures the desktop; Windows-only")
 @pytest.mark.parametrize("mode", ["RGBA", "RGB", "GRAY"])
 def test_held_frames_do_not_share_storage(mode):
     """A frame the caller still holds must never be overwritten.

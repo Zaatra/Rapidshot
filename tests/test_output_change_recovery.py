@@ -17,10 +17,18 @@ tested, and the two halves together are what the path is made of.
 
 Needs a desktop session, so these skip in CI.
 """
+import sys
+
 import numpy as np
 import pytest
 
-import rapidshot
+# Guard before importing RapidShot. Off Windows the COM import fails, the
+# `camera` fixture then errors rather than skipping, and every test in the
+# module reports as a setup error -- while the docstring claims it skips.
+if sys.platform != "win32":
+    pytest.skip("Windows-only", allow_module_level=True)
+
+import rapidshot  # noqa: E402
 
 
 def grab_one(camera, tries=500):
