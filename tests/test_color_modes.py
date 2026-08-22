@@ -145,38 +145,37 @@ def test_gray_numpy_path_reuses_full_frame_scratch(monkeypatch):
 
     monkeypatch.setattr(numpy_processor, "_native_gray", lambda src, out: False)
 
+    class NoAllocatingCast(np.ndarray):
+        """Refuse the full-frame ``astype`` path this test guards against."""
+
+        def astype(self, *args, **kwargs):
+            raise AssertionError("GRAY conversion allocated through astype")
+
     proc = NumpyProcessor("GRAY")
-    bgra = make_bgra(height=128, width=128)
+    bgra = make_bgra(height=128, width=128).view(NoAllocatingCast)
     dst = np.empty((128, 128, 1), np.uint8)
-    import tracemalloc
+    proc.convert_into(bgra, dst)
+    scratch_a = proc._luma_a
+    scratch_b = proc._luma_b
+    capacity = proc._luma_capacity
 
-    tracemalloc.start()
-    try:
-        # Warm while tracing is active. CPython and NumPy may retain tiny
-        # bookkeeping allocations on their first traced calls; those are not
-        # image scratch and vary between interpreter patch releases.
-        for _ in range(10):
-            proc.convert_into(bgra, dst)
-        scratch_a = proc._luma_a
-        scratch_b = proc._luma_b
-        capacity = proc._luma_capacity
+    assert scratch_a is not None and scratch_a.size == 128 * 128
+    assert scratch_b is not None and scratch_b.size == 128 * 128
 
-        # Net memory at the end misses temporary arrays that were freed during
-        # the call. Peak memory is the invariant that catches the old full-frame
-        # uint16 materialisation, so reset it after warm-up and measure that.
-        tracemalloc.reset_peak()
-        before = tracemalloc.get_traced_memory()[0]
-        for _ in range(10):
-            proc.convert_into(bgra, dst)
-        _, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
+    # Once sized, conversion must not ask NumPy for another application-owned
+    # array. This tests the allocation decision directly instead of observing
+    # CPython/NumPy allocator bookkeeping, which differs across supported
+    # versions and made the previous tracemalloc assertion flaky.
+    def reject_empty(*args, **kwargs):
+        raise AssertionError("GRAY conversion replaced its reusable scratch")
+
+    monkeypatch.setattr(numpy_processor.np, "empty", reject_empty)
+    for _ in range(10):
+        proc.convert_into(bgra, dst)
 
     assert proc._luma_a is scratch_a
     assert proc._luma_b is scratch_b
     assert proc._luma_capacity == capacity
-    one_uint16_plane = bgra.shape[0] * bgra.shape[1] * np.dtype(np.uint16).itemsize
-    assert peak - before < one_uint16_plane
 
 
 def test_gray_native_kernel_matches_numpy_exactly():
