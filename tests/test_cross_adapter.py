@@ -16,6 +16,7 @@ a second adapter or without screen activity, so it costs nothing where it
 cannot run and stops the correctness check depending on someone remembering.
 """
 
+import ctypes
 import time
 
 import numpy as np
@@ -697,3 +698,219 @@ def test_fence_progress_is_observable(live_capture):
         assert transfer.shared_fence_completed >= value
     finally:
         frame.release()
+
+
+def _load_cuda_example():
+    """Import the shipped CuPy example, so its structures are the real ones."""
+    import importlib.util
+    from pathlib import Path
+    path = Path(__file__).resolve().parent.parent / "examples" / "gpu_tensor_to_cupy.py"
+    spec = importlib.util.spec_from_file_location("gpu_tensor_to_cupy", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+
+# --------------------------------------------------------------------------
+# the shared destination buffer, and the consumer that is still reading it
+# --------------------------------------------------------------------------
+#
+# Every transfer writes the same buffer, and the producer fence only says the
+# *copy* finished -- nothing says the consumer is done reading. Reproduced
+# deterministically 2026-08-22: with the consumer's read gated in its stream,
+# a copy of frame B completed underneath it, and the consumer -- which had
+# waited on the producer fence for frame A -- read B's bytes. 3/3 runs.
+#
+# Getting there took four failed probe designs, all defeated the same way:
+# CuPy's allocator synchronises the calling thread, so anything that allocates
+# inside the gated region either hides the race or self-deadlocks (one version
+# hung for ten minutes). Nothing below allocates after the gate closes.
+
+
+CU_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE = 4
+
+
+class _SemWin32(ctypes.Structure):
+    _fields_ = [("handle", ctypes.c_void_p), ("name", ctypes.c_void_p)]
+
+
+class _SemHandleUnion(ctypes.Union):
+    _fields_ = [("fd", ctypes.c_int), ("win32", _SemWin32),
+                ("nvSciSyncObj", ctypes.c_void_p)]
+
+
+class _SemHandleDesc(ctypes.Structure):
+    _fields_ = [("type", ctypes.c_int), ("handle", _SemHandleUnion),
+                ("flags", ctypes.c_uint), ("reserved", ctypes.c_uint * 16)]
+
+
+class _FenceParams(ctypes.Structure):
+    _fields_ = [("value", ctypes.c_ulonglong)]
+
+
+class _NvSciParams(ctypes.Union):
+    _fields_ = [("fence", ctypes.c_void_p), ("reserved", ctypes.c_ulonglong)]
+
+
+class _KeyedParams(ctypes.Structure):
+    _fields_ = [("key", ctypes.c_ulonglong), ("timeoutMs", ctypes.c_uint)]
+
+
+class _WaitInner(ctypes.Structure):
+    _fields_ = [("fence", _FenceParams), ("nvSciSync", _NvSciParams),
+                ("keyedMutex", _KeyedParams), ("reserved", ctypes.c_uint * 10)]
+
+
+class _SemWaitParams(ctypes.Structure):
+    _fields_ = [("params", _WaitInner), ("flags", ctypes.c_uint),
+                ("reserved", ctypes.c_uint * 16)]
+
+
+class _SigInner(ctypes.Structure):
+    _fields_ = [("fence", _FenceParams), ("nvSciSync", _NvSciParams),
+                ("keyedMutex", _KeyedParams), ("reserved", ctypes.c_uint * 12)]
+
+
+class _SemSignalParams(ctypes.Structure):
+    _fields_ = [("params", _SigInner), ("flags", ctypes.c_uint),
+                ("reserved", ctypes.c_uint * 16)]
+
+
+def test_the_consumer_handshake_prevents_a_stale_read(live_capture):
+    """A gated consumer must still see the frame it waited for.
+
+    Construction, which is deterministic rather than timing-dependent:
+
+      1. frame A is transferred and its checksum recorded
+      2. the consumer's read is queued behind a semaphore this test holds shut
+      3. frame B is transferred *and allowed to complete* -- provably while the
+         consumer's read is still pending
+      4. the gate opens
+
+    Without `wait_for_consumer` step 3 succeeds and the consumer reads B.
+    With it, the producer's copy is queued behind the consumer's fence and
+    cannot land until the consumer signals, so the consumer still sees A.
+
+    Only the guarded path is asserted. A test that required the *unguarded*
+    path to corrupt would fail the day something upstream fixed it, which is
+    the wrong direction for a regression test to point.
+    """
+    cp = pytest.importorskip("cupy", reason="CuPy not installed")
+    if not _hardware_destination_available():
+        pytest.skip("cross-adapter transfer needs a second hardware adapter")
+    cuda = ctypes.WinDLL("nvcuda.dll")
+    cuda.cuInit(0)
+    cp.cuda.Device(0).use()
+    cp.zeros(1)
+
+    def _grab_one():
+        for _ in range(600):
+            f = live_capture.grab_frame()
+            if f is not None:
+                return f
+            time.sleep(0.004)
+        return None
+
+    seed = _grab_one()
+    if seed is None:
+        pytest.skip("no frame captured -- the screen must be changing")
+    transfer = native.cross_adapter_transfer(seed)
+    gate_owner = native.cross_adapter_transfer(seed)
+    transfer.set_consumer_fence(gate_owner.shared_fence_handle)
+    seed.release()
+
+    def import_sem(handle):
+        d = _SemHandleDesc()
+        ctypes.memset(ctypes.byref(d), 0, ctypes.sizeof(d))
+        d.type = CU_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE
+        d.handle.win32.handle = ctypes.c_void_p(handle)
+        sem = ctypes.c_void_p()
+        assert cuda.cuImportExternalSemaphore(
+            ctypes.byref(sem), ctypes.byref(d)) == 0
+        return sem
+
+    gate = import_sem(gate_owner.shared_fence_handle)
+    module = _load_cuda_example()
+    mem_desc = module.ExternalMemoryHandleDesc()
+    ctypes.memset(ctypes.byref(mem_desc), 0, ctypes.sizeof(mem_desc))
+    mem_desc.type = 4
+    mem_desc.handle.win32.handle = ctypes.c_void_p(
+        transfer.shared_destination_handle)
+    mem_desc.size = transfer.total_bytes
+    ext = ctypes.c_void_p()
+    assert cuda.cuImportExternalMemory(
+        ctypes.byref(ext), ctypes.byref(mem_desc)) == 0
+    buf = module.ExternalMemoryBufferDesc()
+    ctypes.memset(ctypes.byref(buf), 0, ctypes.sizeof(buf))
+    buf.offset, buf.size, buf.flags = 0, transfer.total_bytes, 0
+    ptr = ctypes.c_ulonglong()
+    assert cuda.cuExternalMemoryGetMappedBuffer(
+        ctypes.byref(ptr), ext, ctypes.byref(buf)) == 0
+
+    # Preallocated: nothing may allocate once the gate is shut.
+    snapshot = cp.empty(transfer.total_bytes, dtype=cp.uint8)
+    consumer = cp.cuda.Stream(non_blocking=True)
+    releaser = cp.cuda.Stream(non_blocking=True)
+
+    def grab():
+        for _ in range(600):
+            f = live_capture.grab_frame()
+            if f is not None:
+                return f
+            time.sleep(0.004)
+        return None
+
+    try:
+        # 1. frame A lands.
+        frame_a = grab()
+        if frame_a is None:
+            pytest.skip("no frame captured -- the screen must be changing")
+        value = transfer.transfer_async(frame_a)
+        transfer.wait_shared_fence(value)
+        checksum_a = int(np.frombuffer(
+            transfer.read_back_destination(), dtype=np.uint8).sum())
+        frame_a.release()
+
+        # 2. the consumer's read is gated shut.
+        wait = _SemWaitParams()
+        ctypes.memset(ctypes.byref(wait), 0, ctypes.sizeof(wait))
+        wait.params.fence.value = 1
+        assert cuda.cuWaitExternalSemaphoresAsync(
+            ctypes.byref(gate), ctypes.byref(wait), 1,
+            ctypes.c_void_p(consumer.ptr)) == 0
+        assert cuda.cuMemcpyDtoDAsync_v2(
+            ctypes.c_ulonglong(int(snapshot.data.ptr)),
+            ctypes.c_ulonglong(ptr.value),
+            ctypes.c_size_t(transfer.total_bytes),
+            ctypes.c_void_p(consumer.ptr)) == 0
+
+        # 3. frame B is submitted behind the consumer's fence, then 4. released.
+        frame_b = grab()
+        if frame_b is None:
+            pytest.skip("no second frame -- the screen must be changing")
+        transfer.wait_for_consumer(1)
+        value_b = transfer.transfer_async(frame_b)
+        signal = _SemSignalParams()
+        ctypes.memset(ctypes.byref(signal), 0, ctypes.sizeof(signal))
+        signal.params.fence.value = 1
+        assert cuda.cuSignalExternalSemaphoresAsync(
+            ctypes.byref(gate), ctypes.byref(signal), 1,
+            ctypes.c_void_p(releaser.ptr)) == 0
+        releaser.synchronize()
+        transfer.wait_shared_fence(value_b)
+        checksum_b = int(np.frombuffer(
+            transfer.read_back_destination(), dtype=np.uint8).sum())
+        frame_b.release()
+        consumer.synchronize()
+        seen = int(cp.asnumpy(snapshot).sum())
+    finally:
+        cuda.cuDestroyExternalSemaphore(gate)
+        cuda.cuDestroyExternalMemory(ext)
+
+    if checksum_a == checksum_b:
+        pytest.skip("the two frames are identical -- nothing to distinguish")
+    assert seen == checksum_a, (
+        f"the consumer read frame B ({checksum_b}) after waiting for frame A "
+        f"({checksum_a}); the producer overwrote the shared buffer while the "
+        f"consumer was still reading it")

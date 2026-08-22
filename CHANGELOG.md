@@ -27,11 +27,19 @@ Nothing yet.
   dGPU can signal a D3D12 fence created by an Intel iGPU's device, and the
   producer observes it.
 
-  **The race was never reproduced** -- four probe designs failed to trigger it,
-  because CuPy's allocator synchronises the calling thread with the consumer.
-  The mechanism is correct by construction rather than validated against an
-  observed failure. A buffer ring was rejected as the alternative: it widens
-  the window rather than closing it, since the producer wraps after N frames.
+  **Reproduced deterministically**, after four failed attempts: gate the
+  consumer's read behind a semaphore, let frame B's copy complete while the
+  read is provably still pending, then open the gate. Unguarded, the consumer
+  read frame B after waiting for frame A -- 3/3 runs. With the handshake it
+  reads A. Covered by a test.
+
+  The earlier attempts all failed for one reason worth recording: CuPy's
+  allocator synchronises the calling thread, so anything allocating inside the
+  gated region either hides the race or self-deadlocks. Making the consumer
+  slower was the wrong axis -- a 527 ms consumer showed nothing.
+
+  A buffer ring was rejected as the alternative: it widens the window rather
+  than closing it, since the producer wraps after N frames.
 - `shared_fence_submitted` / `shared_fence_completed` expose what was queued
   versus what the GPU has reached. Diagnostic, and the instrument the
   handshake was built with.

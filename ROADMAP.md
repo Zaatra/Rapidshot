@@ -863,11 +863,18 @@ Realistic cost is roughly six months with a native-graphics-fluent co-maintainer
 
   **And it mutates process-global state from a constructor.** Building an `Output` changes DPI behaviour for the entire host application, including its own windows. That it happens per-`Output` rather than once at import makes it repeated rather than worse, but a library reshaping its host's window layout as a side effect of enumeration is a decision that should be explicit and documented, and currently is neither.
 
-- **One destination buffer, and nothing tells the producer the consumer is done. Mechanism shipped, race never reproduced.** Every `transfer()` writes the same `src_buffer`/`dst_buffer` pair on the shared heap, and `shared_fence` only reports that the *copy* finished. A consumer that waits on it GPU-side and keeps reading asynchronously can therefore still be reading frame N when the copy for N+1 overwrites the allocation underneath it — two frames blended, nothing raised.
+- ~~**One destination buffer, and nothing tells the producer the consumer is done.**~~ **Reproduced and fixed 2026-08-22.** Every `transfer()` writes the same `src_buffer`/`dst_buffer` pair, and `shared_fence` only reports that the *copy* finished. A consumer that waits on it GPU-side and keeps reading asynchronously can still be reading frame N when the copy for N+1 overwrites the allocation underneath it — two frames blended, nothing raised.
 
-  **The fix is a reverse handshake, and its feasibility was the open question.** It needs the consumer to signal something the producer can wait on across vendors. Measured 2026-08-22: CUDA on the RTX 4060 signalled a D3D12 fence created by the **Intel** iGPU's device and the producer observed it — completed value 0 → 5000. Without that the design was not buildable at all.
+  **Reproduced deterministically, after four failed attempts that are the more useful part of this entry.** The trick was to stop chasing a timing race and build a gate: queue the consumer's read behind a semaphore the test holds shut, let frame B's copy *complete* while the read is provably still pending, then open the gate. The consumer — which had waited on the producer fence for frame A — read B's bytes. 3/3 runs.
 
-  Shipped as `set_consumer_fence(handle)` + `wait_for_consumer(value)`. The wait is queued on the source queue, so it orders ahead of the next copy without blocking the caller:
+  | | consumer waited for | consumer actually read |
+  | --- | --- | --- |
+  | unguarded | frame A | **frame B** |
+  | `wait_for_consumer` | frame A | frame A |
+
+  **Every earlier attempt failed the same way, and it was never about the race being rare.** CuPy's allocator synchronises the calling thread, so anything allocating inside the gated region either hides the race (the producer can never run ahead) or self-deadlocks — one probe hung for ten minutes, blocking the CPU on a stream only that CPU could open. Making the consumer *slower* was the wrong axis entirely: a 527 ms consumer still showed nothing, because the CPU was being paced by the allocator, not by the GPU. Nothing inside the gated region may allocate. That is the reusable lesson.
+
+  **The fix needed a signal travelling the other way, and its feasibility was the open question.** Measured: CUDA on the RTX 4060 signalled a D3D12 fence created by the **Intel** iGPU's device and the producer observed it — completed value 0 → 5000. Shipped as `set_consumer_fence(handle)` + `wait_for_consumer(value)`; the wait is queued on the source queue, so it orders ahead of the next copy without blocking the caller:
 
   ```
   transfer.set_consumer_fence(consumer_handle)   # once
@@ -876,9 +883,7 @@ Realistic cost is roughly six months with a native-graphics-fluent co-maintainer
   transfer.wait_for_consumer(N)                  # before frame N+1
   ```
 
-  **The race itself was never reproduced, and that is worth stating plainly.** Four probe designs failed to trigger it: synchronising each iteration hides it by construction, and without synchronising, CuPy's allocator synchronises the calling thread with the consumer anyway — so the producer never ran ahead, even against a 527 ms consumer. The mechanism is therefore justified *by construction*, not by an observed failure, which § 5's rule makes weaker evidence than a reproduced bug. Someone with a consumer that does not synchronise through its allocator should try again.
-
-  **The alternative was multiple destination buffers, and it was rejected on correctness rather than cost.** A ring of N buffers does not close the race, it widens it: the producer wraps after N frames, so a consumer lagging more than N corrupts again. It also costs N × 16.4 MB and forces a per-frame offset into the consumer's contract. The handshake closes the race outright for one queued wait, measured at +0.27 ms against a light consumer and +2.4% against a heavy one.
+  **The alternative was multiple destination buffers, rejected on correctness rather than cost.** A ring of N does not close the race, it widens it: the producer wraps after N frames, so a consumer lagging more than N corrupts again. It also costs N × 16.4 MB and forces a per-frame offset into the consumer's contract. The handshake closes it outright for one queued wait — +0.27 ms against a light consumer, +2.4% against a heavy one.
 
 - **No AMD hardware has ever run this project**, and nothing branches on vendor, so AMD is supported by design and unverified in fact. The coverage matrix is in § 2; the one genuinely NVIDIA-bound feature is CuPy, and AMD consumers reach the same GPU tensor through DirectML.
 - **Headless is classified but never observed; hybrid is now both observed and working.** The `hybrid` branch ran for real on 2026-08-22 — Intel iGPU owning the display, RTX 4060 render-only, `topology_info()` classifying it correctly, capture running on the iGPU and a frame crossing to the dGPU byte-exact (§ 6.1). Getting there also produced the lesson worth keeping: **classifying a topology correctly is not the same as being able to capture in it.** For most of a day the same machine classified as `hybrid` while every adapter refused `DuplicateOutput`, which is what § 10's adapter-selection entry came out of. The *single* branch has been observed on an Intel iGPU and on an NVIDIA dGPU. **`headless` remains tested by describing that topology rather than by having one.**
