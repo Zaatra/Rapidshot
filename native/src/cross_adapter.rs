@@ -109,6 +109,43 @@ where
     Ok(Some(event))
 }
 
+/// Prefer an event wait, but fall back to polling when an event cannot be
+/// created or registered.
+///
+/// The fallback deliberately has no fallible operation: once a queue accepted
+/// a shared-fence signal, releasing its resources without proving completion is
+/// unsafe. `GetCompletedValue` also becomes `u64::MAX` on device removal, so
+/// this terminates for both successful completion and a dead device.
+fn arm_or_poll_fence_wait_with<E, H, Completed, Create, Register, Backoff>(
+    value: u64,
+    mut completed: Completed,
+    create_event: Create,
+    register: Register,
+    mut backoff: Backoff,
+) -> Option<H>
+where
+    Completed: FnMut() -> u64,
+    Create: FnOnce() -> Result<H, E>,
+    Register: FnOnce(u64, &H) -> Result<(), E>,
+    Backoff: FnMut(),
+{
+    match arm_fence_wait_with(value, &mut completed, create_event, register) {
+        Ok(event) => event,
+        Err(_) => {
+            while completed() < value {
+                backoff();
+            }
+            None
+        }
+    }
+}
+
+fn replace_and_retain<T>(current: &mut Option<T>, retained: &mut Vec<T>, replacement: T) {
+    if let Some(replaced) = current.replace(replacement) {
+        retained.push(replaced);
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SubmissionHealth {
     Usable,
@@ -648,29 +685,7 @@ impl Submitter {
 impl Drop for CrossAdapterTransfer {
     fn drop(&mut self) {
         if self.submission_health.get() == SubmissionHealth::Quarantined {
-            // ExecuteCommandLists accepted work, but neither fence could prove
-            // completion while GetDeviceRemovedReason still returned S_OK.
-            // D3D12 makes the application responsible for every referenced
-            // object's lifetime. Preserve clones (and leave raw handles open)
-            // rather than guessing that the GPU is finished.
-            self.src.quarantine();
-            self.dst.quarantine();
-            std::mem::forget(self.src_device.clone());
-            std::mem::forget(self.dst_device.clone());
-            std::mem::forget(self._src_heap.clone());
-            std::mem::forget(self._dst_heap.clone());
-            std::mem::forget(self.src_buffer.clone());
-            std::mem::forget(self.dst_buffer.clone());
-            std::mem::forget(self.readback.clone());
-            std::mem::forget(self.src_readback.clone());
-            std::mem::forget(self.snapshot.clone());
-            std::mem::forget(self.shared_fence.clone());
-            if let Some((resource, _)) = self.cached_shared.borrow().as_ref() {
-                std::mem::forget(resource.clone());
-            }
-            if let Some(fence) = self.consumer_fence.borrow().as_ref() {
-                std::mem::forget(fence.clone());
-            }
+            self.quarantine_resources();
             return;
         }
 
@@ -683,7 +698,17 @@ impl Drop for CrossAdapterTransfer {
         // command list and the fences while the source queue is still reading
         // them. D3D12 requires the application to keep them alive until the
         // GPU finishes; not doing so is device removal or silent corruption.
-        let _ = self.wait_shared_fence(self.shared_fence_value.get());
+        if self
+            .wait_shared_fence(self.shared_fence_value.get())
+            .is_err()
+        {
+            // Event allocation/registration has a polling fallback, but keep
+            // this guard for any future fallible wait path: Drop must never
+            // release objects after completion could not be proved.
+            self.submission_health.set(SubmissionHealth::Quarantined);
+            self.quarantine_resources();
+            return;
+        }
         // Release the cached view of the capture texture, and the handle it
         // was opened from, before the devices go.
         if let Some((_, handle)) = self.cached_shared.borrow_mut().take() {
@@ -825,6 +850,14 @@ pub struct CrossAdapterTransfer {
     /// direction the next copy can overwrite the buffer mid-read, silently
     /// mixing two frames. This is that signal.
     consumer_fence: std::cell::RefCell<Option<ID3D12Fence>>,
+    /// Fences replaced after a GPU-side wait was queued.
+    ///
+    /// `ID3D12CommandQueue::Wait` returns before that wait completes. Keep the
+    /// application's reference until the queue itself is destroyed rather than
+    /// releasing an object an outstanding wait may still name. Consumer
+    /// recreation is rare, so bounded cleanup bookkeeping is not worth
+    /// weakening this lifetime guarantee.
+    retired_consumer_fences: std::cell::RefCell<Vec<ID3D12Fence>>,
     footprint: D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
     total_bytes: u64,
     pub width: u32,
@@ -1043,6 +1076,7 @@ impl CrossAdapterTransfer {
             shared_fence_value: Cell::new(0),
             submission_health: Cell::new(SubmissionHealth::Usable),
             consumer_fence: std::cell::RefCell::new(None),
+            retired_consumer_fences: std::cell::RefCell::new(Vec::new()),
             footprint,
             total_bytes,
             width,
@@ -1069,6 +1103,36 @@ impl CrossAdapterTransfer {
             windows::Win32::Foundation::E_FAIL,
             message,
         ))
+    }
+
+    /// Preserve every object that source or destination queue work may name.
+    fn quarantine_resources(&self) {
+        // ExecuteCommandLists accepted work, but no fence could prove
+        // completion while GetDeviceRemovedReason still returned S_OK. D3D12
+        // makes the application responsible for every referenced object's
+        // lifetime, so preserve clones (and leave raw handles open) rather than
+        // guessing that the GPU is finished.
+        self.src.quarantine();
+        self.dst.quarantine();
+        std::mem::forget(self.src_device.clone());
+        std::mem::forget(self.dst_device.clone());
+        std::mem::forget(self._src_heap.clone());
+        std::mem::forget(self._dst_heap.clone());
+        std::mem::forget(self.src_buffer.clone());
+        std::mem::forget(self.dst_buffer.clone());
+        std::mem::forget(self.readback.clone());
+        std::mem::forget(self.src_readback.clone());
+        std::mem::forget(self.snapshot.clone());
+        std::mem::forget(self.shared_fence.clone());
+        if let Some((resource, _)) = self.cached_shared.borrow().as_ref() {
+            std::mem::forget(resource.clone());
+        }
+        if let Some(fence) = self.consumer_fence.borrow().as_ref() {
+            std::mem::forget(fence.clone());
+        }
+        for fence in self.retired_consumer_fences.borrow().iter() {
+            std::mem::forget(fence.clone());
+        }
     }
 
     pub fn submission_quarantined(&self) -> bool {
@@ -1519,7 +1583,7 @@ impl CrossAdapterTransfer {
     /// but a raw event handle can, and waiting on one touches no state here.
     /// That keeps the GIL release provably sound rather than asserted.
     pub fn arm_shared_fence_wait(&self, value: u64) -> windows::core::Result<Option<isize>> {
-        let event = arm_fence_wait_with(
+        let event = arm_or_poll_fence_wait_with(
             value,
             || unsafe { self.shared_fence.GetCompletedValue() },
             || {
@@ -1528,7 +1592,8 @@ impl CrossAdapterTransfer {
                 }))
             },
             |value, event| unsafe { self.shared_fence.SetEventOnCompletion(value, event.0) },
-        )?;
+            || std::thread::sleep(std::time::Duration::from_millis(1)),
+        );
         Ok(event.map(|event| event.release().0 as isize))
     }
 
@@ -1543,7 +1608,12 @@ impl CrossAdapterTransfer {
             self.src_device
                 .OpenSharedHandle(HANDLE(handle as *mut core::ffi::c_void), &mut fence)?;
         }
-        *self.consumer_fence.borrow_mut() = Some(fence.expect("OpenSharedHandle reported success"));
+        let fence = fence.expect("OpenSharedHandle reported success");
+        replace_and_retain(
+            &mut self.consumer_fence.borrow_mut(),
+            &mut self.retired_consumer_fences.borrow_mut(),
+            fence,
+        );
         Ok(())
     }
 
@@ -2095,7 +2165,10 @@ fn make_default_buffer(device: &ID3D12Device, size: u64) -> windows::core::Resul
 
 #[cfg(test)]
 mod submission_failure_tests {
-    use super::{arm_fence_wait_with, settle_submitted_copy, SubmittedCopyOutcome};
+    use super::{
+        arm_fence_wait_with, arm_or_poll_fence_wait_with, replace_and_retain,
+        settle_submitted_copy, SubmittedCopyOutcome,
+    };
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
@@ -2184,6 +2257,71 @@ mod submission_failure_tests {
         .unwrap();
         assert_eq!(result, None);
         assert_eq!(creates.get(), 0);
+    }
+
+    #[test]
+    fn event_creation_failure_polls_until_the_submission_completes() {
+        let completed = Cell::new(7u64);
+        let polls = Cell::new(0usize);
+        let event = arm_or_poll_fence_wait_with(
+            10,
+            || completed.get(),
+            || Err::<MockEvent, _>("CreateEventW failed"),
+            |_value, _event| Ok(()),
+            || {
+                polls.set(polls.get() + 1);
+                completed.set(completed.get() + 1);
+            },
+        );
+        assert!(event.is_none());
+        assert_eq!(completed.get(), 10);
+        assert_eq!(polls.get(), 3);
+    }
+
+    #[test]
+    fn event_registration_failure_closes_the_event_and_then_polls() {
+        let drops = Rc::new(Cell::new(0usize));
+        let completed = Cell::new(9u64);
+        let polls = Cell::new(0usize);
+        let event = arm_or_poll_fence_wait_with(
+            10,
+            || completed.get(),
+            || {
+                Ok::<MockEvent, &'static str>(MockEvent {
+                    id: 1,
+                    drops: drops.clone(),
+                })
+            },
+            |_value, _event| Err("SetEventOnCompletion failed"),
+            || {
+                polls.set(polls.get() + 1);
+                completed.set(10);
+            },
+        );
+        assert!(event.is_none());
+        assert_eq!(drops.get(), 1);
+        assert_eq!(polls.get(), 1);
+    }
+
+    #[test]
+    fn replacing_a_consumer_fence_retains_the_previous_owner() {
+        let drops = Rc::new(Cell::new(0usize));
+        let make = |id| MockEvent {
+            id,
+            drops: drops.clone(),
+        };
+        let mut current = Some(make(1));
+        let mut retained = Vec::new();
+
+        replace_and_retain(&mut current, &mut retained, make(2));
+        assert_eq!(current.as_ref().unwrap().id, 2);
+        assert_eq!(retained[0].id, 1);
+        assert_eq!(drops.get(), 0);
+
+        drop(current);
+        assert_eq!(drops.get(), 1);
+        drop(retained);
+        assert_eq!(drops.get(), 2);
     }
 
     #[test]

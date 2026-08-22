@@ -627,7 +627,8 @@ class CrossAdapterTransfer:
         # extra, because by the time it releases the copy has long finished.
         defer = getattr(frame, "defer_release_until", None)
         if defer is not None:
-            defer(lambda: self.wait_shared_fence(value))
+            defer(lambda: self.wait_shared_fence(value),
+                  quarantine_on_failure=True)
         return value
 
     def wait_shared_fence(self, value: int) -> None:

@@ -117,6 +117,41 @@ def test_untrackable_failed_signal_quarantines_frame():
     assert not frame.released
 
 
+@pytest.mark.parametrize("failure", [
+    "injected CreateEventW failure",
+    "injected SetEventOnCompletion failure",
+])
+def test_async_drain_failure_quarantines_instead_of_releasing(failure):
+    """A failed completion wait must never hand a live GPU surface to DXGI."""
+    import ctypes
+    from rapidshot.frame import Frame, FrameQuarantinedError
+
+    class FailedWait:
+        submission_quarantined = False
+
+        def transfer_async(self, _texture, _source_id):
+            return 17
+
+        def wait_shared_fence(self, value):
+            assert value == 17
+            raise RuntimeError(failure)
+
+    released = []
+    frame = Frame(ctypes.c_void_p(1), lambda: released.append(True), (0, 0, 4, 4))
+    transfer = _mock_cross_adapter(FailedWait())
+    assert transfer.transfer_async(frame) == 17
+
+    with pytest.raises(FrameQuarantinedError, match="restart the process"):
+        frame.release()
+    assert released == []
+    assert not frame.released
+
+    # The failed drain becomes a persistent quarantine, not a one-shot error
+    # that allows a later release to invalidate the surface.
+    with pytest.raises(FrameQuarantinedError, match=failure):
+        frame.release()
+
+
 @pytest.mark.skipif(not native.is_available(), reason="native extension not built")
 def test_native_rejects_null_pointer_directly():
     with pytest.raises(ValueError, match="null"):

@@ -719,6 +719,38 @@ def test_a_consumer_fence_can_be_adopted_and_waited_on(live_capture):
         frame.release()
 
 
+def test_consumer_fence_can_be_replaced_after_a_queued_wait(live_capture):
+    """A superseded fence must outlive the GPU-side wait that names it."""
+    frame = _grab(live_capture)
+    if frame is None:
+        pytest.skip("no frame captured -- the screen must be changing")
+    try:
+        transfer = native.cross_adapter_transfer(frame)
+        first_owner = native.cross_adapter_transfer(frame)
+        second_owner = native.cross_adapter_transfer(frame)
+
+        # Queue an unsatisfied wait, then replace the adopted fence before its
+        # owner submits the signal. The old fence must remain alive until the
+        # source queue consumes that wait.
+        transfer.set_consumer_fence(first_owner.shared_fence_handle)
+        transfer.wait_for_consumer(1)
+        transfer.set_consumer_fence(second_owner.shared_fence_handle)
+
+        assert first_owner.transfer_async(frame) == 1
+        value = transfer.transfer_async(frame)
+        transfer.wait_shared_fence(value)
+        assert transfer.shared_fence_completed >= value
+
+        # The replacement is active for subsequent waits.
+        transfer.wait_for_consumer(1)
+        assert second_owner.transfer_async(frame) == 1
+        value = transfer.transfer_async(frame)
+        transfer.wait_shared_fence(value)
+        assert transfer.shared_fence_completed >= value
+    finally:
+        frame.release()
+
+
 def test_fence_progress_is_observable(live_capture):
     """submitted vs completed -- the instrument the handshake was built with."""
     frame = _grab(live_capture)

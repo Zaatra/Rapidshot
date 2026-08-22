@@ -265,7 +265,7 @@ class Frame:
 
     # -- lifetime ----------------------------------------------------------
 
-    def defer_release_until(self, drain) -> None:
+    def defer_release_until(self, drain, *, quarantine_on_failure=False) -> None:
         """Register work that must complete before the surface is handed back.
 
         The duplicated surface is only valid between ``AcquireNextFrame`` and
@@ -282,8 +282,14 @@ class Frame:
 
         `drain` is called at most once, before the surface is released, and
         must be idempotent-safe to call after the work already finished.
+
+        ``quarantine_on_failure`` is for drains that prove submitted GPU work
+        no longer reads this surface. If such a drain fails, releasing would
+        invalidate the texture while that work may still be live, so the frame
+        remains acquired and release raises :class:`FrameQuarantinedError`.
+        Ordinary cleanup callbacks keep the historical log-and-release policy.
         """
-        self._release_drains.append(drain)
+        self._release_drains.append((drain, bool(quarantine_on_failure)))
 
     def _quarantine_release(self, reason: str) -> None:
         """Keep this DXGI surface acquired because submitted work is untracked.
@@ -319,10 +325,20 @@ class Frame:
         # Before the flag flips: a drain that raises must not leave the frame
         # marked released while the surface is still held.
         drains, self._release_drains = self._release_drains, []
-        for drain in drains:
+        for drain, quarantine_on_failure in drains:
             try:
                 drain()
-            except Exception as exc:      # never block handing the surface back
+            except Exception as exc:
+                if quarantine_on_failure:
+                    self._quarantine_release(str(exc))
+                    raise FrameQuarantinedError(
+                        "Frame cannot be released because its asynchronous GPU "
+                        "copy could not be drained. Capture is intentionally "
+                        "stopped to preserve the DXGI surface; restart the "
+                        f"process. Native failure: {exc}"
+                    ) from exc
+                # A generic cleanup failure is not evidence that native GPU
+                # work still references the duplication surface.
                 logger.warning(
                     "A release drain failed; releasing the surface anyway. "
                     "A GPU copy may still have been reading it: %s", exc
