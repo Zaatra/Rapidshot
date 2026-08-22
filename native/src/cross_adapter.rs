@@ -85,6 +85,30 @@ where
     }
 }
 
+/// Arm one fence wait using one independently owned event.
+///
+/// Generic so CI can inject event creation/registration and prove that two
+/// concurrent waiters never share a handle. `H` remains owned by the caller on
+/// success and is dropped automatically if registration fails.
+fn arm_fence_wait_with<E, H, Completed, Create, Register>(
+    value: u64,
+    completed: Completed,
+    create_event: Create,
+    register: Register,
+) -> Result<Option<H>, E>
+where
+    Completed: FnOnce() -> u64,
+    Create: FnOnce() -> Result<H, E>,
+    Register: FnOnce(u64, &H) -> Result<(), E>,
+{
+    if value == 0 || completed() >= value {
+        return Ok(None);
+    }
+    let event = create_event()?;
+    register(value, &event)?;
+    Ok(Some(event))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SubmissionHealth {
     Usable,
@@ -677,11 +701,6 @@ impl Drop for CrossAdapterTransfer {
                 let _ = CloseHandle(self.shared_fence_handle);
             }
         }
-        if !self.shared_fence_event.is_invalid() {
-            unsafe {
-                let _ = CloseHandle(self.shared_fence_event);
-            }
-        }
         if !self.shared_destination_handle.is_invalid() {
             unsafe {
                 let _ = CloseHandle(self.shared_destination_handle);
@@ -722,8 +741,8 @@ type HandleMaker<'a> = dyn Fn() -> windows::core::Result<HANDLE> + 'a;
 
 /// Closes a Windows handle on drop unless it is released into an owner.
 ///
-/// `CrossAdapterTransfer::new` creates three raw handles and then keeps doing
-/// fallible work: fence creation, event creation, two `Submitter::new` calls.
+/// `CrossAdapterTransfer::new` creates raw shared-resource handles and then
+/// keeps doing fallible work: fence creation and two `Submitter::new` calls.
 /// `Drop` cannot help there, because the object does not exist yet -- so a
 /// device-lost or unsupported adapter pair used to leak every handle created
 /// so far, and repeated setup attempts would walk the process handle table up.
@@ -798,10 +817,6 @@ pub struct CrossAdapterTransfer {
     shared_fence_handle: HANDLE,
     shared_fence_value: Cell<u64>,
     submission_health: Cell<SubmissionHealth>,
-    /// Dedicated event for CPU waits on `shared_fence`. Separate from the
-    /// Submitter's, which `end_and_wait` owns -- sharing one would let a
-    /// blocking transfer and an async wait clobber each other's signal.
-    shared_fence_event: HANDLE,
     /// The consumer's fence, opened from a handle the caller supplies.
     ///
     /// Every transfer writes the *same* shared buffer, and the producer fence
@@ -1008,8 +1023,6 @@ impl CrossAdapterTransfer {
         let shared_fence_handle = OwnedHandle(unsafe {
             src_device.CreateSharedHandle(&shared_fence, None, GENERIC_ALL, None)?
         });
-        let shared_fence_event = OwnedHandle(unsafe { CreateEventW(None, false, false, None)? });
-
         Ok(Self {
             src: Submitter::new(&src_device)?,
             dst: Submitter::new(&dst_device)?,
@@ -1029,7 +1042,6 @@ impl CrossAdapterTransfer {
             shared_fence_handle: shared_fence_handle.release(),
             shared_fence_value: Cell::new(0),
             submission_health: Cell::new(SubmissionHealth::Usable),
-            shared_fence_event: shared_fence_event.release(),
             consumer_fence: std::cell::RefCell::new(None),
             footprint,
             total_bytes,
@@ -1260,6 +1272,11 @@ impl CrossAdapterTransfer {
     /// evidence that the right bytes arrived on the other adapter.
     pub fn read_back_destination(&self) -> windows::core::Result<Vec<u8>> {
         self.ensure_submission_usable()?;
+        // The destination queue sees the same cross-adapter allocation, but it
+        // is not implicitly ordered behind the source queue. This diagnostic
+        // may be called immediately after transfer_async(), so prove the source
+        // write complete before recording the destination read.
+        self.wait_shared_fence(self.shared_fence_value.get())?;
         let list = self.dst.begin()?;
         unsafe { list.CopyBufferRegion(&self.readback, 0, &self.dst_buffer, 0, self.total_bytes) };
         self.dst.end_and_wait()?;
@@ -1317,73 +1334,7 @@ impl CrossAdapterTransfer {
         let result = (|| -> windows::core::Result<u64> {
             let list = self.src.begin()?;
             unsafe { list.CopyTextureRegion(&destination, 0, 0, 0, &src_location, None) };
-            unsafe {
-                list.Close()?;
-                self.src
-                    .queue
-                    .ExecuteCommandLists(&[Some(list.cast::<ID3D12CommandList>()?)]);
-            }
-            // From this instruction until one of the two fences completes, the
-            // command list is real GPU work with no proven lifetime boundary.
-            // Mark that explicitly before the fallible shared Signal.
-            self.submission_health.set(SubmissionHealth::Quarantined);
-            let value = self.shared_fence_value.get() + 1;
-            match settle_submitted_copy(
-                value,
-                |value| unsafe { self.src.queue.Signal(&self.shared_fence, value) },
-                || self.src.signal_and_wait_after_execute(),
-                || unsafe { self.src_device.GetDeviceRemovedReason().is_err() },
-            ) {
-                SubmittedCopyOutcome::Signaled => {
-                    // Signal first, record second. The public counter names only
-                    // values the queue actually accepted.
-                    self.shared_fence_value.set(value);
-                    self.submission_health.set(SubmissionHealth::Usable);
-                    Ok(value)
-                }
-                SubmittedCopyOutcome::DrainedAfterSignalFailure(signal) => {
-                    // The private fence proves the copy finished, so Python may
-                    // release its acquired DXGI frame. Do not reuse the transfer:
-                    // a failed public timeline is a terminal queue fault.
-                    self.submission_health.set(SubmissionHealth::Poisoned);
-                    Err(windows::core::Error::new(
-                        signal.code(),
-                        format!(
-                            "shared-fence Signal failed after submission; the copy was \
-                             drained through the private fence and this transfer is now \
-                             unusable: {signal}"
-                        ),
-                    ))
-                }
-                SubmittedCopyOutcome::DeviceRemovedAfterSignalFailure { signal, drain } => {
-                    // Device removal signals monitored fences to UINT64_MAX and
-                    // terminates its queued work. Resource destruction is safe,
-                    // but this transfer cannot submit again.
-                    self.submission_health.set(SubmissionHealth::Poisoned);
-                    Err(windows::core::Error::new(
-                        signal.code(),
-                        format!(
-                            "shared-fence Signal failed after submission and the fallback \
-                             drain also failed because the device was removed; this transfer \
-                             is unusable: signal={signal}; drain={drain}"
-                        ),
-                    ))
-                }
-                SubmittedCopyOutcome::Quarantined { signal, drain } => {
-                    // Leave Quarantined set. Drop will retain every referenced
-                    // native object, and the Python wrapper will refuse to hand
-                    // the acquired frame back to DXGI.
-                    Err(windows::core::Error::new(
-                        signal.code(),
-                        format!(
-                            "shared-fence Signal failed after submission and the private \
-                             fence could not drain it while the device remained live; the \
-                             submission is quarantined until process exit: \
-                             signal={signal}; drain={drain}"
-                        ),
-                    ))
-                }
-            }
+            self.submit_async_list(list)
         })();
 
         unsafe {
@@ -1393,10 +1344,169 @@ impl CrossAdapterTransfer {
         result
     }
 
+    /// Diagnostic asynchronous transfer with a source-side reference generated
+    /// by the same command list.
+    ///
+    /// Unlike the production async path, this freezes the live duplication
+    /// surface into `snapshot` and copies that snapshot to both the shared heap
+    /// and `src_readback`. It exists solely to verify asynchronous byte
+    /// correctness without comparing two reads of a surface that changes under
+    /// us. Call `wait_shared_fence(value)`, then compare `read_back_source()`
+    /// with `read_back_destination()`.
+    pub fn transfer_async_with_reference(
+        &self,
+        texture: &ID3D11Texture2D,
+        source_id: u64,
+    ) -> windows::core::Result<u64> {
+        self.ensure_submission_usable()?;
+        let mut desc = Default::default();
+        unsafe { texture.GetDesc(&mut desc) };
+        if desc.Width != self.width || desc.Height != self.height {
+            return Err(windows::core::Error::new(
+                windows::Win32::Foundation::E_INVALIDARG,
+                "texture size does not match the one this transfer was built for",
+            ));
+        }
+
+        self.wait_shared_fence(self.shared_fence_value.get())?;
+        let shared = self.open_capture_texture(texture, source_id)?;
+        let list = self.src.begin()?;
+
+        unsafe {
+            transition(
+                list,
+                &self.snapshot,
+                D3D12_RESOURCE_STATE_COMMON,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+            );
+            list.CopyResource(&self.snapshot, &shared);
+            transition(
+                list,
+                &self.snapshot,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_COPY_SOURCE,
+            );
+        }
+
+        let mut source = D3D12_TEXTURE_COPY_LOCATION {
+            pResource: core::mem::ManuallyDrop::new(Some(self.snapshot.clone())),
+            Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+            Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                SubresourceIndex: 0,
+            },
+        };
+        let mut destinations = [
+            placed_location(&self.src_buffer, self.footprint),
+            placed_location(&self.src_readback, self.footprint),
+        ];
+        unsafe {
+            for destination in destinations.iter() {
+                list.CopyTextureRegion(destination, 0, 0, 0, &source, None);
+            }
+            transition(
+                list,
+                &self.snapshot,
+                D3D12_RESOURCE_STATE_COPY_SOURCE,
+                D3D12_RESOURCE_STATE_COMMON,
+            );
+        }
+
+        let result = self.submit_async_list(list);
+        unsafe {
+            for destination in destinations.iter_mut() {
+                core::mem::ManuallyDrop::drop(&mut destination.pResource);
+            }
+            core::mem::ManuallyDrop::drop(&mut source.pResource);
+        }
+        result
+    }
+
+    /// Map the source-side bytes produced by
+    /// `transfer_async_with_reference()`. Verification only.
+    pub fn read_back_source(&self) -> windows::core::Result<Vec<u8>> {
+        self.ensure_submission_usable()?;
+        self.wait_shared_fence(self.shared_fence_value.get())?;
+        map_to_vec(&self.src_readback, self.total_bytes)
+    }
+
+    /// Close and submit an already-recorded async list, then attach the public
+    /// shared-fence signal with the same drain/quarantine policy for every
+    /// asynchronous recording path.
+    fn submit_async_list(&self, list: &ID3D12GraphicsCommandList) -> windows::core::Result<u64> {
+        unsafe {
+            list.Close()?;
+            self.src
+                .queue
+                .ExecuteCommandLists(&[Some(list.cast::<ID3D12CommandList>()?)]);
+        }
+        // From this instruction until one of the two fences completes, the
+        // command list is real GPU work with no proven lifetime boundary.
+        // Mark that explicitly before the fallible shared Signal.
+        self.submission_health.set(SubmissionHealth::Quarantined);
+        let value = self.shared_fence_value.get() + 1;
+        match settle_submitted_copy(
+            value,
+            |value| unsafe { self.src.queue.Signal(&self.shared_fence, value) },
+            || self.src.signal_and_wait_after_execute(),
+            || unsafe { self.src_device.GetDeviceRemovedReason().is_err() },
+        ) {
+            SubmittedCopyOutcome::Signaled => {
+                // Signal first, record second. The public counter names only
+                // values the queue actually accepted.
+                self.shared_fence_value.set(value);
+                self.submission_health.set(SubmissionHealth::Usable);
+                Ok(value)
+            }
+            SubmittedCopyOutcome::DrainedAfterSignalFailure(signal) => {
+                // The private fence proves the copy finished, so Python may
+                // release its acquired DXGI frame. Do not reuse the transfer:
+                // a failed public timeline is a terminal queue fault.
+                self.submission_health.set(SubmissionHealth::Poisoned);
+                Err(windows::core::Error::new(
+                    signal.code(),
+                    format!(
+                        "shared-fence Signal failed after submission; the copy was \
+                         drained through the private fence and this transfer is now \
+                         unusable: {signal}"
+                    ),
+                ))
+            }
+            SubmittedCopyOutcome::DeviceRemovedAfterSignalFailure { signal, drain } => {
+                // Device removal signals monitored fences to UINT64_MAX and
+                // terminates its queued work. Resource destruction is safe,
+                // but this transfer cannot submit again.
+                self.submission_health.set(SubmissionHealth::Poisoned);
+                Err(windows::core::Error::new(
+                    signal.code(),
+                    format!(
+                        "shared-fence Signal failed after submission and the fallback \
+                         drain also failed because the device was removed; this transfer \
+                         is unusable: signal={signal}; drain={drain}"
+                    ),
+                ))
+            }
+            SubmittedCopyOutcome::Quarantined { signal, drain } => {
+                // Leave Quarantined set. Drop will retain every referenced
+                // native object, and the Python wrapper will refuse to hand
+                // the acquired frame back to DXGI.
+                Err(windows::core::Error::new(
+                    signal.code(),
+                    format!(
+                        "shared-fence Signal failed after submission and the private \
+                         fence could not drain it while the device remained live; the \
+                         submission is quarantined until process exit: \
+                         signal={signal}; drain={drain}"
+                    ),
+                ))
+            }
+        }
+    }
+
     /// Block until the shared fence reaches `value`. 0 returns immediately.
     pub fn wait_shared_fence(&self, value: u64) -> windows::core::Result<()> {
-        if let Some(event) = self.arm_shared_fence_wait(value)? {
-            unsafe { WaitForSingleObject(HANDLE(event as *mut core::ffi::c_void), INFINITE) };
+        if let Some(raw) = self.arm_shared_fence_wait(value)? {
+            let event = OwnedHandle(HANDLE(raw as *mut core::ffi::c_void));
+            unsafe { WaitForSingleObject(event.0, INFINITE) };
         }
         Ok(())
     }
@@ -1409,17 +1519,17 @@ impl CrossAdapterTransfer {
     /// but a raw event handle can, and waiting on one touches no state here.
     /// That keeps the GIL release provably sound rather than asserted.
     pub fn arm_shared_fence_wait(&self, value: u64) -> windows::core::Result<Option<isize>> {
-        if value == 0 {
-            return Ok(None);
-        }
-        unsafe {
-            if self.shared_fence.GetCompletedValue() >= value {
-                return Ok(None);
-            }
-            self.shared_fence
-                .SetEventOnCompletion(value, self.shared_fence_event)?;
-        }
-        Ok(Some(self.shared_fence_event.0 as isize))
+        let event = arm_fence_wait_with(
+            value,
+            || unsafe { self.shared_fence.GetCompletedValue() },
+            || {
+                Ok(OwnedHandle(unsafe {
+                    CreateEventW(None, false, false, None)?
+                }))
+            },
+            |value, event| unsafe { self.shared_fence.SetEventOnCompletion(value, event.0) },
+        )?;
+        Ok(event.map(|event| event.release().0 as isize))
     }
 
     /// Adopt the consumer's fence, from a shared NT handle it created.
@@ -1985,8 +2095,96 @@ fn make_default_buffer(device: &ID3D12Device, size: u64) -> windows::core::Resul
 
 #[cfg(test)]
 mod submission_failure_tests {
-    use super::{settle_submitted_copy, SubmittedCopyOutcome};
-    use std::cell::Cell;
+    use super::{arm_fence_wait_with, settle_submitted_copy, SubmittedCopyOutcome};
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    #[derive(Clone, Debug)]
+    struct MockEvent {
+        id: usize,
+        drops: Rc<Cell<usize>>,
+    }
+
+    impl Drop for MockEvent {
+        fn drop(&mut self) {
+            self.drops.set(self.drops.get() + 1);
+        }
+    }
+
+    #[test]
+    fn concurrent_waits_get_distinct_owned_events() {
+        let next_id = Cell::new(0usize);
+        let drops = Rc::new(Cell::new(0usize));
+        let registrations = RefCell::new(Vec::new());
+
+        let arm = |value| {
+            arm_fence_wait_with(
+                value,
+                || 0,
+                || {
+                    let id = next_id.get() + 1;
+                    next_id.set(id);
+                    Ok::<MockEvent, &'static str>(MockEvent {
+                        id,
+                        drops: drops.clone(),
+                    })
+                },
+                |value, event| {
+                    registrations.borrow_mut().push((value, event.id));
+                    Ok(())
+                },
+            )
+            .unwrap()
+            .unwrap()
+        };
+
+        let lower = arm(10);
+        let higher = arm(20);
+        assert_ne!(lower.id, higher.id);
+        assert_eq!(
+            *registrations.borrow(),
+            vec![(10, lower.id), (20, higher.id)]
+        );
+        assert_eq!(drops.get(), 0);
+        drop(lower);
+        drop(higher);
+        assert_eq!(drops.get(), 2);
+    }
+
+    #[test]
+    fn a_registration_failure_closes_its_new_event() {
+        let drops = Rc::new(Cell::new(0usize));
+        let result = arm_fence_wait_with(
+            10,
+            || 0,
+            || {
+                Ok(MockEvent {
+                    id: 1,
+                    drops: drops.clone(),
+                })
+            },
+            |_value, _event| Err("SetEventOnCompletion failed"),
+        );
+        assert_eq!(result.unwrap_err(), "SetEventOnCompletion failed");
+        assert_eq!(drops.get(), 1);
+    }
+
+    #[test]
+    fn an_already_completed_wait_allocates_no_event() {
+        let creates = Cell::new(0usize);
+        let result = arm_fence_wait_with(
+            10,
+            || 10,
+            || {
+                creates.set(creates.get() + 1);
+                Ok::<usize, &'static str>(1)
+            },
+            |_value, _event| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(result, None);
+        assert_eq!(creates.get(), 0);
+    }
 
     #[test]
     fn successful_shared_signal_skips_every_recovery_path() {

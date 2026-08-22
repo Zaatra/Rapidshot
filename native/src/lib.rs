@@ -829,6 +829,30 @@ impl CrossAdapterTransfer {
         }
     }
 
+    /// Submit a diagnostic async transfer that writes the shared destination
+    /// and a source-side reference from one frozen snapshot.
+    #[pyo3(signature = (texture_ptr, source_id=0))]
+    fn transfer_async_with_reference(&self, texture_ptr: usize, source_id: u64) -> PyResult<u64> {
+        let inner = self.lock()?;
+        unsafe {
+            with_texture(texture_ptr, |texture| {
+                inner
+                    .transfer_async_with_reference(texture, source_id)
+                    .map_err(|e| {
+                        PyRuntimeError::new_err(format!("async reference transfer failed: {e}"))
+                    })
+            })
+        }
+    }
+
+    /// Source-side bytes written by `transfer_async_with_reference`.
+    fn read_back_source(&self) -> PyResult<Vec<u8>> {
+        let inner = self.lock()?;
+        inner
+            .read_back_source()
+            .map_err(|e| PyRuntimeError::new_err(format!("source readback failed: {e}")))
+    }
+
     /// Read the frame back through the destination device.
     ///
     /// Verification only: in production a consumer on that adapter binds
@@ -957,10 +981,13 @@ impl CrossAdapterTransfer {
         };
         if let Some(raw) = event {
             py.detach(|| unsafe {
-                windows::Win32::System::Threading::WaitForSingleObject(
-                    windows::Win32::Foundation::HANDLE(raw as *mut core::ffi::c_void),
+                let event = windows::Win32::Foundation::HANDLE(raw as *mut core::ffi::c_void);
+                let result = windows::Win32::System::Threading::WaitForSingleObject(
+                    event,
                     windows::Win32::System::Threading::INFINITE,
-                )
+                );
+                let _ = windows::Win32::Foundation::CloseHandle(event);
+                result
             });
         }
         Ok(())

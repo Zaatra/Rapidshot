@@ -353,22 +353,41 @@ def test_the_returned_rows_carry_no_handles(live_capture):
 
 
 def test_async_transfer_is_byte_exact(live_capture):
-    """Not blocking must not mean not correct."""
+    """Compare bytes produced by one asynchronous command list."""
+    frame = _grab(live_capture)
+    if frame is None:
+        pytest.skip("no frame captured -- the screen must be changing")
+    try:
+        transfer = native.cross_adapter_transfer(frame)
+        value = transfer._inner.transfer_async_with_reference(
+            native._texture_address(frame), native._source_id(frame))
+        assert value > 0
+        transfer.wait_shared_fence(value)
+        expected = np.frombuffer(
+            transfer._inner.read_back_source(), dtype=np.uint8)
+        arrived = np.frombuffer(transfer.read_back_destination(), dtype=np.uint8)
+    finally:
+        frame.release()
+
+    assert arrived.any(), "async transfer produced an all-zero destination"
+    assert arrived.shape == expected.shape
+    assert np.array_equal(arrived, expected), (
+        f"{int(np.count_nonzero(arrived != expected))} of {arrived.size} bytes "
+        f"differ, first at offset {int(np.flatnonzero(arrived != expected)[0])}")
+
+
+def test_destination_readback_waits_for_an_async_copy(live_capture):
+    """Immediate verification readback must order behind the source queue."""
     frame = _grab(live_capture)
     if frame is None:
         pytest.skip("no frame captured -- the screen must be changing")
     try:
         transfer = native.cross_adapter_transfer(frame)
         value = transfer.transfer_async(frame)
-        assert value > 0
-        transfer.wait_shared_fence(value)
+        # Deliberately no wait_shared_fence call: readback owns this ordering.
         arrived = np.frombuffer(transfer.read_back_destination(), dtype=np.uint8)
-        assert arrived.any(), "async transfer produced an all-zero destination"
-        expected = np.frombuffer(
-            transfer.transfer_with_reference(frame), dtype=np.uint8)
-        assert np.array_equal(
-            np.frombuffer(transfer.read_back_destination(), dtype=np.uint8),
-            expected)
+        assert transfer.shared_fence_completed >= value
+        assert arrived.any(), "ordered readback produced an all-zero destination"
     finally:
         frame.release()
 
