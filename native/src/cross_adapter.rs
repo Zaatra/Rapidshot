@@ -1180,9 +1180,14 @@ impl CrossAdapterTransfer {
                     .queue
                     .ExecuteCommandLists(&[Some(list.cast::<ID3D12CommandList>()?)]);
             }
+            // Signal first, record second. Storing the value up front means a
+            // failed Signal leaves `shared_fence_value` naming a value the GPU
+            // will never reach -- and every later wait, including the one in
+            // Drop, blocks on it forever with INFINITE. The counter must only
+            // ever describe work that was actually submitted.
             let value = self.shared_fence_value.get() + 1;
-            self.shared_fence_value.set(value);
             unsafe { self.src.queue.Signal(&self.shared_fence, value)? };
+            self.shared_fence_value.set(value);
             Ok(value)
         })();
 

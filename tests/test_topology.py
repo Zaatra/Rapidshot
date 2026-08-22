@@ -125,8 +125,22 @@ class TestMessages:
         assert "DXGI_ERROR_UNSUPPORTED" in described
         # Which adapter owns the display is the part a caller needs in order
         # to know whether their inference device matches.
-        assert "Intel(R) UHD Graphics drives the display" in described
+        assert "Intel(R) UHD Graphics owns the display" in described
         assert "NVIDIA GeForce RTX 4070 Laptop GPU" in described
+
+    def test_hybrid_description_does_not_rule_out_render_only_adapters(self):
+        """The note describes topology; the candidate search decides capability.
+
+        It used to say a render-only adapter "cannot run [Desktop Duplication]
+        against it at all", which is a verdict rather than a description --
+        and it contradicted `_build_duplicator`, which tries every adapter and
+        uses whichever is granted duplication. A user reading the old wording
+        could conclude they needed a cross-adapter copy that capture had in
+        fact just avoided.
+        """
+        described = classify([igpu(), dgpu()]).describe()
+        assert "cannot run against it at all" not in described
+        assert "every adapter is tried" in described
 
     def test_hybrid_description_does_not_promise_capture_works(self):
         """Owning the display does not mean duplication will be granted.

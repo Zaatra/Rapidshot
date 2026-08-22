@@ -78,7 +78,7 @@ class Frame:
         "_texture", "_on_release", "_released", "_region", "_rotation_angle",
         "_present_time_qpc", "_accumulated_frames", "_protected_content",
         "_cursor_visible", "_width", "_height", "_dirty_rects",
-        "_rects_coalesced", "_source_id",
+        "_rects_coalesced", "_source_id", "_release_drains",
     )
 
     def __init__(
@@ -98,6 +98,9 @@ class Frame:
         self._texture = texture
         self._on_release = on_release
         self._released = False
+        # Work that must finish before the surface goes back to DXGI.
+        # See defer_release_until().
+        self._release_drains = []
         self._region = region
         self._rotation_angle = rotation_angle
         self._present_time_qpc = present_time_qpc
@@ -256,14 +259,47 @@ class Frame:
 
     # -- lifetime ----------------------------------------------------------
 
+    def defer_release_until(self, drain) -> None:
+        """Register work that must complete before the surface is handed back.
+
+        The duplicated surface is only valid between ``AcquireNextFrame`` and
+        ``ReleaseFrame``, and a GPU copy reading it does not stop when Python
+        leaves the ``with`` block. An asynchronous consumer -- such as
+        :meth:`CrossAdapterTransfer.transfer_async` -- therefore registers a
+        drain here, and :meth:`release` runs it first.
+
+        Without this, ``with camera.grab_frame() as frame:`` around an async
+        submit releases the surface mid-copy. DXGI is then free to recycle it,
+        and the copy lands a blend of two frames. Nothing raises; the pixels
+        are simply wrong, which is the failure mode this project treats as the
+        worst kind.
+
+        `drain` is called at most once, before the surface is released, and
+        must be idempotent-safe to call after the work already finished.
+        """
+        self._release_drains.append(drain)
+
     def release(self) -> None:
         """
         Hand the texture back to DXGI. Idempotent.
 
-        Until this runs, the next capture cannot acquire a frame.
+        Until this runs, the next capture cannot acquire a frame. Any drains
+        registered by :meth:`defer_release_until` run first -- the surface must
+        not go back while a GPU copy is still reading it.
         """
         if self._released:
             return
+        # Before the flag flips: a drain that raises must not leave the frame
+        # marked released while the surface is still held.
+        drains, self._release_drains = self._release_drains, []
+        for drain in drains:
+            try:
+                drain()
+            except Exception as exc:      # never block handing the surface back
+                logger.warning(
+                    "A release drain failed; releasing the surface anyway. "
+                    "A GPU copy may still have been reading it: %s", exc
+                )
         self._released = True
         self._texture = None
         on_release, self._on_release = self._on_release, None

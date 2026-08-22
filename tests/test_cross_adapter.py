@@ -560,3 +560,65 @@ def test_dropping_after_an_async_submit_does_not_crash(live_capture):
     finally:
         frame.release()
     assert True
+
+
+def test_releasing_a_frame_waits_for_an_async_copy(live_capture):
+    """`with camera.grab_frame()` must not hand the surface back mid-copy.
+
+    The duplicated surface is only valid between AcquireNextFrame and
+    ReleaseFrame, and transfer_async returns while the GPU is still reading it.
+    Releasing in between lets DXGI recycle the surface, and the destination
+    ends up holding a blend of two frames -- silently, which is why this
+    asserts on the fence being waited rather than on pixels. Comparing pixels
+    would pass whenever the race happened not to be lost.
+    """
+    frame = _grab(live_capture)
+    if frame is None:
+        pytest.skip("no frame captured -- the screen must be changing")
+
+    transfer = native.cross_adapter_transfer(frame)
+    waited = []
+    real_wait = transfer.wait_shared_fence
+    transfer.wait_shared_fence = lambda v: (waited.append(v), real_wait(v))[1]
+
+    value = transfer.transfer_async(frame)
+    assert waited == [], "the submit should not have waited"
+    frame.release()
+    assert waited == [value], (
+        "releasing the frame did not wait for the outstanding copy; the "
+        "surface can go back to DXGI while the GPU is still reading it")
+
+
+def test_the_release_drain_runs_before_the_frame_is_marked_released():
+    """Ordering matters: the surface must still be held while draining."""
+    from rapidshot.frame import Frame
+
+    order = []
+    frame = Frame(texture=object(), on_release=lambda: order.append("released"),
+                  region=(0, 0, 8, 8))
+    frame.defer_release_until(lambda: order.append("drained"))
+    frame.release()
+    assert order == ["drained", "released"], order
+    assert frame.released
+
+
+def test_a_failing_drain_still_releases_the_surface():
+    """A stuck consumer must not strand capture.
+
+    DXGI refuses the next acquire while a surface is outstanding, so a drain
+    that raises has to log and continue rather than leave the frame unreleased
+    -- that would stall capture completely rather than degrade.
+    """
+    from rapidshot.frame import Frame
+
+    released = []
+    frame = Frame(texture=object(), on_release=lambda: released.append(True),
+                  region=(0, 0, 8, 8))
+
+    def boom():
+        raise RuntimeError("consumer exploded")
+
+    frame.defer_release_until(boom)
+    frame.release()
+    assert released == [True]
+    assert frame.released

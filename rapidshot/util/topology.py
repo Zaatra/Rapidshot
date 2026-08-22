@@ -70,11 +70,14 @@ _NO_ADAPTER_HELP = (
 )
 
 _HYBRID_NOTE = (
-    "Hybrid GPU system detected. {capture} drives the display, so duplication "
-    "is attempted there first. {others} has no outputs, so Desktop Duplication "
-    "cannot run against it at all (DXGI_ERROR_UNSUPPORTED). If your inference "
-    "device is that adapter, a GPU-resident frame needs a cross-adapter copy "
-    "to reach it; a CPU frame from grab() is unaffected.\n"
+    "Hybrid GPU system detected. {capture} owns the display, so duplication is "
+    "attempted there first. {others} owns no output, which usually means "
+    "Desktop Duplication refuses it with DXGI_ERROR_UNSUPPORTED -- but that "
+    "is where the attempt starts, "
+    "not a verdict: every adapter is tried and the first one granted "
+    "duplication is used. If your inference device is an adapter that is not "
+    "capturing, a GPU-resident frame needs a cross-adapter copy to reach it; a "
+    "CPU frame from grab() is unaffected.\n"
     "\n"
     "Owning an output is necessary but not sufficient. On some hybrid "
     "configurations the display-owning adapter still refuses to duplicate, so "

@@ -576,8 +576,25 @@ class CrossAdapterTransfer:
         entirely by opening :attr:`shared_fence_handle` and waiting on it from
         its own queue.
         """
-        return int(self._inner.transfer_async(
+        value = int(self._inner.transfer_async(
             _texture_address(frame), _source_id(frame)))
+        # Keep the captured surface acquired until this copy finishes.
+        #
+        # The duplicated surface is only valid between AcquireNextFrame and
+        # ReleaseFrame, and this call returns while the GPU is still reading
+        # it. The documented idiom -- `with camera.grab_frame() as frame:` --
+        # releases at scope exit, so without this the surface goes back to DXGI
+        # mid-copy, DXGI recycles it, and the destination silently receives a
+        # blend of two frames. Nothing raises; the pixels are just wrong.
+        #
+        # Releasing therefore waits for this fence. That does not undo the
+        # async win: the calling thread is free between submit and release, and
+        # a consumer that waits GPU-side on `shared_fence_handle` pays nothing
+        # extra, because by the time it releases the copy has long finished.
+        defer = getattr(frame, "defer_release_until", None)
+        if defer is not None:
+            defer(lambda: self.wait_shared_fence(value))
+        return value
 
     def wait_shared_fence(self, value: int) -> None:
         """Block until the shared fence reaches ``value``. 0 returns at once."""
