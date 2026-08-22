@@ -483,6 +483,16 @@ def probe_cross_adapter(
     )
 
 
+def _source_id(frame) -> int:
+    """Which duplicator produced this frame, for cache keys.
+
+    A texture address alone is not an identity: COM addresses are recycled, so
+    a released surface and a later unrelated one can share a pointer. See
+    ``Frame.source_id``.
+    """
+    return int(getattr(frame, "source_id", 0))
+
+
 class CrossAdapterTransfer:
     """Carries captured frames to a second GPU (ROADMAP.md 6.1).
 
@@ -517,7 +527,7 @@ class CrossAdapterTransfer:
         Blocks until the source GPU has finished, so the frame is readable from
         the destination adapter when this returns.
         """
-        self._inner.transfer(_texture_address(frame))
+        self._inner.transfer(_texture_address(frame), _source_id(frame))
 
     def read_back_destination(self) -> bytes:
         """Read the frame back through the destination device.
@@ -536,7 +546,8 @@ class CrossAdapterTransfer:
         in a single command list, because the duplicated surface is live: copies
         submitted separately genuinely observe different pixels.
         """
-        return bytes(self._inner.transfer_with_reference(_texture_address(frame)))
+        return bytes(self._inner.transfer_with_reference(
+            _texture_address(frame), _source_id(frame)))
 
     def transfer_async(self, frame) -> int:
         """Submit a transfer without blocking; returns the fence value to await.
@@ -565,7 +576,8 @@ class CrossAdapterTransfer:
         entirely by opening :attr:`shared_fence_handle` and waiting on it from
         its own queue.
         """
-        return int(self._inner.transfer_async(_texture_address(frame)))
+        return int(self._inner.transfer_async(
+            _texture_address(frame), _source_id(frame)))
 
     def wait_shared_fence(self, value: int) -> None:
         """Block until the shared fence reaches ``value``. 0 returns at once."""
@@ -582,7 +594,7 @@ class CrossAdapterTransfer:
         only configuration both adapters can observe.
 
         Borrowed, like :attr:`shared_destination_handle`: closed when this
-        transfer is dropped.
+        transfer is dropped, and likewise **not yours to close**.
         """
         return int(self._inner.shared_fence_handle)
 
@@ -600,6 +612,15 @@ class CrossAdapterTransfer:
         visible symptom -- tests assert on this key, not on pixels.
         """
         return int(self._inner.cached_texture_address)
+
+    @property
+    def cached_source_id(self) -> int:
+        """``source_id`` of the cached capture texture, or 0.
+
+        The other half of the cache key. The texture address alone is not an
+        identity, so tests assert on both.
+        """
+        return int(self._inner.cached_source_id)
 
     @property
     def shared_destination_handle(self) -> int:
@@ -620,12 +641,16 @@ class CrossAdapterTransfer:
         :attr:`GpuPreprocessor12.shared_output_handle`, which is a committed
         resource and imports as type 5.
 
-        **Borrowed, not owned.** It is closed when this transfer is dropped and
-        the heap goes with it, so a consumer holding the integer -- or a device
-        pointer mapped from it -- has nothing that looks wrong afterwards. Keep
-        the transfer alive for as long as anything reads the frame. Closing the
-        handle yourself after importing is safe and does not invalidate the
-        mapping; keeping the *transfer* alive is what matters.
+        **Borrowed, not owned. Do not close it.** This transfer closes it on
+        drop, and Windows recycles handle *values* -- so closing it yourself
+        leaves the transfer holding a number that may by then name an unrelated
+        file, event or socket, which it will duly close later. Import from it
+        and leave it alone.
+
+        A consumer holding the integer, or a device pointer mapped from it, has
+        nothing that looks wrong once the transfer is gone, so keep the
+        transfer alive for as long as anything reads the frame. If you need an
+        independently owned handle, duplicate it with ``DuplicateHandle``.
 
         Verified 2026-08-22 on an Intel iGPU -> RTX 4060 pair: the imported
         buffer reads byte-identical to :meth:`read_back_destination`, and

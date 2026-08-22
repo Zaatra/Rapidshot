@@ -790,7 +790,8 @@ impl CrossAdapterTransfer {
 
     /// Copy one frame across. Blocks until the source GPU has finished, so the
     /// frame is readable on the destination adapter when this returns.
-    fn transfer(&self, texture_ptr: usize) -> PyResult<()> {
+    #[pyo3(signature = (texture_ptr, source_id=0))]
+    fn transfer(&self, texture_ptr: usize, source_id: u64) -> PyResult<()> {
         let inner = self.lock()?;
         // NOTE: this holds the GIL for the whole copy (~6 ms at 2560x1600).
         // The wait is buried between COM calls on interior-mutable state, so
@@ -801,7 +802,7 @@ impl CrossAdapterTransfer {
             unsafe {
                 with_texture(texture_ptr, |texture| {
                     inner
-                        .transfer(texture)
+                        .transfer(texture, source_id)
                         .map_err(|e| PyRuntimeError::new_err(format!("transfer failed: {e}")))
                 })
             }
@@ -816,12 +817,13 @@ impl CrossAdapterTransfer {
     /// submitted copies genuinely see different pixels, and comparing against a
     /// CPU capture does not work either — Desktop Duplication reports only
     /// changed content, so consecutive frames differ by construction.
-    fn transfer_with_reference(&self, texture_ptr: usize) -> PyResult<Vec<u8>> {
+    #[pyo3(signature = (texture_ptr, source_id=0))]
+    fn transfer_with_reference(&self, texture_ptr: usize, source_id: u64) -> PyResult<Vec<u8>> {
         let inner = self.lock()?;
         unsafe {
             with_texture(texture_ptr, |texture| {
                 inner
-                    .transfer_with_reference(texture)
+                    .transfer_with_reference(texture, source_id)
                     .map_err(|e| PyRuntimeError::new_err(format!("reference transfer failed: {e}")))
             })
         }
@@ -847,19 +849,20 @@ impl CrossAdapterTransfer {
     /// median**: it is bimodal, ~0 whenever the GPU already finished.
     ///
     /// Sizes what a shared fence would buy -- only `wait` is removable.
-    #[pyo3(signature = (frame_texture_ptr, iterations=200, use_cache=true))]
+    #[pyo3(signature = (frame_texture_ptr, iterations=200, use_cache=true, source_id=0))]
     fn probe_transfer_phases(
         &self,
         py: Python<'_>,
         frame_texture_ptr: usize,
         iterations: u32,
         use_cache: bool,
+        source_id: u64,
     ) -> PyResult<Py<PyDict>> {
         let inner = self.lock()?;
         let phases = unsafe {
             with_texture(frame_texture_ptr, |texture| {
                 inner
-                    .probe_transfer_phases(texture, iterations, use_cache)
+                    .probe_transfer_phases(texture, iterations, use_cache, source_id)
                     .map_err(|e| PyRuntimeError::new_err(format!("phase probe failed: {e}")))
             })?
         };
@@ -918,7 +921,8 @@ impl CrossAdapterTransfer {
     /// Still waits for the *previous* submission before recording, because the
     /// command allocator cannot be reset while the GPU is reading it. Pipelines
     /// to depth one.
-    fn transfer_async(&self, texture_ptr: usize) -> PyResult<u64> {
+    #[pyo3(signature = (texture_ptr, source_id=0))]
+    fn transfer_async(&self, texture_ptr: usize, source_id: u64) -> PyResult<u64> {
         let inner = self.lock()?;
         // Usually returns immediately; it waits for the *previous* submission
         // before resetting the allocator, so on a saturated pipeline it can
@@ -927,7 +931,7 @@ impl CrossAdapterTransfer {
             unsafe {
                 with_texture(texture_ptr, |texture| {
                     inner
-                        .transfer_async(texture)
+                        .transfer_async(texture, source_id)
                         .map_err(|e| PyRuntimeError::new_err(format!("async transfer failed: {e}")))
                 })
             }
@@ -975,6 +979,13 @@ impl CrossAdapterTransfer {
     #[getter]
     fn cached_texture_address(&self) -> PyResult<usize> {
         Ok(self.lock()?.cached_texture_address())
+    }
+
+    /// `source_id` of the cached entry, or 0. The texture pointer alone is not
+    /// an identity -- COM addresses are recycled -- so both halves are exposed.
+    #[getter]
+    fn cached_source_id(&self) -> PyResult<u64> {
+        Ok(self.lock()?.cached_source_id())
     }
 
     /// NT handle for the destination heap, for a consumer on that adapter.

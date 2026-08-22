@@ -504,3 +504,59 @@ def test_wait_shared_fence_releases_the_gil(live_capture):
     assert progressed > 0, (
         "another Python thread made no progress across five fence waits; "
         "wait_shared_fence is holding the GIL")
+
+
+def test_the_cache_key_includes_the_source_id(live_capture):
+    """A texture address alone is not an identity.
+
+    COM addresses are recycled, so after an access-loss rebuild a new
+    duplicator can hand back an unrelated texture at the same pointer. Keying
+    on the pointer alone would return the previously opened D3D12 resource and
+    copy a stale frame -- silently, since the output still looks like a frame.
+    `Frame.source_id` says which duplicator produced the texture, and the pair
+    is what `GpuPreprocessor12` has always keyed on.
+    """
+    frame = _grab(live_capture)
+    if frame is None:
+        pytest.skip("no frame captured -- the screen must be changing")
+    try:
+        transfer = native.cross_adapter_transfer(frame)
+        transfer.transfer(frame)
+        key = (transfer.cached_texture_address, transfer.cached_source_id)
+        assert key[0] != 0
+
+        # Same pointer, different producer: the pair must miss even though the
+        # address matches, which is the whole point of the second component.
+        transfer._inner.transfer(transfer.cached_texture_address,
+                                 transfer.cached_source_id + 1)
+        assert transfer.cached_source_id == key[1] + 1
+        assert transfer.cached_texture_address == key[0]
+    finally:
+        frame.release()
+
+
+def test_dropping_after_an_async_submit_does_not_crash(live_capture):
+    """Drop must not free resources the GPU is still reading.
+
+    `transfer()` blocks, so before `transfer_async()` this was unreachable. It
+    is not now: a caller that submits and drops -- or whose exception skips the
+    wait -- would otherwise release the cached source resource, both heaps, the
+    command list and the fences mid-copy. D3D12 requires them alive until the
+    GPU finishes; the drop path waits for the last signalled fence value.
+
+    A crash here is a process-level failure, so this asserting "we got here"
+    is the assertion.
+    """
+    import gc
+    frame = _grab(live_capture)
+    if frame is None:
+        pytest.skip("no frame captured -- the screen must be changing")
+    try:
+        for _ in range(3):
+            transfer = native.cross_adapter_transfer(frame)
+            transfer.transfer_async(frame)      # deliberately no wait
+            del transfer
+            gc.collect()
+    finally:
+        frame.release()
+    assert True

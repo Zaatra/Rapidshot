@@ -385,7 +385,7 @@ def test_output_change_rebuild_is_bounded_and_does_not_hang(monkeypatch):
     cam._last_capture_error_message = ""
     cam._max_output_change_retries = 5
     cam._timeout_ms = 10                          # __init__ always sets this
-    cam._fallback_devices = []                    # ditto: adapters to try next
+    cam._all_devices = [None]                     # ditto: adapters to try
 
     assert cam._on_output_change() is False       # reports failure
     assert attempts["n"] == 5                     # bounded, did not spin
@@ -439,10 +439,9 @@ def test_output_change_gives_up_immediately_on_protected_content(monkeypatch):
     # acquire timeout across; __init__ always sets this, but these fixtures
     # build the object with __new__.
     cam._timeout_ms = 10
-    # Candidate adapters to fall back to when one refuses to duplicate. Empty
-    # here so the rebuild tries exactly one adapter per attempt, which is what
-    # the attempt counts below are asserting.
-    cam._fallback_devices = []
+    # Candidate adapters. Just the one here, so the rebuild tries exactly one
+    # per attempt, which is what the attempt counts below are asserting.
+    cam._all_devices = [None]
 
     assert cam._on_output_change() is False
     assert attempts["n"] == 1  # no retry storm
@@ -462,7 +461,7 @@ def _capture_stub(primary, fallbacks):
     cam = ScreenCapture.__new__(ScreenCapture)
     cam._output = FakeOutput()
     cam._device = primary
-    cam._fallback_devices = list(fallbacks)
+    cam._all_devices = [primary] + list(fallbacks)
     cam._timeout_ms = 10
     return cam
 
@@ -494,6 +493,41 @@ def test_duplication_falls_back_to_another_adapter(monkeypatch):
     # The stage surface is built on self._device and must land on the same
     # adapter as the duplicated texture, so the winner has to be recorded.
     assert cam._device is good
+
+
+def test_the_original_adapter_stays_a_candidate_after_a_fallback_wins(monkeypatch):
+    """Winning once must not remove the loser from the pool.
+
+    `_build_duplicator` reassigns `self._device` to whichever adapter was
+    granted duplication. If the candidate list were "everything except the
+    starting device", the original would vanish the moment a fallback won --
+    and a later rebuild where the fallback starts refusing and the original is
+    valid again would fail with a working adapter available. Ordering is a
+    preference; the set has to stay whole.
+    """
+    import rapidshot.capture as capture_module
+    from rapidshot.util.errors import RapidShotConfigError
+
+    original, fallback = object(), object()
+    refuse = {original}
+
+    def picky_duplicator(output, device, timeout_ms=10):
+        if device in refuse:
+            raise RapidShotConfigError("refused", hresult=DXGI_ERROR_UNSUPPORTED)
+        return f"duplicator-{'original' if device is original else 'fallback'}"
+
+    monkeypatch.setattr(capture_module, "Duplicator", picky_duplicator)
+    cam = _capture_stub(primary=original, fallbacks=[fallback])
+
+    assert cam._build_duplicator() == "duplicator-fallback"
+    assert cam._device is fallback
+
+    # The situation reverses -- a MUX flip, an output change -- and the
+    # original becomes the only adapter that will duplicate.
+    refuse.clear()
+    refuse.add(fallback)
+    assert cam._build_duplicator() == "duplicator-original"
+    assert cam._device is original
 
 
 def test_duplication_does_not_retry_a_non_adapter_refusal(monkeypatch):
@@ -692,7 +726,7 @@ def test_timeout_ms_survives_a_duplication_rebuild(monkeypatch):
 
     cam = ScreenCapture.__new__(ScreenCapture)
     cam._timeout_ms = 0                      # the caller asked for polling
-    cam._fallback_devices = []               # __init__ sets this; __new__ does not
+    cam._all_devices = [None]                # __init__ sets this; __new__ does not
     cam._duplicator = None
     cam._stagesurf = FakeStageSurf()
     cam._output = FakeOutput()

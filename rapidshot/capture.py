@@ -115,10 +115,16 @@ class ScreenCapture:
         self._output = output
         self._device = device
         self._init_error: Optional[Exception] = None
-        # Other adapters to try if `device` refuses to duplicate this output.
+        # Every adapter that could duplicate this output, the given one first.
         # See _build_duplicator: on a hybrid system the adapter that owns the
         # output is not necessarily the one Desktop Duplication will accept.
-        self._fallback_devices = list(fallback_devices or [])
+        #
+        # This is the full set, not "the others": _build_duplicator reassigns
+        # self._device to whichever adapter wins, so a set that excluded the
+        # starting device would shrink by one on every fallback.
+        self._all_devices = [device] + [
+            d for d in (fallback_devices or []) if d is not device
+        ]
         self._timeout_ms = timeout_ms
         self._duplicator = None
         self._stagesurf = None
@@ -236,8 +242,15 @@ class ScreenCapture:
             RapidShotConfigError: every candidate refused. The message names
                 the likely system-level cause, which the raw HRESULT did not.
         """
+        # Current device first, then every other candidate -- reordered, never
+        # removed. `self._device` is reassigned below when a fallback wins, so
+        # excluding "the original" from the list would make it permanently
+        # unreachable: a later rebuild where the fallback starts refusing and
+        # the original adapter is valid again would then fail with a working
+        # adapter sitting right there. Ordering is a preference; the candidate
+        # set has to stay whole.
         candidates = [self._device] + [
-            d for d in self._fallback_devices if d is not self._device
+            d for d in self._all_devices if d is not self._device
         ]
         refusals = []
         for device in candidates:

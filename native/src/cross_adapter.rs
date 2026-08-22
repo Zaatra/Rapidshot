@@ -546,6 +546,16 @@ impl Submitter {
 
 impl Drop for CrossAdapterTransfer {
     fn drop(&mut self) {
+        // Wait for anything still in flight before releasing a single object.
+        //
+        // `transfer()` blocks, so before `transfer_async()` existed this was
+        // unreachable. It is not now: a caller that submits and then drops the
+        // transfer -- including when an exception skips the explicit wait --
+        // would otherwise free the cached source resource, both heaps, the
+        // command list and the fences while the source queue is still reading
+        // them. D3D12 requires the application to keep them alive until the
+        // GPU finishes; not doing so is device removal or silent corruption.
+        let _ = self.wait_shared_fence(self.shared_fence_value.get());
         // Release the cached view of the capture texture, and the handle it
         // was opened from, before the devices go.
         if let Some((_, handle)) = self.cached_shared.borrow_mut().take() {
@@ -632,7 +642,15 @@ pub struct CrossAdapterTransfer {
     /// closing 110.2 us per frame, together 13.4% of a transfer. Section 6.1
     /// previously recorded that overhead as noise, which it was on the hardware
     /// available then; it is not noise here.
-    cached_texture: Cell<usize>,
+    /// Keyed on `(texture pointer, source_id)`, not the pointer alone.
+    ///
+    /// COM addresses are recycled, so a released surface and a later unrelated
+    /// one can share a pointer -- `Frame.source_id` says which duplicator
+    /// produced the texture, and the pair is a sound identity where the
+    /// pointer is not. `GpuPreprocessor12` keys the same way for the same
+    /// reason; keying on the pointer alone would return a stale D3D12 resource
+    /// after an access-loss rebuild and silently copy the wrong frame.
+    cached_texture: Cell<(usize, u64)>,
     cached_shared: std::cell::RefCell<Option<(ID3D12Resource, HANDLE)>>,
     /// A fence the destination adapter can also see, so a consumer there can
     /// wait on the copy GPU-side instead of the calling thread blocking.
@@ -859,7 +877,7 @@ impl CrossAdapterTransfer {
             src_readback,
             snapshot,
             shared_destination_handle,
-            cached_texture: Cell::new(0),
+            cached_texture: Cell::new((0, 0)),
             cached_shared: std::cell::RefCell::new(None),
             shared_fence,
             shared_fence_handle,
@@ -879,8 +897,8 @@ impl CrossAdapterTransfer {
     ///
     /// Blocks until the source GPU has finished, so the frame is readable from
     /// the destination adapter by the time this returns.
-    pub fn transfer(&self, texture: &ID3D11Texture2D) -> windows::core::Result<()> {
-        self.copy_from(texture, false)
+    pub fn transfer(&self, texture: &ID3D11Texture2D, source_id: u64) -> windows::core::Result<()> {
+        self.copy_from(texture, false, source_id)
     }
 
     /// Copy the texture into the shared heap, optionally mirroring the same
@@ -899,8 +917,9 @@ impl CrossAdapterTransfer {
     fn open_capture_texture(
         &self,
         texture: &ID3D11Texture2D,
+        source_id: u64,
     ) -> windows::core::Result<ID3D12Resource> {
-        let key = texture.as_raw() as usize;
+        let key = (texture.as_raw() as usize, source_id);
         if self.cached_texture.get() == key {
             if let Some((resource, _)) = self.cached_shared.borrow().as_ref() {
                 return Ok(resource.clone());
@@ -936,6 +955,7 @@ impl CrossAdapterTransfer {
         &self,
         texture: &ID3D11Texture2D,
         with_reference: bool,
+        source_id: u64,
     ) -> windows::core::Result<()> {
         let mut desc = Default::default();
         unsafe { texture.GetDesc(&mut desc) };
@@ -946,7 +966,7 @@ impl CrossAdapterTransfer {
             ));
         }
 
-        let shared = self.open_capture_texture(texture)?;
+        let shared = self.open_capture_texture(texture, source_id)?;
 
         if with_reference {
             return self.copy_via_snapshot(&shared);
@@ -991,8 +1011,9 @@ impl CrossAdapterTransfer {
     pub fn transfer_with_reference(
         &self,
         texture: &ID3D11Texture2D,
+        source_id: u64,
     ) -> windows::core::Result<Vec<u8>> {
-        self.copy_from(texture, true)?;
+        self.copy_from(texture, true, source_id)?;
         map_to_vec(&self.src_readback, self.total_bytes)
     }
 
@@ -1085,7 +1106,11 @@ impl CrossAdapterTransfer {
     /// The returned value is for `wait_shared_fence`. A consumer on the
     /// destination adapter can instead wait GPU-side on the fence opened from
     /// `shared_fence_handle()`, which is the point of it being cross-adapter.
-    pub fn transfer_async(&self, texture: &ID3D11Texture2D) -> windows::core::Result<u64> {
+    pub fn transfer_async(
+        &self,
+        texture: &ID3D11Texture2D,
+        source_id: u64,
+    ) -> windows::core::Result<u64> {
         let mut desc = Default::default();
         unsafe { texture.GetDesc(&mut desc) };
         if desc.Width != self.width || desc.Height != self.height {
@@ -1098,7 +1123,7 @@ impl CrossAdapterTransfer {
         // The allocator reset below is only safe once the GPU is done with it.
         self.wait_shared_fence(self.shared_fence_value.get())?;
 
-        let shared = self.open_capture_texture(texture)?;
+        let shared = self.open_capture_texture(texture, source_id)?;
         let mut src_location = D3D12_TEXTURE_COPY_LOCATION {
             pResource: core::mem::ManuallyDrop::new(Some(shared)),
             Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
@@ -1203,6 +1228,7 @@ impl CrossAdapterTransfer {
         texture: &ID3D11Texture2D,
         iterations: u32,
         use_cache: bool,
+        source_id: u64,
     ) -> windows::core::Result<[(f64, f64); 6]> {
         let count = iterations.max(1) as usize;
         let mut phases: [Vec<f64>; 6] = Default::default();
@@ -1210,7 +1236,10 @@ impl CrossAdapterTransfer {
         for _ in 0..count {
             let t0 = std::time::Instant::now();
             let (shared, handle) = if use_cache {
-                (self.open_capture_texture(texture)?, HANDLE::default())
+                (
+                    self.open_capture_texture(texture, source_id)?,
+                    HANDLE::default(),
+                )
             } else {
                 let resource: IDXGIResource1 = texture.cast()?;
                 let handle =
@@ -1372,7 +1401,16 @@ impl CrossAdapterTransfer {
     /// key, not on pixels.
     pub fn cached_texture_address(&self) -> usize {
         if self.cached_shared.borrow().is_some() {
-            self.cached_texture.get()
+            self.cached_texture.get().0
+        } else {
+            0
+        }
+    }
+
+    /// `source_id` of the cached entry, or 0. The other half of the key.
+    pub fn cached_source_id(&self) -> u64 {
+        if self.cached_shared.borrow().is_some() {
+            self.cached_texture.get().1
         } else {
             0
         }
