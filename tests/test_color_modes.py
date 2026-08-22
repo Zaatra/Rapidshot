@@ -130,8 +130,8 @@ def test_gray_convert_into_handles_varying_shapes():
         assert np.array_equal(dst, bgra_to_gray(sub)), (top, left, bottom, right)
 
 
-def test_gray_numpy_path_allocates_nothing_in_steady_state(monkeypatch):
-    """Reusing intermediates is the whole point -- 1.83x came from the allocations.
+def test_gray_numpy_path_reuses_full_frame_scratch(monkeypatch):
+    """Reusing intermediates is the whole point -- 1.83x came from allocations.
 
     The previous formulation materialised a full-frame uint16 temporary per
     channel; on a 1080p frame those page faults cost more than the arithmetic.
@@ -145,22 +145,37 @@ def test_gray_numpy_path_allocates_nothing_in_steady_state(monkeypatch):
 
     monkeypatch.setattr(numpy_processor, "_native_gray", lambda src, out: False)
 
+    class NoAllocatingCast(np.ndarray):
+        """Refuse the full-frame ``astype`` path this test guards against."""
+
+        def astype(self, *args, **kwargs):
+            raise AssertionError("GRAY conversion allocated through astype")
+
     proc = NumpyProcessor("GRAY")
-    bgra = make_bgra(height=128, width=128)
+    bgra = make_bgra(height=128, width=128).view(NoAllocatingCast)
     dst = np.empty((128, 128, 1), np.uint8)
-    proc.convert_into(bgra, dst)  # first call sizes the scratch
+    proc.convert_into(bgra, dst)
+    scratch_a = proc._luma_a
+    scratch_b = proc._luma_b
+    capacity = proc._luma_capacity
 
-    import tracemalloc
+    assert scratch_a is not None and scratch_a.size == 128 * 128
+    assert scratch_b is not None and scratch_b.size == 128 * 128
 
-    tracemalloc.start()
-    try:
-        before = tracemalloc.get_traced_memory()[0]
-        for _ in range(10):
-            proc.convert_into(bgra, dst)
-        after = tracemalloc.get_traced_memory()[0]
-    finally:
-        tracemalloc.stop()
-    assert after - before == 0
+    # Once sized, conversion must not ask NumPy for another application-owned
+    # array. This tests the allocation decision directly instead of observing
+    # CPython/NumPy allocator bookkeeping, which differs across supported
+    # versions and made the previous tracemalloc assertion flaky.
+    def reject_empty(*args, **kwargs):
+        raise AssertionError("GRAY conversion replaced its reusable scratch")
+
+    monkeypatch.setattr(numpy_processor.np, "empty", reject_empty)
+    for _ in range(10):
+        proc.convert_into(bgra, dst)
+
+    assert proc._luma_a is scratch_a
+    assert proc._luma_b is scratch_b
+    assert proc._luma_capacity == capacity
 
 
 def test_gray_native_kernel_matches_numpy_exactly():

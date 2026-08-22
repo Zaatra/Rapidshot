@@ -60,6 +60,55 @@ CONTROL_BENCHMARK = "control.memcopy"
 # identical code, while the millisecond-scale ones hold within 1.02x.
 LOW_RESOLUTION_MS = 0.5
 
+# Benchmarks whose *meaning* changed in a given release, and are therefore not
+# comparable against any recording made before it. This is a different failure
+# from noise: the numbers are both correct, they just measure different things,
+# so no amount of repetition or drift correction reconciles them.
+#
+# ROADMAP.md section 10 records both cases. `pipeline.cpu_to_nchw` was a strawman
+# reference arm rewritten in 2.2.0 and again in 2.3.0. `pipeline.gpu_plus_readback`
+# was substantially a CPython allocator benchmark until 2.3.0 made `read_back`
+# return bytes instead of a `Vec<f32>` that PyO3 turned into 1.2M Python floats
+# per call -- 14.19 -> 2.24 ms, which is a change in the harness's own
+# verification helper rather than in anything a consumer pays for.
+#
+# Without this, comparing a 2.3.0 run against the 2.1.0 `baseline.json` reports
+# `gpu_plus_readback` as **FASTER 6.08x** and reads as a hardware result. It is
+# not; it is a code change that had already landed, and the row it lands on is
+# one of the two that Stage 6 was promoted on (section 11). A spurious
+# improvement is the dangerous direction precisely because nobody investigates
+# good news.
+#
+# Keyed by the version the row's definition changed *in*: a baseline recorded on
+# an earlier version cannot be compared on it.
+_REDEFINED_IN: Dict[str, str] = {
+    "pipeline.cpu_to_nchw": "2.3.0",
+    "pipeline.gpu_plus_readback": "2.3.0",
+}
+
+
+def _version_tuple(v: str) -> tuple:
+    """Parse 'x.y.z' for ordering. Unparseable versions sort lowest.
+
+    An absent or malformed version must compare as *older* than every known
+    redefinition, so a recording that predates version stamping is treated as
+    not comparable rather than silently compared.
+    """
+    try:
+        return tuple(int(part) for part in str(v).split(".")[:3])
+    except (TypeError, ValueError):
+        return ()
+
+
+def _redefined_since(name: str, baseline_version: str) -> Optional[str]:
+    """The version that redefined `name`, if the baseline predates it."""
+    changed_in = _REDEFINED_IN.get(name)
+    if changed_in is None:
+        return None
+    if _version_tuple(baseline_version) < _version_tuple(changed_in):
+        return changed_in
+    return None
+
 
 # ---------------------------------------------------------------------------
 # harness
@@ -691,6 +740,10 @@ def print_comparison(current: List[Result], baseline_path: Path,
     # ROADMAP.md section 2 records the same limitation for GRAY.
     base_machine = baseline.get("machine", {})
     now_machine = machine_info()
+    # Used to suppress rows whose definition changed after this baseline was
+    # recorded. Absent on recordings made before the field existed, which
+    # _version_tuple deliberately sorts lowest.
+    base_version = base_machine.get("rapidshot", "")
 
     def _differing(keys):
         # `is not None`, not truthiness: `pinned_to_performance_cores` is a
@@ -790,6 +843,7 @@ def print_comparison(current: List[Result], baseline_path: Path,
     print("-" * (61 + len(hdr_adj) + 20))
 
     regressions = 0
+    redefined_rows: List[Tuple[str, str]] = []
     for r in current:
         b = base.get(r.name)
         if b is None:
@@ -803,45 +857,60 @@ def print_comparison(current: List[Result], baseline_path: Path,
         adj_ratio = ratio * drift  # what the ratio would be at baseline speed
         judged = adj_ratio if show_adj else ratio
 
+        # Checked before anything else: if the row measures something different
+        # now than it did when the baseline was recorded, no verdict about it
+        # means anything, in either direction.
+        redefined = _redefined_since(r.name, base_version)
+        if redefined:
+            redefined_rows.append((r.name, redefined))
+
+        # Why this row cannot be believed, if it cannot. Computed once and
+        # applied to both directions.
+        #
+        # These qualifiers used to live only in the SLOWER branch, while the
+        # FASTER branch carried a comment claiming they applied "in both
+        # directions on purpose". They did not. A live row reporting FASTER
+        # 8.70x therefore printed bare, exactly the spurious improvement the
+        # comment said to guard against -- found 2026-08-22 by running the
+        # verification pass section 2 requires after re-recording a baseline.
+        if redefined:
+            caveat = f" (redefined in {redefined}: NOT COMPARABLE)"
+        elif r.kind == "live":
+            # Live benchmarks depend on what is happening on screen, which is
+            # not a controlled input: repeated runs of identical code have been
+            # observed to swing 2.5x. Reported for information, never gating,
+            # or the suite cries wolf and gets ignored.
+            caveat = " (live: informational)"
+        elif r.name in _DUTY_SENSITIVE or "duty-cycle" in b.get("note", ""):
+            # This benchmark measures differently depending on how hard it is
+            # driven, so its minimum estimates "did a sample land in the fast
+            # mode" rather than the code's cost. GRAY produced four readings
+            # from 8.75 to 15.70 ms on identical code this way.
+            #
+            # The baseline's own flag counts, not just this run's: the detector
+            # only fires when a paced sample reached the fast mode, so a run
+            # that stays slow throughout looks consistent and would then be
+            # gated against a baseline that got lucky. Once either side has
+            # seen two modes, the comparison is untrustworthy both ways.
+            caveat = " (duty-cycle sensitive: informational)"
+        elif max(before, after) < LOW_RESOLUTION_MS:
+            # Below roughly half a millisecond the OS scheduler's granularity
+            # dominates, and drift normalisation amplifies it further.
+            caveat = " (sub-ms: informational)"
+        elif cross_machine:
+            caveat = " (cross-machine: indicative)"
+        else:
+            caveat = ""
+
         if r.name == CONTROL_BENCHMARK:
             verdict = "(calibration)"
         elif judged >= threshold:
-            verdict = f"FASTER {judged:.2f}x"
-            # Flagged in both directions on purpose: a spurious improvement is
-            # as misleading as a spurious regression, and harder to notice
-            # because nobody investigates good news.
-            if cross_machine:
-                verdict += " (cross-machine: indicative)"
+            # An unexplained improvement is as much a measurement failure as an
+            # unexplained regression, and nobody investigates good news.
+            verdict = f"FASTER {judged:.2f}x{caveat}"
         elif judged <= 1.0 / threshold:
-            verdict = f"SLOWER {1 / judged:.2f}x"
-            # Live benchmarks depend on what is happening on screen, which is
-            # not a controlled input: repeated runs of identical code have been
-            # observed to swing 2.5x. They are reported for information but must
-            # not gate a change, or the suite cries wolf and gets ignored.
-            if r.kind == "live":
-                verdict += " (live: informational)"
-            elif r.name in _DUTY_SENSITIVE or "duty-cycle" in b.get("note", ""):
-                # This benchmark measures differently depending on how hard it
-                # is driven, so its minimum estimates "did a sample land in the
-                # fast mode" rather than the code's cost. GRAY produced four
-                # readings from 8.75 to 15.70 ms on identical code this way.
-                #
-                # The baseline's own flag counts, not just this run's. The
-                # detector compares a paced sample against a sustained one, so
-                # it only fires when the paced sample reached the fast mode —
-                # meaning a run that stays slow throughout looks consistent and
-                # goes unflagged, and would then be gated against a baseline
-                # that got lucky. Once either side has seen two modes, the
-                # comparison is untrustworthy in both directions.
-                verdict += " (duty-cycle sensitive: informational)"
-            elif max(before, after) < LOW_RESOLUTION_MS:
-                # Below roughly half a millisecond the OS scheduler's
-                # granularity dominates, and drift normalisation amplifies it
-                # further. These are reported but do not gate.
-                verdict += " (sub-ms: informational)"
-            elif cross_machine:
-                verdict += " (cross-machine: indicative)"
-            else:
+            verdict = f"SLOWER {1 / judged:.2f}x{caveat}"
+            if not caveat:
                 regressions += 1
         else:
             verdict = "~ same"
@@ -850,6 +919,18 @@ def print_comparison(current: List[Result], baseline_path: Path,
         print(f"{r.name:<30}{before:>8.3f}m{after:>8.3f}m{ratio:>10.2f}x"
               f"{adj_col}  {verdict}")
     print("-" * (61 + len(hdr_adj) + 20))
+
+    if redefined_rows:
+        # Say this loudly and unconditionally. The row this was built for
+        # reported FASTER 6.08x against a 2.1.0 baseline and reads as a
+        # hardware win; it is a code change that had already landed. A
+        # reader who sees only the table has no way to know that.
+        print(f"\n{len(redefined_rows)} row(s) NOT COMPARABLE against this "
+              f"baseline (recorded on rapidshot {base_version or 'unknown'}):")
+        for name, changed_in in redefined_rows:
+            print(f"  {name} -- what it measures changed in {changed_in}")
+        print("These are excluded from the verdict in both directions. "
+              "Re-record on this machine to compare them.")
 
     if cross_machine:
         print("\nNo verdict gated: the baseline came from different hardware.")

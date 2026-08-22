@@ -123,10 +123,58 @@ class TestMessages:
         described = classify([igpu(), dgpu()]).describe()
         assert "Hybrid GPU system detected" in described
         assert "DXGI_ERROR_UNSUPPORTED" in described
-        # Which adapter capture landed on is the part a caller needs in order
+        # Which adapter owns the display is the part a caller needs in order
         # to know whether their inference device matches.
-        assert "Capture runs on Intel(R) UHD Graphics" in described
+        assert "Intel(R) UHD Graphics owns the display" in described
         assert "NVIDIA GeForce RTX 4070 Laptop GPU" in described
+
+    def test_hybrid_description_does_not_rule_out_render_only_adapters(self):
+        """The note describes topology; the candidate search decides capability.
+
+        It used to say a render-only adapter "cannot run [Desktop Duplication]
+        against it at all", which is a verdict rather than a description --
+        and it contradicted `_build_duplicator`, which tries every adapter and
+        uses whichever is granted duplication. A user reading the old wording
+        could conclude they needed a cross-adapter copy that capture had in
+        fact just avoided.
+        """
+        described = classify([igpu(), dgpu()]).describe()
+        assert "cannot run against it at all" not in described
+        assert "every adapter is tried" in described
+
+    def test_hybrid_description_does_not_promise_capture_works(self):
+        """Owning the display does not mean duplication will be granted.
+
+        This used to read "Capture runs on <adapter>" -- a prediction stated as
+        fact. Measured 2026-08-21 on a hybrid machine whose display-owning
+        adapter refused DuplicateOutput with DXGI_ERROR_UNSUPPORTED, as did
+        every other adapter: the sentence was false, and it was the only thing
+        the caller was told.
+        """
+        described = classify([igpu(), dgpu()]).describe()
+        assert "Capture runs on" not in described
+        assert "only known once it has been tried" in described
+
+    def test_duplication_failure_help_names_hybrid_causes(self):
+        """Every adapter refusing is a different failure from having no display.
+
+        help_text() answers "there is nothing to capture"; this answers "there
+        is a display and nothing would duplicate it", which has different
+        causes and a different fix. Previously it surfaced as a raw COM string
+        naming neither.
+        """
+        help_text = classify([igpu(), dgpu()]).duplication_failure_help()
+        assert "hybrid" in help_text.lower()
+        assert "GPU mode" in help_text
+        assert "driver is current" in help_text
+        # It must show what was actually found, not just advise in the abstract.
+        assert "Intel(R) UHD Graphics" in help_text
+        assert "NVIDIA GeForce RTX 4070 Laptop GPU" in help_text
+
+    def test_duplication_failure_help_is_generic_off_hybrid(self):
+        help_text = classify([igpu()]).duplication_failure_help()
+        assert "No adapter could duplicate the display" in help_text
+        assert "MUX" not in help_text  # hybrid-only advice must not leak
 
     def test_messages_are_ascii(self):
         # These are printed to consoles that still default to cp1252, where a
@@ -136,7 +184,8 @@ class TestMessages:
             classify([igpu(), dgpu()]),
             GpuTopology(),
         ):
-            (topology.help_text() + topology.describe()).encode("ascii")
+            (topology.help_text() + topology.describe()
+             + topology.duplication_failure_help()).encode("ascii")
 
     def test_single_description_stays_quiet(self):
         described = classify([igpu()]).describe()

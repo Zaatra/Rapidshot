@@ -63,6 +63,10 @@ class FrameReleasedError(RapidShotError):
     """
 
 
+class FrameQuarantinedError(RapidShotError):
+    """Raised when releasing a frame could invalidate untracked GPU work."""
+
+
 class Frame:
     """
     A captured frame whose GPU texture is valid for a bounded window.
@@ -78,7 +82,8 @@ class Frame:
         "_texture", "_on_release", "_released", "_region", "_rotation_angle",
         "_present_time_qpc", "_accumulated_frames", "_protected_content",
         "_cursor_visible", "_width", "_height", "_dirty_rects",
-        "_rects_coalesced", "_source_id",
+        "_rects_coalesced", "_source_id", "_release_drains",
+        "_release_quarantine",
     )
 
     def __init__(
@@ -98,6 +103,10 @@ class Frame:
         self._texture = texture
         self._on_release = on_release
         self._released = False
+        # Work that must finish before the surface goes back to DXGI.
+        # See defer_release_until().
+        self._release_drains = []
+        self._release_quarantine = None
         self._region = region
         self._rotation_angle = rotation_angle
         self._present_time_qpc = present_time_qpc
@@ -256,14 +265,84 @@ class Frame:
 
     # -- lifetime ----------------------------------------------------------
 
+    def defer_release_until(self, drain, *, quarantine_on_failure=False) -> None:
+        """Register work that must complete before the surface is handed back.
+
+        The duplicated surface is only valid between ``AcquireNextFrame`` and
+        ``ReleaseFrame``, and a GPU copy reading it does not stop when Python
+        leaves the ``with`` block. An asynchronous consumer -- such as
+        :meth:`CrossAdapterTransfer.transfer_async` -- therefore registers a
+        drain here, and :meth:`release` runs it first.
+
+        Without this, ``with camera.grab_frame() as frame:`` around an async
+        submit releases the surface mid-copy. DXGI is then free to recycle it,
+        and the copy lands a blend of two frames. Nothing raises; the pixels
+        are simply wrong, which is the failure mode this project treats as the
+        worst kind.
+
+        `drain` is called at most once, before the surface is released, and
+        must be idempotent-safe to call after the work already finished.
+
+        ``quarantine_on_failure`` is for drains that prove submitted GPU work
+        no longer reads this surface. If such a drain fails, releasing would
+        invalidate the texture while that work may still be live, so the frame
+        remains acquired and release raises :class:`FrameQuarantinedError`.
+        Ordinary cleanup callbacks keep the historical log-and-release policy.
+        """
+        self._release_drains.append((drain, bool(quarantine_on_failure)))
+
+    def _quarantine_release(self, reason: str) -> None:
+        """Keep this DXGI surface acquired because submitted work is untracked.
+
+        This is narrower than an ordinary failing drain. A drain failure still
+        releases so capture does not stall; here D3D12 accepted a command list
+        and both completion signals failed while the device remained live.
+        DXGI says the surface becomes invalid after ReleaseFrame, so releasing
+        would trade a visible capture stall for silent corruption or device
+        removal. The native transfer intentionally preserves its resources for
+        the same reason.
+        """
+        if not self._released:
+            self._release_quarantine = str(reason)
+
     def release(self) -> None:
         """
         Hand the texture back to DXGI. Idempotent.
 
-        Until this runs, the next capture cannot acquire a frame.
+        Until this runs, the next capture cannot acquire a frame. Any drains
+        registered by :meth:`defer_release_until` run first -- the surface must
+        not go back while a GPU copy is still reading it.
         """
         if self._released:
             return
+        if self._release_quarantine is not None:
+            raise FrameQuarantinedError(
+                "Frame cannot be released because a GPU submission could not "
+                "be tracked to completion. Capture is intentionally stopped "
+                "to preserve the DXGI surface; restart the process. "
+                f"Native failure: {self._release_quarantine}"
+            )
+        # Before the flag flips: a drain that raises must not leave the frame
+        # marked released while the surface is still held.
+        drains, self._release_drains = self._release_drains, []
+        for drain, quarantine_on_failure in drains:
+            try:
+                drain()
+            except Exception as exc:
+                if quarantine_on_failure:
+                    self._quarantine_release(str(exc))
+                    raise FrameQuarantinedError(
+                        "Frame cannot be released because its asynchronous GPU "
+                        "copy could not be drained. Capture is intentionally "
+                        "stopped to preserve the DXGI surface; restart the "
+                        f"process. Native failure: {exc}"
+                    ) from exc
+                # A generic cleanup failure is not evidence that native GPU
+                # work still references the duplication surface.
+                logger.warning(
+                    "A release drain failed; releasing the surface anyway. "
+                    "A GPU copy may still have been reading it: %s", exc
+                )
         self._released = True
         self._texture = None
         on_release, self._on_release = self._on_release, None

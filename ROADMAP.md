@@ -12,7 +12,9 @@ This document is written to be read cold. It states where the project actually i
 
 ### Release status
 
-**2.2.0 is tagged** (`v2.2.0` at `403849e`, 6 August 2026), following **2.1.0** (5 August) and **2.0.0** (4 August). PyPI Trusted Publishing and the `pypi` GitHub environment are configured and restricted to `v*` tags, so a pushed tag is what cuts a release; the full procedure is in `RELEASING.md`.
+**2.3.0 is tagged** (`v2.3.0` at `b3a01f2`, 21 August 2026), following **2.2.0** (`403849e`, 6 August), **2.1.0** (5 August) and **2.0.0** (4 August). PyPI Trusted Publishing and the `pypi` GitHub environment are configured and restricted to `v*` tags, so a pushed tag is what cuts a release; the full procedure is in `RELEASING.md`.
+
+Note that `CHANGELOG.md` dates 2.3.0 as 2026-08-06, which is when the Machine B work below was done, not when it shipped — the tag is two weeks later. Every measurement in this document dated 2026-08-06 belongs to that session and is correct as written.
 
 What each release delivered, in one line each — `CHANGELOG.md` has the detail:
 
@@ -21,14 +23,15 @@ What each release delivered, in one line each — `CHANGELOG.md` has the detail:
 | **2.0.0** | Pooled output (breaking), release infrastructure, `py.typed` |
 | **2.1.0** | Native AVX2 conversion kernels for all five colour modes; conversion finished as an optimisation target |
 | **2.2.0** | `to_nchw()`, public `timeout_ms` and `pool_size_frames` (−60 MB/camera), the cross-library comparison, and the `cpu_to_nchw` strawman correction |
+| **2.3.0** | First release verified on NVIDIA hardware. CUDA interop for the GPU tensor; two shipped bugs fixed — `nvidia_gpu=True` returning wrong pixels for every mode but BGRA, and every `E_ACCESSDENIED` misreported as protected content; five "untestable" paths given real tests |
 
-**Whether 2.1.0 and 2.2.0 actually published cannot be verified from the repository** — that is the release workflow's outcome, not a file in the tree. Confirm in the GitHub UI that both Releases exist with their assets and that PyPI serves 2.2.0.
+**Whether 2.1.0, 2.2.0 and 2.3.0 actually published cannot be verified from the repository** — that is the release workflow's outcome, not a file in the tree. Confirm in the GitHub UI that all three Releases exist with their assets and that PyPI serves 2.3.0.
 
 **1.1.0 is yanked**, reason *Newer Version*. It was the only thing on PyPI from April 2025 to now and it did not work: it failed to import on Python 3.11+ (`cursor: Cursor = Cursor()` trips the dataclass mutable-default check broadened in 3.11), and patching that one line only got it to return all-black frames, because the processor was handed a texture where it expected a mapped staging surface. Yanking is not deletion — an existing `rapidshot==1.1.0` pin still resolves, which is the intent; only new unpinned installs are steered away.
 
 Two further items cannot be verified from the repository either and should be confirmed in the same pass: **Settings → Security → private vulnerability reporting** must be enabled (or the link in `SECURITY.md` 404s), and branch protection needs *Require review from Code Owners* (or `CODEOWNERS` is only a routing hint).
 
-**Next feature task:** § 6.3 — finish Stage 3 (Frame metadata). It is smaller than it was: of the three pieces listed there, **timestamps are done** (`Frame.timestamp_qpc` and `Frame.timestamp`), **cursor is half done** (`Frame.cursor_visible` exists; position and shape are captured in `core/duplicator.py` and never surfaced), and **`Protocol`-typed interfaces are not started** — there is no `Protocol` anywhere in the package. § 6.1 is complete: hybrid and headless systems are reported clearly, a captured frame crosses to a second adapter at **0.70–0.98 ms per 1080p frame** verified byte-exact, and the convert-first-or-transfer-first question has been measured and settled in favour of transferring the frame. What § 6.1 still lacks is validation on real hybrid hardware and an asynchronous shared fence, both noted there.
+**Next feature task:** § 6.3 — finish Stage 3 (Frame metadata). It is smaller than it was: of the three pieces listed there, **timestamps are done** (`Frame.timestamp_qpc` and `Frame.timestamp`), **cursor is half done** (`Frame.cursor_visible` exists; position and shape are captured in `core/duplicator.py` and never surfaced), and **`Protocol`-typed interfaces are not started** — there is no `Protocol` anywhere in the package. § 6.1 is complete: hybrid and headless systems are reported clearly, a captured frame crosses to a second adapter at **0.70–0.98 ms per 1080p frame** verified byte-exact, and the convert-first-or-transfer-first question has been measured and settled in favour of transferring the frame. **§ 6.1's validation on real hybrid hardware is now done** (2026-08-22, Intel→NVIDIA, byte-exact — see above); the asynchronous shared fence is the one piece still outstanding there.
 
 **Hardware changed on 2026-08-06, and with it the state of the project.** A second development machine with an **NVIDIA RTX 4060** joined, and things this document called untestable are now tested. The headline: **RapidShot has a real GPU consumer for the first time** — capture → GPU tensor → `cupy.ndarray`, no CPU round-trip, verified byte-exact (§ 6.6).
 
@@ -40,7 +43,17 @@ In the same pass it confirmed the BGRA-swizzle rule on a second vendor's driver 
 
 Reaching the refusal branch is what exposed the second bug: **every `E_ACCESSDENIED` was reported as protected content**, so a locked workstation, a UAC prompt and a Session 0 service all advised closing a protected player window that did not exist. Worth remembering the next time something here is written off: **"untestable" is a claim about imagination at least as often as about hardware, and the paths nobody can test are where the bugs are.**
 
-What it has **not** done is validate the hybrid path: its MUX is set to discrete-only, so the iGPU is disabled and it reports as a single-adapter system. § 6.1's Intel→NVIDIA verification and § 10's hybrid-topology debt are one BIOS setting and a reboot away, not done.
+**Machine B ran as a real Optimus system on 2026-08-22, and § 6.1 is closed.** The MUX was switched from discrete-only to Optimus, which took most of a day to get working and produced more than the verification it was chasing.
+
+**The verification, first.** `examples/verify_cross_adapter.py` transferred **5 captured frames from the Intel iGPU to the RTX 4060**, 16,384,000 bytes each at 2560×1600, every one byte-exact against a source-side readback. `probe_cross_adapter()` reports `representative: true` with a hardware adapter on both ends for the first time. This is the configuration § 6.1 was written for and had never run on.
+
+**What took the day was one setting, and it is worth naming loudly** because nothing else moved the needle and several plausible things were tried and ruled out:
+
+> **NVIDIA Control Panel → Manage 3D Settings → Preferred graphics processor → Integrated graphics.**
+
+Until that was set, the NVIDIA driver claimed the display output while the firmware said Optimus, and **every adapter — Intel, NVIDIA and even WARP — refused `DuplicateOutput` with `DXGI_ERROR_UNSUPPORTED`**. Capture did not work at all. § 2 records the full elimination and the diagnostic signals; the short version is that the firmware was correct throughout and the Windows-side graphics stack was not following it.
+
+**The library was wrong too, and that was worth more than the verification.** In that broken state RapidShot assumed the display-owning adapter was the one that could duplicate, discarded render-only adapters so `prefer_integrated` could not reach them, printed a raw HRESULT that named neither cause nor fix, and had `topology_info()` assert "Capture runs on {adapter}" about an adapter that demonstrably could not. All four are fixed (§ 5, § 10). None would have been found without a machine in a state nobody had seen.
 
 **Before changing anything performance-related**, read § 3 (measured baseline) and § 4 (settled questions). Several intuitive-sounding optimisations have already been measured and rejected.
 
@@ -78,8 +91,46 @@ So the matrix below is about what has been **run**, not about what is supported 
 | NVIDIA dGPU, single adapter, extension built | Verified — Machine B, extensively |
 | NVIDIA dGPU, single adapter, **no extension** | Verified 2026-08-06: 269 passed, 44 skipped, no failures |
 | **Any AMD GPU** | **Never run.** No AMD hardware has touched this project |
-| **Any real hybrid** (Optimus, AMD switchable) | **Never run.** § 6.1 and § 10 |
+| **Intel + NVIDIA Optimus** | **Verified 2026-08-22 on Machine B.** Capture on the iGPU, cross-adapter transfer to the dGPU byte-exact. Needed one NVIDIA control-panel setting to reach; see above |
+| **AMD switchable hybrid** | **Never run.** No AMD hardware has touched this project |
 | Headless / IDD virtual display | Never run — § 6.2 |
+
+**Machine B has now run as a genuine Optimus system, and getting there took a day. The setting that mattered is one line; everything else is the elimination that found it.**
+
+**The fix.** On a hybrid laptop where the firmware says Optimus but capture fails, set:
+
+> **NVIDIA Control Panel → Manage 3D Settings → Preferred graphics processor → Integrated graphics**
+
+Then re-check `topology_info()`. Correct Optimus has the **iGPU owning the output and the dGPU at zero**:
+
+```
+Topology: hybrid
+  Adapter[0] (Intel(R) UHD Graphics) (Intel) (128MB VRAM) (1 output)
+  Adapter[1] (NVIDIA GeForce RTX 4060 Laptop GPU) (NVIDIA) (7956MB VRAM) (0 outputs)
+  Adapter[2] (Microsoft Basic Render Driver) (Microsoft) (0MB VRAM) (software) (0 outputs)
+```
+
+If those are the other way round — dGPU holding the output, iGPU at zero — the machine is in the broken state below regardless of what the firmware says.
+
+**The broken state, so it is recognisable.** Every adapter refuses `DuplicateOutput` with `DXGI_ERROR_UNSUPPORTED` (0x887A0004), **including WARP**. That last part is the diagnostic: a merely suboptimal routing leaves one adapter capturable, so all three refusing means nothing is composing a desktop DDA can attach to. Corroborating signals, both absent in the broken state and both worth checking: `EnableMsHybrid` unset on both adapter class keys, and `OptimusProfilesInstalled: 0x0` under `nvlddmkm`.
+
+**What was ruled out, each by measurement rather than argument.** Recorded because every one of these is a plausible-sounding fix that does nothing, and the next person will be tempted by the same list:
+
+| Suspected | Tested by | Result |
+| --- | --- | --- |
+| Stale Intel driver | updated 32.0.101.5542 → 32.0.101.7088 | no change |
+| Firmware not really in Optimus | BIOS `Display mode` **and** PredatorSense `GPU Operating` | both already correct |
+| Non-console session | `query session`, `describe_desktop_access()` | console, `is_input=True` |
+| DWM not composing | process check | running in session 1 |
+| DPI virtualisation | DPI-aware process reads 2560×1600 | refused identically |
+| Stale NVIDIA driver config | **clean** reinstall, "perform clean installation" ticked | no change |
+| NVIDIA install order | installed into a working iGPU-owned arrangement | reclaimed the display anyway |
+
+**Two controls set the MUX and they are separate**: BIOS `Display mode` (Optimus / Nvidia GPU only / Auto Select) and PredatorSense `GPU Operating`. Both must say Optimus. Earlier revisions of this document named one or the other as *the* setting; both exist, and both being correct is what ruled the firmware out.
+
+**Removing the NVIDIA driver entirely also works, and is the diagnostic that proved causation.** With it uninstalled the iGPU took the output immediately and capture worked (299 passed, 0 failed). Reinstalling it took the display back. That established the NVIDIA driver as the cause before the actual setting was found — useful as a bisection step, not as a fix, since it costs CUDA.
+
+**Do not read the broken state as "RapidShot does not work on Optimus."** It works: § 6.1 is verified on this machine. The refusal was the operating system's. What it fairly establishes is that RapidShot *handled* the situation badly, which is § 10's adapter-selection entry.
 
 **What is genuinely NVIDIA-only, and it is one thing:** CuPy, because CUDA is. On an AMD machine `import cupy` fails, `CUPY_AVAILABLE` is False, and `nvidia_gpu=True` warns and falls back to the CPU processor — that path already exists in `capture.py`. `examples/gpu_tensor_to_cupy.py` is NVIDIA-only for the same reason.
 
@@ -288,6 +339,18 @@ For scale: this is about a third of what reading the same frame to the CPU costs
 
 ---
 
+### Machine B, Optimus — the hybrid recording
+
+`benchmarks/baseline-rtx4060-hybrid.json`, recorded 2026-08-21 with capture on the **Intel iGPU** and the RTX 4060 render-only. Distinct from `baseline-rtx4060.json`, which was taken on the same machine in discrete-only mode: the `gpu` field differs (`Intel(R) UHD Graphics` versus `NVIDIA GeForce RTX 4060 Laptop GPU`), so the two refuse to gate against each other and say so. **That is correct, not a limitation** — they measure different capture adapters.
+
+Recorded to the documented procedure: noise floor checked first (`--self-test`: 0 rows exceeded 1.30×, control 0.99×), pinned to the P-cores, then verified by an immediate second run that read `~ same` on every synthetic row with the control at 1.00×.
+
+**The verification pass found a harness bug, which is what it is for.** `live.grab_frame_gpu` reported **FASTER 8.70×** with no qualifier, and on the next run the neighbouring live row reported **SLOWER 2.26×** — on identical code, which is the 2.5× live swing § 2 already documents. Only the second was labelled. The `FASTER` branch carried a comment saying its qualifiers applied "in both directions on purpose" while implementing only two of five; `live`, `duty-cycle sensitive` and `sub-ms` were applied to regressions only. Fixed, and guarded by tests in both directions.
+
+That asymmetry mattered more than it looks: § 10's rule is that **a spurious improvement is as misleading as a spurious regression and harder to notice, because nobody investigates good news** — and the code implemented the opposite of the rule it quoted.
+
+---
+
 ## 4. Settled questions — do not re-litigate
 
 **Python is not the bottleneck.** CPU pixel work is ~2,500× the entire Python/COM binding overhead. At 240 FPS the binding cost is 0.07% of the frame budget.
@@ -371,6 +434,8 @@ Topology: single
 | **`CupyProcessor` correctness** ✅ | Fixed a public-API path that returned BGRA when asked for RGB and called it success. Conversions are now pure CuPy and stay on the device, failures raise, bad modes are rejected at construction, and `tests/test_cupy_processor.py` asserts byte-exactness against the NumPy path for all five modes (§ 10) |
 | **Benchmark harness, hybrid CPUs** ✅ | `perf_suite.py` detects a P-core/E-core split and pins itself, recording the fact in the output. Unpinned, the suite reported false verdicts up to 2.57× against *itself* (§ 2) |
 | **Cross-library comparison (2.2.0)** ✅ | `benchmarks/compare_libraries.py` measures RapidShot against DXcam, BetterCam and mss — each in its own process, since all three declare the same COM interfaces and whichever imports first breaks the others — with a calibrated motion source and error bars on every quantity. It is also what established where RapidShot *loses*, now stated in the README |
+| **6.1 — Intel→NVIDIA on real hybrid hardware** ✅ | `examples/verify_cross_adapter.py` carried **5 captured frames from an Intel iGPU to an RTX 4060**, 16,384,000 bytes each at 2560×1600, every one byte-exact against a source-side readback. `probe_cross_adapter()` reports `representative: true` — hardware on both ends, in the direction § 6.1 targets. Open since the project began (§ 2, § 6.1) |
+| **Adapter selection on hybrid systems** ✅ | Duplication tries every adapter instead of assuming the display-owning one, keeps render-only adapters as candidates, and explains an all-adapter refusal instead of printing an HRESULT. Found by switching Machine B to Optimus, where capture stopped working entirely (§ 2, § 10) |
 
 **Also fixed:** `pip install rapidshot` shipped a broken package — `pyproject.toml` listed `packages = ["rapidshot"]`, so the wheel contained 5 modules instead of 25 and failed with `ModuleNotFoundError: No module named 'rapidshot.util'`. Invisible from a source checkout. Now guarded by CI.
 
@@ -403,13 +468,15 @@ The eight CuPy tests now run against real CUDA hardware, and **42 new tests** ar
 
 The Rust side has its own suite, and it needs `python313.dll` on `PATH` or the harness dies with `STATUS_DLL_NOT_FOUND` before running a single test — pyo3 links the interpreter. `cargo test --release` reports **14 passed**, including `luma::tests::avx2_matches_scalar_for_every_bgr_triple`, the exhaustive 2²⁴ check. Verified on Machine B 2026-08-06: the AVX2 kernels are byte-exact on Raptor Lake as well as on Machine A's part.
 
-**There are no committed live-capture suites**, despite an earlier revision of this line claiming five. Live verification is `examples/verify_cross_adapter.py`, the `live.*` rows in `benchmarks/perf_suite.py`, and `benchmarks/compare_libraries.py` — all run by hand on real hardware, because CI has no desktop session (§ 2). Anything in that list that is not run before a release is simply not verified for that release.
+**Live-capture verification is mostly still hand-run, and one piece no longer is.** `tests/test_cross_adapter.py` now carries the transfer's byte-exactness check against live capture, so the thing § 6.1 rests on runs with the suite instead of depending on someone remembering to run a script. It skips cleanly without a second adapter or without screen activity.
+
+Still hand-run, and therefore still subject to the rule below: `examples/verify_cross_adapter.py` (kept as the diagnostic script, with the richer failure output), the `live.*` rows in `benchmarks/perf_suite.py`, and `benchmarks/compare_libraries.py`. None of these can run in CI, which has no desktop session (§ 2). **Anything in that list that is not run before a release is simply not verified for that release.**
 
 ---
 
 ## 6. Next up, in order
 
-### 6.1 — Cross-adapter transfer (hybrid GPU laptops)
+### 6.1 — Cross-adapter transfer (hybrid GPU laptops) ✅
 
 **This is a coverage gap, not an optimisation.** [Desktop Duplication cannot run against the discrete GPU on a hybrid system](https://support.microsoft.com/en-us/help/3019314/error-generated-when-desktop-duplication-api-capable-application-is-ru) — it fails with `DXGI_ERROR_UNSUPPORTED`. So on an Optimus laptop you capture on the iGPU while inference runs on the dGPU, and the Stage 6 tensor has nowhere to go. That is a large share of consumer NVIDIA hardware.
 
@@ -444,8 +511,89 @@ So B wins only below 416², **640² is a tie**, and A wins clearly above it. Thr
 
 Remaining work:
 
-- **A shared fence.** Synchronisation is currently CPU-side: `transfer` blocks until the source GPU finishes (`end_and_wait` in `native/src/cross_adapter.rs`). Correct, but it serialises the two adapters, and `D3D12_FENCE_FLAG_SHARED | SHARED_CROSS_ADAPTER` would let them overlap. **Measured 2026-08-05: the blocking wait is not the cost.** `probe_cross_adapter()` reports 0.83 ms min / 1.01 ms median for the copy at 9.5 GB/s, indistinguishable from `transfer()`'s 0.70–0.98 ms — so the wait adds essentially nothing per frame. The fence buys *overlap*: latency and pipelining, not throughput. It also cannot be validated here, because the probe reports `representative: False` and `destination_is_software: True`, and overlap against WARP predicts nothing about how a real discrete GPU schedules two queues. **Do this on hybrid hardware, not before.**
-- **Real hybrid hardware.** WARP proves the mechanism; it cannot prove an Intel→NVIDIA transfer behaves the same. `examples/verify_cross_adapter.py` is the check to run there.
+- ~~**A shared fence.**~~ **Built 2026-08-22, and the 2026-08-05 conclusion did not survive the hardware it was about.** That entry said the wait "adds essentially nothing per frame" and the fence would buy "latency and pipelining, not throughput". Measured against WARP, that was right. Measured Intel→NVIDIA it is wrong in the useful direction.
+
+  **`probe_transfer_phases()` split one transfer**, the way § 10's `probe_dispatch_phases` did for the preprocessor. Medians, 2560×1600, 200 iterations:
+
+  | phase | before caching | share |
+  | --- | --- | --- |
+  | open | 300.8 µs | 9.8% |
+  | record + submit + signal | 31.6 µs | 1.0% |
+  | **wait** | **2634.9 µs** | **85.6%** |
+  | close | 110.2 µs | 3.6% |
+
+  The wait is 85.6% of the transfer, but it *is the copy executing* — 16.4 MB at 5.68 GB/s is ~2.88 ms — so the fence cannot make the copy faster. What it removes is the calling thread's obligation to sit through it.
+
+  **The first measurement of this was wrong, and the way it was wrong is the point.** A synthetic consumer — a Python busy-loop standing in for "the caller does something with the thread" — reported **wall clock 6.22 → 3.59 ms, 42% faster**. That number is real for a *CPU-bound* consumer, and it does not survive contact with the consumer this feature exists for.
+
+  Re-measured with an actual GPU consumer (BGRA → float32, normalise, reduce over the 16.4 MB frame in CuPy), interleaved, two runs:
+
+  | strategy | run 1 | run 2 |
+  | --- | --- | --- |
+  | blocking + CPU wait | 16.57 ms | 14.81 ms |
+  | async + **CPU** fence wait | 16.73 ms (−0.9%) | 14.45 ms (+2.5%) |
+  | async + **GPU** semaphore | **14.22 ms (+14.2%)** | **13.69 ms (+7.5%)** |
+  | async + GPU semaphore, default stream | 14.42 ms (+13.0%) | 13.92 ms (+6.0%) |
+
+  **Two conclusions, and neither is 42%.**
+
+  **The CPU-side async wait buys nothing against a GPU consumer** — −0.9% and +2.5% across two runs is noise. The synthetic benchmark overstated it because a CPU busy-loop genuinely overlaps a GPU copy, while a GPU consumer competes for the same device and is itself asynchronous, so the calling thread was never the constraint.
+
+  **The GPU-side semaphore wait is the one that pays: 7–14%.** Quote the range, not a point estimate; live capture varies (§ 2) and two runs disagreed by a factor of two on the margin. This is `shared_fence_handle` — CUDA imports the D3D12 fence with `cuImportExternalSemaphore` and waits on it *in a stream*, so no CPU is involved in the handoff at all. Verified 2026-08-22: **6/6 frames byte-exact through a GPU-side semaphore wait**, with the fence created on the **Intel** device and imported by CUDA on the **NVIDIA** one, which is not something the documentation promises.
+
+  Using a non-default stream made little difference here (13.0–14.2% versus 6.0–7.5% on the default stream, overlapping across runs), so the theoretical serialisation on the default stream is not visible at this frame size.
+
+  Shipped as `transfer_async()` + `wait_shared_fence()`, with `shared_fence_handle` for the GPU-side wait. `transfer()` still blocks and remains the default: async moves synchronisation to the caller, which is a real cost for anyone who does not need it.
+
+  **The GIL was the gap between the Rust measurement and what Python sees.** `wait_shared_fence` originally held the interpreter for the whole wait, so the calling thread it "returned" could not run Python: measured 2026-08-22, a second thread made **zero progress across a 7 ms wait**. Now armed under the GIL and waited with it released, which cut the longest stall to ~1 ms and let the other thread tick 17–18 times in the same window. Only a raw event handle crosses into the detached closure — `py.detach` needs a `Send` closure and this type holds `Cell`/`RefCell`, so a reference to it cannot, and that constraint is what keeps the release provably sound instead of asserted.
+
+  **`transfer()` still holds the GIL** for its whole copy (~2.7 ms measured, 0 ticks from another thread). Its wait is buried between COM calls on interior-mutable state and cannot be released the same way without restructuring resource lifetimes. Documented rather than hidden; the async path is the answer for anyone who needs other Python threads to run.
+
+  **It pipelines to depth one, deliberately.** `Submitter::begin` resets the command allocator, and resetting one the GPU is still reading is corruption, so `transfer_async` waits for the *previous* submission before recording. Deeper pipelining needs multiple allocators and has not been measured to be worth it.
+
+- ~~**Do not chase per-frame shared-handle caching.**~~ **Wrong on this hardware, and fixed.** § 6.1 recorded the apparent handle overhead as noise, from three runs on Machine A where it was indistinguishable from the copy. On the Intel→NVIDIA path it is not noise: `CreateSharedHandle` + `OpenSharedHandle` + `CloseHandle` ran **every frame** at 268 µs + 114 µs.
+
+  Cached per texture, keyed on the raw pointer — the same fix § 10 applied to the preprocessor, for the same reason, found the same way. A/B'd inside one harness rather than across two runs, because § 2 is explicit that comparing separate harnesses produces verdicts about conditions:
+
+  | phase | uncached | cached |
+  | --- | --- | --- |
+  | open | 268.2 µs | **0.2 µs** |
+  | close | 114.3 µs | **0.6 µs** |
+  | total | 3010.9 µs | **2700.7 µs** (10.3% faster) |
+
+  Byte-exactness unchanged. `cached_texture_address` is exposed because the cache produces identical output either way, so a change that disabled it would be a large regression with no visible symptom — the test asserts on the key, not on pixels.
+
+  **The lesson is about the evidence, not the cache.** "Measured as noise" was accurate for one machine and got written down as a general instruction. A measurement's scope is part of the measurement.
+- ~~**The transferred frame could not reach a GPU consumer.**~~ **Done 2026-08-22.** `CrossAdapterTransfer` exposes `shared_destination_handle`, and the whole Optimus chain now runs: capture on the Intel iGPU → `transfer()` → one CUDA import on the RTX 4060 → 8/8 frames read byte-exact through the imported view, with no re-import per frame and no CPU round-trip of the frame.
+
+  Before this the path was two verified halves that nothing joined. `GpuPreprocessor12` builds on the *capture* adapter, so on a hybrid system its output is where CUDA cannot see it; `cross_adapter_transfer` moved the frame but exposed only a pointer, and `cuImportExternalMemory` needs a handle.
+
+  **The obvious implementation does not work, which is the part worth keeping.** Copying Stage 6's pattern — `CreateSharedHandle` on the output resource, imported as `CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE` — fails here, because the cross-adapter buffers are **placed** resources rather than committed ones:
+
+  | Candidate | `CreateSharedHandle` |
+  | --- | --- |
+  | `dst_buffer` (placed resource) | **E_INVALIDARG** |
+  | `src_buffer` (placed resource) | **E_INVALIDARG** |
+  | `dst_heap` | ok |
+  | `src_heap` | ok |
+
+  So the shared object is the **heap**, and a consumer imports it as `CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_HEAP` (4), size `total_bytes`, offset 0. `probe_shared_handles()` is that measurement, kept as a diagnostic because the answer is a property of the driver pair and exactly one pair has been checked.
+
+  Two choices were made from measurement rather than argument, and one was not. Both heaps import into CUDA and both read byte-exact, tracking later transfers identically (12/12, twelve distinct checksums, transfer p50 6.72 vs 6.79 ms) — so the data does not choose between them. **`dst_heap` was picked on a robustness argument, not a result**: it is minted by the device the consumer runs on, where `src_heap` additionally requires CUDA to accept a handle created by a different vendor's device. That held on the one pair measured, which is not enough to depend on. And the handle is *borrowed* — created once, closed on `Drop` — matching `shared_output_handle`; measured, closing it after import is safe and does not invalidate the mapping, so consistency decided a free choice.
+
+- ~~**Real hybrid hardware.**~~ **Done 2026-08-22.** Machine B ran as a genuine Optimus system — Intel iGPU owning the display, RTX 4060 render-only — and `examples/verify_cross_adapter.py` passed against it:
+
+  | | |
+  | --- | --- |
+  | Source → destination | **Intel(R) UHD Graphics → RTX 4060** |
+  | Frames | 5, each **16,384,000 bytes** at 2560×1600 |
+  | Result | every one **byte-exact** against a source-side readback |
+  | `representative` / `destination_is_software` | **true** / **false** |
+  | Copy cost | 1.39 ms min, 1.53 ms median, **5.68 GB/s** |
+
+  **The buffer decision is vindicated in the case that actually matters.** In this direction NVIDIA is the *destination*, and it reports `destination_row_major_texture: false` while Intel as source reports `true`. The row-major branch avoided on principle would have been the branch that broke here — not against WARP, not hypothetically, but in the exact configuration § 6.1 exists for.
+
+  Note the asymmetry in cost: Intel→NVIDIA is 5.68 GB/s against NVIDIA→Intel's 11.0 GB/s (§ 10). The iGPU is the weaker part and it is also driving the display, so the capture-side copy is roughly half as fast in the direction a hybrid system actually needs. That is the number to quote for Optimus, not the reverse one.
 
   **Partly advanced 2026-08-06, and it is worth being precise about how much.** Machine B ran `probe_cross_adapter()` with an NVIDIA dGPU as the *source*, which had never happened — Machine A's source was always the iGPU:
 
@@ -685,9 +833,88 @@ Realistic cost is roughly six months with a native-graphics-fluent co-maintainer
   **`tests/test_preprocess_cache.py` now forces a real miss.** `create()` returns a cached instance per output, so asking for two cameras gives one camera and one texture; a full teardown (`release()` + `rapidshot.reset()`) followed by a rebuild produces a genuinely new `IDXGIOutputDuplication` and a new texture — which is also the realistic trigger, since a device reset or mode change arrives at the same place. Verified: the cache re-keys to the new texture, the tensor is valid afterwards, and a repeat call does *not* re-open.
 
   That last assertion matters as much as the miss itself. Reopening per frame cost ~98 µs of fixed work and made every pixel 2.5× more expensive (above), so a change that quietly disabled the cache would be a large regression with no visible symptom — the tests assert on the cached **key**, exposed as `cached_texture_address` for exactly this purpose, rather than on output that would look correct either way.
+- ~~**Capture assumed the display-owning adapter is the one that can duplicate.**~~ **Fixed 2026-08-21**, and the assumption was four separate defects wearing one coat. Found by putting Machine B into Optimus (§ 2), where every adapter refuses `DuplicateOutput` — a state in which the library should have explained itself and instead produced a COM error code.
+
+  | Defect | Was | Now |
+  | --- | --- | --- |
+  | Adapter choice | picked the adapter owning the output, gave up if it refused | tries every adapter, uses the first granted duplication |
+  | Enumeration | adapters with 0 outputs discarded | retained as duplication candidates |
+  | `DXGI_ERROR_UNSUPPORTED` | raw COM string naming neither cause nor fix | names the cause and what to check |
+  | `topology_info()` | "Capture runs on {adapter}" | describes the arrangement, does not predict |
+
+  **Which adapter DDA accepts is not deducible from which adapter enumerates the output.** It depends on where the desktop is actually composed. That is the whole bug: the old code encoded a guess as a fact, and on the first real hybrid machine the guess was wrong.
+
+  Three details worth keeping. **The retry is narrow on purpose** — only `DXGI_ERROR_UNSUPPORTED` and `DXGI_ERROR_INVALID_CALL`. A desktop refusal is *also* a `RapidShotConfigError`, so retrying on exception type alone would walk every adapter and then replace an already-actionable message ("you are not on the input desktop", § 10) with a generic one; that needed `_map_com_error` to stop dropping the HRESULT on this branch. **The winning device is recorded**, because the stage surface must be built on the same device as the duplicated texture — so `_on_output_change` now builds the duplicator *before* rebuilding the stage surface, not after. And **`prefer_integrated` was unreachable in exactly the configuration it exists for**: on a hybrid laptop the iGPU usually owns no output, so it had been discarded before the parameter could select it.
+
+  Also fixed on the way: `_initialize_resources` logged the real exception and returned False, and the caller then raised `"Initial resource initialization failed. Check logs for details."` — discarding a diagnosis that had already been made, in the one case where the caller most needs it. The specific cause is re-raised now.
+
+  **The success branch is verified by unit test, not by hardware.** `tests/test_failure_paths.py` covers falling back to a second adapter, not retrying a non-adapter refusal, and the all-refused message, all with stub adapters. No machine available can exercise a *successful* fallback, because the only hybrid machine here has no working pairing at all. Under § 5's rule that is not verified for a release until it runs on hardware.
+
+- **RapidShot forces process-wide DPI awareness, and ignores the failure.** `Output.__post_init__` calls `SetProcessDpiAwareness(2)`, which is why coordinates are normally correct — `output_info()` reports 2560x1600 on Machine B's 150%-scaled panel whether or not the caller thought about DPI. Two problems sit under that.
+
+  **The HRESULT is unchecked, and the failure is silent.** A host that pins DPI awareness before RapidShot loads — an app with a DPI-unaware manifest, or one that called `SetProcessDpiAwarenessContext` first — makes this call fail with `E_ACCESSDENIED`, because process DPI awareness cannot be changed once set. Measured 2026-08-21:
+
+  | Host | `SetProcessDpiAwareness(2)` | `output_info()` resolution |
+  | --- | --- | --- |
+  | leaves DPI alone | `S_OK` | 2560x1600 (correct) |
+  | pins DPI-unaware first | **`0x80070005`, ignored** | **1707x1067** |
+
+  So embedding RapidShot in a DPI-unaware host silently yields coordinates 1.5x smaller than the panel, and every region the caller computes follows them down. Nothing reports this; the resolution simply reads wrong. The fix is to check the HRESULT and say so, not to try harder — the setting genuinely cannot be changed at that point, so the honest move is to tell the caller their coordinates are in scaled space.
+
+  **And it mutates process-global state from a constructor.** Building an `Output` changes DPI behaviour for the entire host application, including its own windows. That it happens per-`Output` rather than once at import makes it repeated rather than worse, but a library reshaping its host's window layout as a side effect of enumeration is a decision that should be explicit and documented, and currently is neither.
+
+- ~~**One destination buffer, and nothing tells the producer the consumer is done.**~~ **Reproduced and fixed 2026-08-22.** Every `transfer()` writes the same `src_buffer`/`dst_buffer` pair, and `shared_fence` only reports that the *copy* finished. A consumer that waits on it GPU-side and keeps reading asynchronously can still be reading frame N when the copy for N+1 overwrites the allocation underneath it — two frames blended, nothing raised.
+
+  **Reproduced deterministically, after four failed attempts that are the more useful part of this entry.** The trick was to stop chasing a timing race and build a gate: queue the consumer's read behind a semaphore the test holds shut, let frame B's copy *complete* while the read is provably still pending, then open the gate. The consumer — which had waited on the producer fence for frame A — read B's bytes. 3/3 runs.
+
+  | | consumer waited for | consumer actually read |
+  | --- | --- | --- |
+  | unguarded | frame A | **frame B** |
+  | `wait_for_consumer` | frame A | frame A |
+
+  **Then measured at scale, and the scale result is the one to quote.** A real
+  60-frame loop with a consumer slower than the producer:
+
+  | consumer | frames | wrong, unguarded | wrong, guarded |
+  | --- | --- | --- | --- |
+  | slower than producer | 60 | **28 (47%)** | **0** |
+  | faster than producer | 100 | 0 | 0 |
+
+  **Nearly half the frames, and the guarded loop is clean.** The second row is
+  why this stays hidden: with a consumer that keeps up, the same loop shows
+  nothing wrong over 100 frames, so the hazard is invisible until a real
+  workload arrives and then corrupts silently. The handshake costs ~3% in the
+  slow case and nothing measurable in the fast one, and holds across the whole
+  run — no fence drift, no deadlock, no leak.
+
+  **Every earlier attempt failed the same way, and it was never about the race being rare.** CuPy's allocator synchronises the calling thread, so anything allocating inside the gated region either hides the race (the producer can never run ahead) or self-deadlocks — one probe hung for ten minutes, blocking the CPU on a stream only that CPU could open. Making the consumer *slower* was the wrong axis entirely: a 527 ms consumer still showed nothing, because the CPU was being paced by the allocator, not by the GPU. Nothing inside the gated region may allocate. That is the reusable lesson.
+
+  **The fix needed a signal travelling the other way, and its feasibility was the open question.** Measured: CUDA on the RTX 4060 signalled a D3D12 fence created by the **Intel** iGPU's device and the producer observed it — completed value 0 → 5000. Shipped as `set_consumer_fence(handle)` + `wait_for_consumer(value)`; the wait is queued on the source queue, so it orders ahead of the next copy without blocking the caller:
+
+  ```
+  transfer.set_consumer_fence(consumer_handle)   # once
+  v = transfer.transfer_async(frame)             # frame N
+  # consumer waits for v GPU-side, reads, signals its fence = N
+  transfer.wait_for_consumer(N)                  # before frame N+1
+  ```
+
+  **The alternative was multiple destination buffers, rejected on correctness rather than cost.** A ring of N does not close the race, it widens it: the producer wraps after N frames, so a consumer lagging more than N corrupts again. It also costs N × 16.4 MB and forces a per-frame offset into the consumer's contract. The handshake closes it outright for one queued wait — +0.27 ms against a light consumer, +2.4% against a heavy one.
+
 - **No AMD hardware has ever run this project**, and nothing branches on vendor, so AMD is supported by design and unverified in fact. The coverage matrix is in § 2; the one genuinely NVIDIA-bound feature is CuPy, and AMD consumers reach the same GPU tensor through DirectML.
-- **Hybrid and headless topologies are classified but never observed.** Still true, and Machine B did not change it: its MUX is set to discrete-only, so the iGPU is disabled and `topology_info()` correctly reports `single` (§ 2, § 4). The *single* branch has now been observed on both an Intel iGPU and an NVIDIA dGPU; `hybrid` and `headless` remain tested by describing those machines. The hybrid branch is one PredatorSense setting and a reboot away, which is the closest this has ever been.
-- **Cross-adapter sharing verified against WARP only.** Still true as stated — the *destination* has always been WARP. The source side has now been exercised on both an Intel iGPU and an NVIDIA dGPU (§ 6.1), and NVIDIA turned out to lack cross-adapter row-major texture support, which retroactively justifies the buffer choice. No Intel→NVIDIA transfer has been performed.
+- **Headless is classified but never observed; hybrid is now both observed and working.** The `hybrid` branch ran for real on 2026-08-22 — Intel iGPU owning the display, RTX 4060 render-only, `topology_info()` classifying it correctly, capture running on the iGPU and a frame crossing to the dGPU byte-exact (§ 6.1). Getting there also produced the lesson worth keeping: **classifying a topology correctly is not the same as being able to capture in it.** For most of a day the same machine classified as `hybrid` while every adapter refused `DuplicateOutput`, which is what § 10's adapter-selection entry came out of. The *single* branch has been observed on an Intel iGPU and on an NVIDIA dGPU. **`headless` remains tested by describing that topology rather than by having one.**
+- ~~**Cross-adapter sharing verified against WARP only.**~~ **Closed 2026-08-21.** Switching Machine B to Optimus put a second *hardware* adapter in the machine, and `probe_cross_adapter()` reports `destination_is_software: false` and **`representative: true`** for the first time in the project's history — an RTX 4060 source and an Intel UHD destination, both real drivers.
+
+  | | Source → destination | min | median | Throughput |
+  | --- | --- | --- | --- | --- |
+  | Machine A | Intel iGPU → WARP | 0.87 ms | 0.94 ms | 9.5 GB/s |
+  | Machine B, discrete-only | RTX 4060 → WARP | 0.68 ms | 0.78 ms | 11.6 GB/s |
+  | **Machine B, Optimus** | **RTX 4060 → Intel UHD** | **0.72 ms** | **0.82 ms** | **11.0 GB/s** |
+
+  **WARP turned out to be a good proxy for the destination side** — within ~5% of a real hardware destination. The caution was still right to hold: it was unfalsifiable until now, and the answer happening to be benign is not something the earlier runs could have established.
+
+  It also adds a third vendor data point to § 6.1's buffer decision. `destination_row_major_texture` is **true** on Intel and on WARP, and **false** on NVIDIA as source. Two of three support it, which is exactly why branching on it would have broken.
+
+  **The direction § 6.1 targets was then measured too, on 2026-08-22.** With the machine in correct Optimus, `probe_cross_adapter()` runs **Intel→NVIDIA** at 1.39 ms min / 5.68 GB/s, and `verify_cross_adapter.py` carried 5 captured frames across byte-exact (§ 6.1). Both directions are now measured on real hardware; the earlier NVIDIA→Intel figures stand as the reverse case rather than as a substitute for it.
 - **GRAY was by far the slowest colour mode; both halves are now fixed.** It used to be bimodal — a ~9.2 ms fast mode the CPU sustains for a second or two and a ~15 ms slow one — and because a capture loop never sees the transient, the honest figure was **13.7–14.9 ms**, filling ~95% of a 60 Hz frame. Two changes landed 2026-08-05, measured by `benchmarks/gray_kernel.py`:
   - **NumPy path: ~16 ms → 8.5–11 ms (1.5–1.8×), byte-identical.** The old formulation allocated a full-frame uint16 temporary per channel; those page faults cost more than the arithmetic. Reusing persistent intermediates removed them. This is what `pip install rapidshot` gets — no toolchain, no new dependency.
   - **Native kernel: → 0.70 ms (24× on the same machine), byte-identical.** `native/src/luma.rs`, exercised through `NumpyProcessor.convert_into` when the optional extension is present. GRAY now costs 4% of a 60 Hz frame instead of ~95%.
@@ -710,6 +937,30 @@ Realistic cost is roughly six months with a native-graphics-fluent co-maintainer
     `examples/gpu_tensor_to_cupy.py` is the ~60 lines of ctypes that turn that handle into a `cupy.ndarray`. It lives in `examples/` deliberately: § 11 says RapidShot produces frames and does not own its consumers' bindings, and the same argument that keeps ONNX Runtime out of the core (§ 8) applies here. Verified byte-identical to `read_back()` for the same dispatch, with a CUDA kernel reading the tensor in place — shape and dtype would have agreed even if the import had mapped unrelated memory, so the pixel comparison is the whole check.
 
     `tests/test_cuda_interop.py` imports **the shipped example file** rather than a copy, so what ships is what is tested. § 5's rule — anything not run before a release is not verified for that release — otherwise puts an example verified by hand in the same category as one nobody ran.
+- **Every native pyclass is `unsendable`, and Python decides which thread drops them. Not investigated.** Seen once, in a full suite run on 2026-08-21:
+
+  ```
+  RuntimeError: _rapidshot_native::TestTexture is unsendable, but is being
+  dropped on another thread
+  ```
+
+  `#[pyclass(unsendable)]` tells PyO3 the object may only be touched on the thread that created it, and PyO3 enforces that **on drop** by raising. The catch is that dropping is not something the caller schedules: a Python object dies when the garbage collector gets to it, and the collector runs on whichever thread happens to trigger it. So the rule is "created and destroyed on one thread", but only the first half is under anyone's control.
+
+  **This is not test scaffolding.** Four classes carry the annotation and three of them are shipping API:
+
+  | Class | `native/src/lib.rs` | |
+  | --- | --- | --- |
+  | `GpuPreprocessor` | 377 | public |
+  | `GpuPreprocessor12` | 561 | public — the Stage 6 tensor |
+  | `CrossAdapterTransfer` | 770 | public — § 6.1 |
+  | `TestTexture` | 1089 | test only |
+
+  `ScreenCapture.start()` runs capture on its own thread, so a consumer that builds a preprocessor on the main thread and drops it while the capture thread is what triggers collection is an ordinary arrangement, not a contrived one.
+
+  **The failure mode is worse than the failure.** It raises during garbage collection, where there is no caller to receive it: Python reports it as an *unraisable* exception, pytest turns it into a warning, and a plain application prints it to stderr and continues. So a real lifetime violation looks like log noise, and whatever the drop was supposed to release — a D3D12 resource, a shared NT handle, a COM interface — may not have been released. That is the same class of hazard as the shared-handle entry below: nothing looks wrong afterwards.
+
+  **Nothing here is diagnosed yet.** The mechanism above is read off the annotation and the source, not reproduced deliberately, and the warning has been observed exactly once. Open questions, in order: is `unsendable` actually required for each of these (D3D11 devices are free-threaded by default, so it may be inherited caution rather than a real constraint); if it is, should these objects carry an explicit `close()` so release is scheduled rather than left to the collector; and does the existing ownership chain in `examples/gpu_tensor_to_cupy.py` make this reachable for a real consumer today. **Reproduce it deliberately before changing anything** — § 5's rule about paths nobody can trigger applies here, and a warning seen once in one suite run is not yet a bug that has been understood.
+
 - **A shared handle is an integer, and every lifetime mistake around it looks like a valid number.** `shared_output_handle` is borrowed: it is closed when the preprocessor is dropped, and the D3D12 resource it names goes with it. A consumer holding the integer, or a CuPy array pointing into that VRAM, has nothing that looks wrong afterwards.
 
   The first version of `CudaTensor` in the example had exactly this bug — it read the preprocessor in `__init__` and kept no reference, so `CudaTensor(native.GpuPreprocessor12(frame, 640, 640))` left a live-looking array over released memory. Fixed by holding the preprocessor and passing `owner=self` to `UnownedMemory`, which makes the chain array → memory → view → preprocessor explicit.

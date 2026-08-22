@@ -32,10 +32,12 @@ use std::cell::Cell;
 use windows::core::Interface;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0;
-use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D};
+use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D, D3D11_TEXTURE2D_DESC};
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
+    DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM,
+    DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN,
+    DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, IDXGIAdapter, IDXGIAdapter1, IDXGIDevice, IDXGIFactory1, IDXGIResource1,
@@ -47,6 +49,122 @@ use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject, INFIN
 const GENERIC_ALL: u32 = 0x1000_0000;
 
 const DXGI_SHARED_RESOURCE_READ: u32 = 0x8000_0000;
+
+/// Result of trying to attach a completion marker after a copy was submitted.
+///
+/// Kept independent of COM so the ordering and failure policy can be exercised
+/// deterministically in CI. A real `ID3D12CommandQueue::Signal` failure is not
+/// injectable without a driver shim or device fault; the closures below let the
+/// unit tests force every branch while production supplies the two real fences.
+#[derive(Debug, PartialEq)]
+enum SubmittedCopyOutcome<E> {
+    Signaled,
+    DrainedAfterSignalFailure(E),
+    DeviceRemovedAfterSignalFailure { signal: E, drain: E },
+    Quarantined { signal: E, drain: E },
+}
+
+fn settle_submitted_copy<E, Signal, Drain, Removed>(
+    last_signaled: &Cell<u64>,
+    signal: Signal,
+    drain: Drain,
+    device_removed: Removed,
+) -> SubmittedCopyOutcome<E>
+where
+    Signal: FnOnce(u64) -> Result<(), E>,
+    Drain: FnOnce() -> Result<(), E>,
+    Removed: FnOnce() -> bool,
+{
+    let value = last_signaled.get() + 1;
+    match signal(value) {
+        Ok(()) => {
+            // A timeline value is a fact about work the queue accepted, not an
+            // attempted submission. Recording it before Signal succeeds makes
+            // later waits target a value that may never complete.
+            last_signaled.set(value);
+            SubmittedCopyOutcome::Signaled
+        }
+        Err(signal) => match drain() {
+            Ok(()) => SubmittedCopyOutcome::DrainedAfterSignalFailure(signal),
+            Err(drain) if device_removed() => {
+                SubmittedCopyOutcome::DeviceRemovedAfterSignalFailure { signal, drain }
+            }
+            Err(drain) => SubmittedCopyOutcome::Quarantined { signal, drain },
+        },
+    }
+}
+
+/// Arm one fence wait using one independently owned event.
+///
+/// Generic so CI can inject event creation/registration and prove that two
+/// concurrent waiters never share a handle. `H` remains owned by the caller on
+/// success and is dropped automatically if registration fails.
+fn arm_fence_wait_with<E, H, Completed, Create, Register>(
+    value: u64,
+    completed: Completed,
+    create_event: Create,
+    register: Register,
+) -> Result<Option<H>, E>
+where
+    Completed: FnOnce() -> u64,
+    Create: FnOnce() -> Result<H, E>,
+    Register: FnOnce(u64, &H) -> Result<(), E>,
+{
+    if value == 0 || completed() >= value {
+        return Ok(None);
+    }
+    let event = create_event()?;
+    register(value, &event)?;
+    Ok(Some(event))
+}
+
+/// Prefer an event wait, but fall back to polling when an event cannot be
+/// created or registered.
+///
+/// The fallback deliberately has no fallible operation: once a queue accepted
+/// a shared-fence signal, releasing its resources without proving completion is
+/// unsafe. `GetCompletedValue` also becomes `u64::MAX` on device removal, so
+/// this terminates for both successful completion and a dead device.
+fn arm_or_poll_fence_wait_with<E, H, Completed, Create, Register, Backoff>(
+    value: u64,
+    mut completed: Completed,
+    create_event: Create,
+    register: Register,
+    mut backoff: Backoff,
+) -> Option<H>
+where
+    Completed: FnMut() -> u64,
+    Create: FnOnce() -> Result<H, E>,
+    Register: FnOnce(u64, &H) -> Result<(), E>,
+    Backoff: FnMut(),
+{
+    match arm_fence_wait_with(value, &mut completed, create_event, register) {
+        Ok(event) => event,
+        Err(_) => {
+            while completed() < value {
+                backoff();
+            }
+            None
+        }
+    }
+}
+
+fn replace_and_retain<T>(current: &mut Option<T>, retained: &mut Vec<T>, replacement: T) {
+    if let Some(replaced) = current.replace(replacement) {
+        retained.push(replaced);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SubmissionHealth {
+    Usable,
+    /// The failed submission was drained, or its device was removed. Releasing
+    /// resources is safe, but reusing a queue whose Signal failed is not.
+    Poisoned,
+    /// ExecuteCommandLists accepted work and neither fence could prove it
+    /// finished while the device still reported itself alive.
+    Quarantined,
+}
 
 struct Adapter {
     index: usize,
@@ -126,11 +244,87 @@ fn make_device(adapter: &IDXGIAdapter1) -> windows::core::Result<ID3D12Device> {
     Ok(device.expect("D3D12CreateDevice reported success"))
 }
 
-/// A GPU-local BGRA texture standing in for a captured frame.
+/// Bytes per pixel for every format Desktop Duplication is asked to return.
+fn copy_format_bytes_per_pixel(format: DXGI_FORMAT) -> Option<u32> {
+    match format {
+        DXGI_FORMAT_B8G8R8A8_UNORM | DXGI_FORMAT_R8G8B8A8_UNORM | DXGI_FORMAT_R10G10B10A2_UNORM => {
+            Some(4)
+        }
+        DXGI_FORMAT_R16G16B16A16_FLOAT => Some(8),
+        _ => None,
+    }
+}
+
+fn copy_texture_desc(width: u32, height: u32, format: DXGI_FORMAT) -> D3D12_RESOURCE_DESC {
+    D3D12_RESOURCE_DESC {
+        Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+        Alignment: 0,
+        Width: width as u64,
+        Height: height,
+        DepthOrArraySize: 1,
+        MipLevels: 1,
+        Format: format,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
+        Flags: D3D12_RESOURCE_FLAG_NONE,
+    }
+}
+
+/// Build the exact linear footprint for a captured texture.
+///
+/// The callback keeps `GetCopyableFootprints` injectable: CI can prove each
+/// accepted DXGI format reaches the sizing operation without requiring an HDR
+/// desktop or a real D3D12 device.
+fn build_copy_footprint_with(
+    width: u32,
+    height: u32,
+    format: DXGI_FORMAT,
+    get_footprint: &mut dyn FnMut(
+        &D3D12_RESOURCE_DESC,
+        &mut D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
+        &mut u64,
+    ),
+) -> (D3D12_PLACED_SUBRESOURCE_FOOTPRINT, u64) {
+    let desc = copy_texture_desc(width, height, format);
+    let mut footprint = D3D12_PLACED_SUBRESOURCE_FOOTPRINT::default();
+    let mut total_bytes = 0u64;
+    get_footprint(&desc, &mut footprint, &mut total_bytes);
+    (footprint, total_bytes)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CopyTextureMismatch {
+    Size,
+    Format { expected: i32, actual: i32 },
+}
+
+fn copy_texture_mismatch(
+    desc: &D3D11_TEXTURE2D_DESC,
+    width: u32,
+    height: u32,
+    format: DXGI_FORMAT,
+) -> Option<CopyTextureMismatch> {
+    if desc.Width != width || desc.Height != height {
+        Some(CopyTextureMismatch::Size)
+    } else if desc.Format != format {
+        Some(CopyTextureMismatch::Format {
+            expected: format.0,
+            actual: desc.Format.0,
+        })
+    } else {
+        None
+    }
+}
+
+/// A GPU-local texture standing in for a captured frame.
 fn make_local_texture(
     device: &ID3D12Device,
     width: u32,
     height: u32,
+    format: DXGI_FORMAT,
 ) -> windows::core::Result<ID3D12Resource> {
     let heap_props = D3D12_HEAP_PROPERTIES {
         Type: D3D12_HEAP_TYPE_DEFAULT,
@@ -139,21 +333,7 @@ fn make_local_texture(
         CreationNodeMask: 1,
         VisibleNodeMask: 1,
     };
-    let desc = D3D12_RESOURCE_DESC {
-        Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
-        Alignment: 0,
-        Width: width as u64,
-        Height: height,
-        DepthOrArraySize: 1,
-        MipLevels: 1,
-        Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-        SampleDesc: DXGI_SAMPLE_DESC {
-            Count: 1,
-            Quality: 0,
-        },
-        Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
-        Flags: D3D12_RESOURCE_FLAG_NONE,
-    };
+    let desc = copy_texture_desc(width, height, format);
     let mut resource: Option<ID3D12Resource> = None;
     unsafe {
         device.CreateCommittedResource(
@@ -300,7 +480,7 @@ fn run_probe(
     height: u32,
     iterations: usize,
 ) -> windows::core::Result<()> {
-    let local = make_local_texture(source_device, width, height)?;
+    let local = make_local_texture(source_device, width, height, DXGI_FORMAT_B8G8R8A8_UNORM)?;
     let local_desc = unsafe { local.GetDesc() };
 
     // How many bytes the frame occupies once laid out linearly, including the
@@ -487,6 +667,7 @@ struct Submitter {
     fence: ID3D12Fence,
     event: HANDLE,
     value: Cell<u64>,
+    preserve_on_drop: Cell<bool>,
 }
 
 impl Submitter {
@@ -514,6 +695,7 @@ impl Submitter {
             fence,
             event,
             value: Cell::new(0),
+            preserve_on_drop: Cell::new(false),
         })
     }
 
@@ -532,9 +714,21 @@ impl Submitter {
             self.list.Close()?;
             self.queue
                 .ExecuteCommandLists(&[Some(self.list.cast::<ID3D12CommandList>()?)]);
-            let value = self.value.get() + 1;
-            self.value.set(value);
-            self.queue.Signal(&self.fence, value)?;
+        }
+        self.signal_and_wait_after_execute()
+    }
+
+    /// Attach a private completion marker to work that has already been sent.
+    ///
+    /// This is the recovery fence for an asynchronous copy whose shared-fence
+    /// Signal failed. It deliberately records `value` only after Signal
+    /// succeeds, so a failed fallback does not invent progress and deadlock a
+    /// later wait.
+    fn signal_and_wait_after_execute(&self) -> windows::core::Result<()> {
+        let value = self.value.get() + 1;
+        unsafe { self.queue.Signal(&self.fence, value)? };
+        self.value.set(value);
+        unsafe {
             if self.fence.GetCompletedValue() < value {
                 self.fence.SetEventOnCompletion(value, self.event)?;
                 WaitForSingleObject(self.event, INFINITE);
@@ -542,10 +736,80 @@ impl Submitter {
         }
         Ok(())
     }
+
+    /// Preserve every object a submitted command list can still reference.
+    ///
+    /// This is intentionally a process-lifetime leak. It is used only when a
+    /// copy was accepted but both queue signals failed on a device that still
+    /// reports S_OK, leaving no legal way to determine when destruction is
+    /// safe. Leaking is the quarantine; freeing or resetting would be memory
+    /// corruption or device removal.
+    fn quarantine(&self) {
+        self.preserve_on_drop.set(true);
+        std::mem::forget(self.queue.clone());
+        std::mem::forget(self.allocator.clone());
+        std::mem::forget(self.list.clone());
+        std::mem::forget(self.fence.clone());
+    }
+}
+
+impl Drop for CrossAdapterTransfer {
+    fn drop(&mut self) {
+        if self.submission_health.get() == SubmissionHealth::Quarantined {
+            self.quarantine_resources();
+            return;
+        }
+
+        // Wait for anything still in flight before releasing a single object.
+        //
+        // `transfer()` blocks, so before `transfer_async()` existed this was
+        // unreachable. It is not now: a caller that submits and then drops the
+        // transfer -- including when an exception skips the explicit wait --
+        // would otherwise free the cached source resource, both heaps, the
+        // command list and the fences while the source queue is still reading
+        // them. D3D12 requires the application to keep them alive until the
+        // GPU finishes; not doing so is device removal or silent corruption.
+        if self
+            .wait_shared_fence(self.shared_fence_value.get())
+            .is_err()
+        {
+            // Event allocation/registration has a polling fallback, but keep
+            // this guard for any future fallible wait path: Drop must never
+            // release objects after completion could not be proved.
+            self.submission_health.set(SubmissionHealth::Quarantined);
+            self.quarantine_resources();
+            return;
+        }
+        // Release the cached view of the capture texture, and the handle it
+        // was opened from, before the devices go.
+        if let Some((_, handle)) = self.cached_shared.borrow_mut().take() {
+            if !handle.is_invalid() {
+                unsafe {
+                    let _ = CloseHandle(handle);
+                }
+            }
+        }
+        // The heap outlives this handle, but the handle must not outlive the
+        // object that documents itself as owning it. Same contract the Stage 6
+        // preprocessor uses for `shared_output_handle`.
+        if !self.shared_fence_handle.is_invalid() {
+            unsafe {
+                let _ = CloseHandle(self.shared_fence_handle);
+            }
+        }
+        if !self.shared_destination_handle.is_invalid() {
+            unsafe {
+                let _ = CloseHandle(self.shared_destination_handle);
+            }
+        }
+    }
 }
 
 impl Drop for Submitter {
     fn drop(&mut self) {
+        if self.preserve_on_drop.get() {
+            return;
+        }
         unsafe {
             let _ = CloseHandle(self.event);
         }
@@ -564,6 +828,41 @@ impl Drop for Submitter {
 /// would instead want a shared fence
 /// (`D3D12_FENCE_FLAG_SHARED | SHARED_CROSS_ADAPTER`); that is a later
 /// optimisation, not a correctness gap.
+/// One row of `probe_shared_handles`: which object, what CUDA import type it
+/// would need, and whether `CreateSharedHandle` was permitted.
+pub type SharedHandleAttempt = (String, u32, Result<(), String>);
+
+/// A candidate way of minting a shared handle, for the probe's table.
+type HandleMaker<'a> = dyn Fn() -> windows::core::Result<HANDLE> + 'a;
+
+/// Closes a Windows handle on drop unless it is released into an owner.
+///
+/// `CrossAdapterTransfer::new` creates raw shared-resource handles and then
+/// keeps doing fallible work: fence creation and two `Submitter::new` calls.
+/// `Drop` cannot help there, because the object does not exist yet -- so a
+/// device-lost or unsupported adapter pair used to leak every handle created
+/// so far, and repeated setup attempts would walk the process handle table up.
+struct OwnedHandle(HANDLE);
+
+impl OwnedHandle {
+    /// Hand the handle to a longer-lived owner; this guard stops closing it.
+    fn release(mut self) -> HANDLE {
+        let raw = self.0;
+        self.0 = HANDLE::default();
+        raw
+    }
+}
+
+impl Drop for OwnedHandle {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() {
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
+}
+
 pub struct CrossAdapterTransfer {
     src_device: ID3D12Device,
     dst_device: ID3D12Device,
@@ -578,6 +877,60 @@ pub struct CrossAdapterTransfer {
     src_readback: ID3D12Resource,
     /// A stable copy of the live surface, used only by the verification path.
     snapshot: ID3D12Resource,
+    /// NT handle for the destination heap, so a consumer on that adapter can
+    /// import the transferred frame. Borrowed, like the Stage 6 preprocessor's
+    /// output handle: created once here and closed in `Drop`.
+    shared_destination_handle: HANDLE,
+    /// The captured texture most recently opened on the source device, keyed by
+    /// raw pointer. Desktop Duplication reuses its surfaces -- a 12-minute soak
+    /// saw exactly one across 211,726 frames -- so this hits on essentially
+    /// every frame. It is a cache, not an assumption: a different pointer
+    /// reopens rather than reusing a resource describing a surface the caller
+    /// is no longer capturing.
+    ///
+    /// Measured 2026-08-22, Intel iGPU -> RTX 4060: opening cost 300.8 us and
+    /// closing 110.2 us per frame, together 13.4% of a transfer. Section 6.1
+    /// previously recorded that overhead as noise, which it was on the hardware
+    /// available then; it is not noise here.
+    /// Keyed on `(texture pointer, source_id)`, not the pointer alone.
+    ///
+    /// COM addresses are recycled, so a released surface and a later unrelated
+    /// one can share a pointer -- `Frame.source_id` says which duplicator
+    /// produced the texture, and the pair is a sound identity where the
+    /// pointer is not. `GpuPreprocessor12` keys the same way for the same
+    /// reason; keying on the pointer alone would return a stale D3D12 resource
+    /// after an access-loss rebuild and silently copy the wrong frame.
+    cached_texture: Cell<(usize, u64)>,
+    cached_shared: std::cell::RefCell<Option<(ID3D12Resource, HANDLE)>>,
+    /// A fence the destination adapter can also see, so a consumer there can
+    /// wait on the copy GPU-side instead of the calling thread blocking.
+    ///
+    /// `transfer()` still blocks; this is what `transfer_async()` signals.
+    /// Created with `SHARED | SHARED_CROSS_ADAPTER` on the source device and
+    /// opened on the destination, which is the only fence configuration both
+    /// adapters can observe.
+    shared_fence: ID3D12Fence,
+    shared_fence_handle: HANDLE,
+    shared_fence_value: Cell<u64>,
+    submission_health: Cell<SubmissionHealth>,
+    /// The consumer's fence, opened from a handle the caller supplies.
+    ///
+    /// Every transfer writes the *same* shared buffer, and the producer fence
+    /// only says the copy finished -- it says nothing about whether the
+    /// destination has finished reading. Without a signal in the other
+    /// direction the next copy can overwrite the buffer mid-read, silently
+    /// mixing two frames. This is that signal.
+    consumer_fence: std::cell::RefCell<Option<ID3D12Fence>>,
+    /// Fences replaced after a GPU-side wait was queued.
+    ///
+    /// `ID3D12CommandQueue::Wait` returns before that wait completes. Keep the
+    /// application's reference until the queue itself is destroyed rather than
+    /// releasing an object an outstanding wait may still name. Consumer
+    /// recreation is rare, so bounded cleanup bookkeeping is not worth
+    /// weakening this lifetime guarantee.
+    retired_consumer_fences: std::cell::RefCell<Vec<ID3D12Fence>>,
+    format: DXGI_FORMAT,
+    bytes_per_pixel: u32,
     footprint: D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
     total_bytes: u64,
     pub width: u32,
@@ -596,6 +949,18 @@ impl CrossAdapterTransfer {
         let mut desc = Default::default();
         unsafe { texture.GetDesc(&mut desc) };
         let (width, height) = (desc.Width, desc.Height);
+        let format = desc.Format;
+        let bytes_per_pixel = copy_format_bytes_per_pixel(format).ok_or_else(|| {
+            windows::core::Error::new(
+                windows::Win32::Foundation::E_INVALIDARG,
+                format!(
+                    "captured surface has unsupported DXGI format {}; expected \
+                     B8G8R8A8_UNORM (87), R8G8B8A8_UNORM (28), \
+                     R10G10B10A2_UNORM (24), or R16G16B16A16_FLOAT (10)",
+                    format.0
+                ),
+            )
+        })?;
 
         // Fail at setup rather than on the first frame. A texture that cannot
         // be shared with D3D12 will never work on this path, and finding that
@@ -654,35 +1019,23 @@ impl CrossAdapterTransfer {
 
         // Lay the frame out linearly, including the 256-byte row alignment
         // D3D12 requires for copies. This is the size of the shared heap.
-        let texture_desc = D3D12_RESOURCE_DESC {
-            Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
-            Alignment: 0,
-            Width: width as u64,
-            Height: height,
-            DepthOrArraySize: 1,
-            MipLevels: 1,
-            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
+        let (footprint, total_bytes) = build_copy_footprint_with(
+            width,
+            height,
+            format,
+            &mut |texture_desc, footprint, total| unsafe {
+                src_device.GetCopyableFootprints(
+                    texture_desc,
+                    0,
+                    1,
+                    0,
+                    Some(footprint),
+                    None,
+                    None,
+                    Some(total),
+                );
             },
-            Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
-            Flags: D3D12_RESOURCE_FLAG_NONE,
-        };
-        let mut footprint = D3D12_PLACED_SUBRESOURCE_FOOTPRINT::default();
-        let mut total_bytes = 0u64;
-        unsafe {
-            src_device.GetCopyableFootprints(
-                &texture_desc,
-                0,
-                1,
-                0,
-                Some(&mut footprint),
-                None,
-                None,
-                Some(&mut total_bytes),
-            );
-        }
+        );
 
         let heap_desc = D3D12_HEAP_DESC {
             SizeInBytes: total_bytes,
@@ -746,8 +1099,36 @@ impl CrossAdapterTransfer {
         // The reference for that readback: the same texture, read through the
         // source device without going near the shared heap.
         let src_readback = make_readback_buffer(&src_device, total_bytes)?;
-        let snapshot = make_local_texture(&src_device, width, height)?;
+        let snapshot = make_local_texture(&src_device, width, height, format)?;
 
+        // Share the *heap*, not the placed resource. `probe_shared_handles`
+        // measured both: `CreateSharedHandle` on either placed buffer fails
+        // with E_INVALIDARG, on either heap it succeeds. So a consumer imports
+        // this as CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_HEAP (4), not the
+        // D3D12_RESOURCE (5) that Stage 6's committed output resource uses.
+        //
+        // Minted on `dst_device` rather than `src_device` although both work.
+        // The consumer runs on the destination adapter, so a handle created by
+        // the same device is the narrower assumption; using the source's would
+        // additionally require the consumer's runtime to accept a handle made
+        // by a different vendor's device. That held on the one Intel -> NVIDIA
+        // pair measured, which is not enough to depend on it.
+        let shared_destination_handle = OwnedHandle(unsafe {
+            dst_device.CreateSharedHandle(&dst_heap, None, GENERIC_ALL, None)?
+        });
+
+        // A fence both adapters can observe. SHARED alone is not enough across
+        // adapters -- SHARED_CROSS_ADAPTER is what makes the destination able
+        // to open it, exactly as the heap above needed it.
+        let shared_fence: ID3D12Fence = unsafe {
+            src_device.CreateFence(
+                0,
+                D3D12_FENCE_FLAG_SHARED | D3D12_FENCE_FLAG_SHARED_CROSS_ADAPTER,
+            )?
+        };
+        let shared_fence_handle = OwnedHandle(unsafe {
+            src_device.CreateSharedHandle(&shared_fence, None, GENERIC_ALL, None)?
+        });
         Ok(Self {
             src: Submitter::new(&src_device)?,
             dst: Submitter::new(&dst_device)?,
@@ -760,6 +1141,17 @@ impl CrossAdapterTransfer {
             readback,
             src_readback,
             snapshot,
+            shared_destination_handle: shared_destination_handle.release(),
+            cached_texture: Cell::new((0, 0)),
+            cached_shared: std::cell::RefCell::new(None),
+            shared_fence,
+            shared_fence_handle: shared_fence_handle.release(),
+            shared_fence_value: Cell::new(0),
+            submission_health: Cell::new(SubmissionHealth::Usable),
+            consumer_fence: std::cell::RefCell::new(None),
+            retired_consumer_fences: std::cell::RefCell::new(Vec::new()),
+            format,
+            bytes_per_pixel,
             footprint,
             total_bytes,
             width,
@@ -770,12 +1162,85 @@ impl CrossAdapterTransfer {
         })
     }
 
+    fn ensure_submission_usable(&self) -> windows::core::Result<()> {
+        let message = match self.submission_health.get() {
+            SubmissionHealth::Usable => return Ok(()),
+            SubmissionHealth::Poisoned => {
+                "cross-adapter transfer is unusable after a command-queue Signal failure; \
+                 build a new transfer"
+            }
+            SubmissionHealth::Quarantined => {
+                "cross-adapter transfer is quarantined after an untrackable GPU submission; \
+                 its resources and captured frame must remain alive until process exit"
+            }
+        };
+        Err(windows::core::Error::new(
+            windows::Win32::Foundation::E_FAIL,
+            message,
+        ))
+    }
+
+    fn validate_texture_desc(&self, desc: &D3D11_TEXTURE2D_DESC) -> windows::core::Result<()> {
+        match copy_texture_mismatch(desc, self.width, self.height, self.format) {
+            Some(CopyTextureMismatch::Size) => Err(windows::core::Error::new(
+                windows::Win32::Foundation::E_INVALIDARG,
+                "texture size does not match the one this transfer was built for; \
+                 rebuild it after a resolution change",
+            )),
+            Some(CopyTextureMismatch::Format { expected, actual }) => {
+                Err(windows::core::Error::new(
+                    windows::Win32::Foundation::E_INVALIDARG,
+                    format!(
+                        "texture DXGI format changed from {} to {}; rebuild the \
+                     cross-adapter transfer after an SDR/HDR mode change",
+                        expected, actual
+                    ),
+                ))
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// Preserve every object that source or destination queue work may name.
+    fn quarantine_resources(&self) {
+        // ExecuteCommandLists accepted work, but no fence could prove
+        // completion while GetDeviceRemovedReason still returned S_OK. D3D12
+        // makes the application responsible for every referenced object's
+        // lifetime, so preserve clones (and leave raw handles open) rather than
+        // guessing that the GPU is finished.
+        self.src.quarantine();
+        self.dst.quarantine();
+        std::mem::forget(self.src_device.clone());
+        std::mem::forget(self.dst_device.clone());
+        std::mem::forget(self._src_heap.clone());
+        std::mem::forget(self._dst_heap.clone());
+        std::mem::forget(self.src_buffer.clone());
+        std::mem::forget(self.dst_buffer.clone());
+        std::mem::forget(self.readback.clone());
+        std::mem::forget(self.src_readback.clone());
+        std::mem::forget(self.snapshot.clone());
+        std::mem::forget(self.shared_fence.clone());
+        if let Some((resource, _)) = self.cached_shared.borrow().as_ref() {
+            std::mem::forget(resource.clone());
+        }
+        if let Some(fence) = self.consumer_fence.borrow().as_ref() {
+            std::mem::forget(fence.clone());
+        }
+        for fence in self.retired_consumer_fences.borrow().iter() {
+            std::mem::forget(fence.clone());
+        }
+    }
+
+    pub fn submission_quarantined(&self) -> bool {
+        self.submission_health.get() == SubmissionHealth::Quarantined
+    }
+
     /// Copy one captured frame into the shared heap.
     ///
     /// Blocks until the source GPU has finished, so the frame is readable from
     /// the destination adapter by the time this returns.
-    pub fn transfer(&self, texture: &ID3D11Texture2D) -> windows::core::Result<()> {
-        self.copy_from(texture, false)
+    pub fn transfer(&self, texture: &ID3D11Texture2D, source_id: u64) -> windows::core::Result<()> {
+        self.copy_from(texture, false, source_id)
     }
 
     /// Copy the texture into the shared heap, optionally mirroring the same
@@ -784,59 +1249,95 @@ impl CrossAdapterTransfer {
     /// Both copies go into one command list on purpose: submitted separately
     /// they would see different content, because the duplicated surface is
     /// live.
+    /// Open the capture texture on the source device, reusing the last one.
+    ///
+    /// Keyed on the raw pointer rather than assumed stable: a changed surface
+    /// reopens. The NT handle is kept alongside the resource because it must
+    /// outlive nothing in particular -- `OpenSharedHandle` does not take
+    /// ownership -- but closing it per frame is exactly the 110 us this cache
+    /// exists to remove, so it is closed when the cache entry is replaced.
+    fn open_capture_texture(
+        &self,
+        texture: &ID3D11Texture2D,
+        source_id: u64,
+    ) -> windows::core::Result<ID3D12Resource> {
+        let key = (texture.as_raw() as usize, source_id);
+        if self.cached_texture.get() == key {
+            if let Some((resource, _)) = self.cached_shared.borrow().as_ref() {
+                return Ok(resource.clone());
+            }
+        }
+
+        let dxgi: IDXGIResource1 = texture.cast()?;
+        let handle = unsafe { dxgi.CreateSharedHandle(None, DXGI_SHARED_RESOURCE_READ, None)? };
+        let mut shared: Option<ID3D12Resource> = None;
+        let opened = unsafe { self.src_device.OpenSharedHandle(handle, &mut shared) };
+        if opened.is_err() {
+            unsafe {
+                let _ = CloseHandle(handle);
+            }
+            opened?;
+        }
+        let shared = shared.expect("OpenSharedHandle reported success");
+
+        // Replace the previous entry, closing the handle it held.
+        if let Some((_, old_handle)) = self.cached_shared.borrow_mut().take() {
+            if !old_handle.is_invalid() {
+                unsafe {
+                    let _ = CloseHandle(old_handle);
+                }
+            }
+        }
+        *self.cached_shared.borrow_mut() = Some((shared.clone(), handle));
+        self.cached_texture.set(key);
+        Ok(shared)
+    }
+
     fn copy_from(
         &self,
         texture: &ID3D11Texture2D,
         with_reference: bool,
+        source_id: u64,
     ) -> windows::core::Result<()> {
+        self.ensure_submission_usable()?;
         let mut desc = Default::default();
         unsafe { texture.GetDesc(&mut desc) };
-        if desc.Width != self.width || desc.Height != self.height {
-            return Err(windows::core::Error::new(
-                windows::Win32::Foundation::E_INVALIDARG,
-                "texture size does not match the one this transfer was built for; \
-                 build a new transfer after a resolution change",
-            ));
+        self.validate_texture_desc(&desc)?;
+
+        // Drain any outstanding async submission before touching the source
+        // allocator. `transfer_async()` waits for the *previous* one at its own
+        // entry, but a caller who submits asynchronously and then synchronises
+        // GPU-side -- the whole point of `shared_fence_handle` -- never returns
+        // through that path. `begin()` below resets the allocator the GPU may
+        // still be reading, which is device removal or corruption.
+        self.wait_shared_fence(self.shared_fence_value.get())?;
+
+        let shared = self.open_capture_texture(texture, source_id)?;
+
+        if with_reference {
+            return self.copy_via_snapshot(&shared);
         }
 
-        let resource: IDXGIResource1 = texture.cast()?;
-        let handle = unsafe { resource.CreateSharedHandle(None, DXGI_SHARED_RESOURCE_READ, None)? };
+        let mut src_location = D3D12_TEXTURE_COPY_LOCATION {
+            pResource: core::mem::ManuallyDrop::new(Some(shared)),
+            Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+            Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                SubresourceIndex: 0,
+            },
+        };
+        let mut destination = placed_location(&self.src_buffer, self.footprint);
 
-        let result = (|| -> windows::core::Result<()> {
-            let mut shared: Option<ID3D12Resource> = None;
-            unsafe { self.src_device.OpenSharedHandle(handle, &mut shared)? };
-            let shared = shared.expect("OpenSharedHandle reported success");
+        let list = self.src.begin()?;
+        unsafe { list.CopyTextureRegion(&destination, 0, 0, 0, &src_location, None) };
+        let submitted = self.src.end_and_wait();
 
-            if with_reference {
-                return self.copy_via_snapshot(&shared);
-            }
-
-            let mut src_location = D3D12_TEXTURE_COPY_LOCATION {
-                pResource: core::mem::ManuallyDrop::new(Some(shared)),
-                Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-                    SubresourceIndex: 0,
-                },
-            };
-            let mut destination = placed_location(&self.src_buffer, self.footprint);
-
-            let list = self.src.begin()?;
-            unsafe { list.CopyTextureRegion(&destination, 0, 0, 0, &src_location, None) };
-            let submitted = self.src.end_and_wait();
-
-            // pResource is a ManuallyDrop, so every reference is released by
-            // hand rather than at end of scope.
-            unsafe {
-                core::mem::ManuallyDrop::drop(&mut destination.pResource);
-                core::mem::ManuallyDrop::drop(&mut src_location.pResource);
-            }
-            submitted
-        })();
-
+        // pResource is a ManuallyDrop, so every reference is released by hand
+        // rather than at end of scope.
         unsafe {
-            let _ = CloseHandle(handle);
+            core::mem::ManuallyDrop::drop(&mut destination.pResource);
+            core::mem::ManuallyDrop::drop(&mut src_location.pResource);
         }
-        result
+        submitted
     }
 
     /// Transfer a frame *and* return a source-side copy of the same bytes.
@@ -856,8 +1357,9 @@ impl CrossAdapterTransfer {
     pub fn transfer_with_reference(
         &self,
         texture: &ID3D11Texture2D,
+        source_id: u64,
     ) -> windows::core::Result<Vec<u8>> {
-        self.copy_from(texture, true)?;
+        self.copy_from(texture, true, source_id)?;
         map_to_vec(&self.src_readback, self.total_bytes)
     }
 
@@ -924,6 +1426,12 @@ impl CrossAdapterTransfer {
     /// CPU. This exists because "the copy was submitted without error" is not
     /// evidence that the right bytes arrived on the other adapter.
     pub fn read_back_destination(&self) -> windows::core::Result<Vec<u8>> {
+        self.ensure_submission_usable()?;
+        // The destination queue sees the same cross-adapter allocation, but it
+        // is not implicitly ordered behind the source queue. This diagnostic
+        // may be called immediately after transfer_async(), so prove the source
+        // write complete before recording the destination read.
+        self.wait_shared_fence(self.shared_fence_value.get())?;
         let list = self.dst.begin()?;
         unsafe { list.CopyBufferRegion(&self.readback, 0, &self.dst_buffer, 0, self.total_bytes) };
         self.dst.end_and_wait()?;
@@ -932,6 +1440,545 @@ impl CrossAdapterTransfer {
 
     /// Address of the `ID3D12Resource` holding the frame on the destination
     /// adapter. Borrowed, not owned: valid while this object is alive.
+    /// Submit a transfer without blocking, returning the fence value to wait on.
+    ///
+    /// `transfer()` blocks until the source GPU finishes, which on this path is
+    /// mostly the copy itself executing -- measured 2026-08-22 at 2.67 ms of a
+    /// 2.70 ms transfer, Intel iGPU to RTX 4060 at 2560x1600. Blocking returns
+    /// a frame that is immediately readable; this returns the calling thread
+    /// instead and leaves synchronisation to the caller.
+    ///
+    /// **It still waits for the *previous* submission** before recording, and
+    /// that is not laziness: `Submitter::begin` resets the command allocator,
+    /// and resetting one the GPU is still reading is corruption. So this
+    /// pipelines to depth one -- frame N's copy overlaps whatever the caller
+    /// does next, and the cost is paid at the start of frame N+1 only if the
+    /// GPU has not finished by then.
+    ///
+    /// The returned value is for `wait_shared_fence`. A consumer on the
+    /// destination adapter can instead wait GPU-side on the fence opened from
+    /// `shared_fence_handle()`, which is the point of it being cross-adapter.
+    pub fn transfer_async(
+        &self,
+        texture: &ID3D11Texture2D,
+        source_id: u64,
+    ) -> windows::core::Result<u64> {
+        self.ensure_submission_usable()?;
+        let mut desc = Default::default();
+        unsafe { texture.GetDesc(&mut desc) };
+        self.validate_texture_desc(&desc)?;
+
+        // The allocator reset below is only safe once the GPU is done with it.
+        self.wait_shared_fence(self.shared_fence_value.get())?;
+
+        let shared = self.open_capture_texture(texture, source_id)?;
+        let mut src_location = D3D12_TEXTURE_COPY_LOCATION {
+            pResource: core::mem::ManuallyDrop::new(Some(shared)),
+            Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+            Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                SubresourceIndex: 0,
+            },
+        };
+        let mut destination = placed_location(&self.src_buffer, self.footprint);
+
+        let result = (|| -> windows::core::Result<u64> {
+            let list = self.src.begin()?;
+            unsafe { list.CopyTextureRegion(&destination, 0, 0, 0, &src_location, None) };
+            self.submit_async_list(list)
+        })();
+
+        unsafe {
+            core::mem::ManuallyDrop::drop(&mut destination.pResource);
+            core::mem::ManuallyDrop::drop(&mut src_location.pResource);
+        }
+        result
+    }
+
+    /// Diagnostic asynchronous transfer with a source-side reference generated
+    /// by the same command list.
+    ///
+    /// Unlike the production async path, this freezes the live duplication
+    /// surface into `snapshot` and copies that snapshot to both the shared heap
+    /// and `src_readback`. It exists solely to verify asynchronous byte
+    /// correctness without comparing two reads of a surface that changes under
+    /// us. Call `wait_shared_fence(value)`, then compare `read_back_source()`
+    /// with `read_back_destination()`.
+    pub fn transfer_async_with_reference(
+        &self,
+        texture: &ID3D11Texture2D,
+        source_id: u64,
+    ) -> windows::core::Result<u64> {
+        self.ensure_submission_usable()?;
+        let mut desc = Default::default();
+        unsafe { texture.GetDesc(&mut desc) };
+        self.validate_texture_desc(&desc)?;
+
+        self.wait_shared_fence(self.shared_fence_value.get())?;
+        let shared = self.open_capture_texture(texture, source_id)?;
+        let list = self.src.begin()?;
+
+        unsafe {
+            transition(
+                list,
+                &self.snapshot,
+                D3D12_RESOURCE_STATE_COMMON,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+            );
+            list.CopyResource(&self.snapshot, &shared);
+            transition(
+                list,
+                &self.snapshot,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_COPY_SOURCE,
+            );
+        }
+
+        let mut source = D3D12_TEXTURE_COPY_LOCATION {
+            pResource: core::mem::ManuallyDrop::new(Some(self.snapshot.clone())),
+            Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+            Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                SubresourceIndex: 0,
+            },
+        };
+        let mut destinations = [
+            placed_location(&self.src_buffer, self.footprint),
+            placed_location(&self.src_readback, self.footprint),
+        ];
+        unsafe {
+            for destination in destinations.iter() {
+                list.CopyTextureRegion(destination, 0, 0, 0, &source, None);
+            }
+            transition(
+                list,
+                &self.snapshot,
+                D3D12_RESOURCE_STATE_COPY_SOURCE,
+                D3D12_RESOURCE_STATE_COMMON,
+            );
+        }
+
+        let result = self.submit_async_list(list);
+        unsafe {
+            for destination in destinations.iter_mut() {
+                core::mem::ManuallyDrop::drop(&mut destination.pResource);
+            }
+            core::mem::ManuallyDrop::drop(&mut source.pResource);
+        }
+        result
+    }
+
+    /// Map the source-side bytes produced by
+    /// `transfer_async_with_reference()`. Verification only.
+    pub fn read_back_source(&self) -> windows::core::Result<Vec<u8>> {
+        self.ensure_submission_usable()?;
+        self.wait_shared_fence(self.shared_fence_value.get())?;
+        map_to_vec(&self.src_readback, self.total_bytes)
+    }
+
+    /// Close and submit an already-recorded async list, then attach the public
+    /// shared-fence signal with the same drain/quarantine policy for every
+    /// asynchronous recording path.
+    fn submit_async_list(&self, list: &ID3D12GraphicsCommandList) -> windows::core::Result<u64> {
+        unsafe {
+            list.Close()?;
+            self.src
+                .queue
+                .ExecuteCommandLists(&[Some(list.cast::<ID3D12CommandList>()?)]);
+        }
+        self.settle_shared_submission_after_execute()
+    }
+
+    /// Attach the public completion marker after a command list was executed.
+    ///
+    /// `ExecuteCommandLists` has no result, so from its return until a fence is
+    /// successfully attached the submitted resources have an unknown lifetime.
+    /// Every path that submits without `Submitter::end_and_wait` comes through
+    /// this policy: try the public fence, drain with the private fence if that
+    /// fails, and quarantine a still-live submission if neither signal works.
+    fn settle_shared_submission_after_execute(&self) -> windows::core::Result<u64> {
+        // From this instruction until one of the two fences completes, the
+        // command list is real GPU work with no proven lifetime boundary.
+        // Mark that explicitly before the fallible shared Signal.
+        self.submission_health.set(SubmissionHealth::Quarantined);
+        match settle_submitted_copy(
+            &self.shared_fence_value,
+            |value| unsafe { self.src.queue.Signal(&self.shared_fence, value) },
+            || self.src.signal_and_wait_after_execute(),
+            || unsafe { self.src_device.GetDeviceRemovedReason().is_err() },
+        ) {
+            SubmittedCopyOutcome::Signaled => {
+                self.submission_health.set(SubmissionHealth::Usable);
+                Ok(self.shared_fence_value.get())
+            }
+            SubmittedCopyOutcome::DrainedAfterSignalFailure(signal) => {
+                // The private fence proves the copy finished, so Python may
+                // release its acquired DXGI frame. Do not reuse the transfer:
+                // a failed public timeline is a terminal queue fault.
+                self.submission_health.set(SubmissionHealth::Poisoned);
+                Err(windows::core::Error::new(
+                    signal.code(),
+                    format!(
+                        "shared-fence Signal failed after submission; the copy was \
+                         drained through the private fence and this transfer is now \
+                         unusable: {signal}"
+                    ),
+                ))
+            }
+            SubmittedCopyOutcome::DeviceRemovedAfterSignalFailure { signal, drain } => {
+                // Device removal signals monitored fences to UINT64_MAX and
+                // terminates its queued work. Resource destruction is safe,
+                // but this transfer cannot submit again.
+                self.submission_health.set(SubmissionHealth::Poisoned);
+                Err(windows::core::Error::new(
+                    signal.code(),
+                    format!(
+                        "shared-fence Signal failed after submission and the fallback \
+                         drain also failed because the device was removed; this transfer \
+                         is unusable: signal={signal}; drain={drain}"
+                    ),
+                ))
+            }
+            SubmittedCopyOutcome::Quarantined { signal, drain } => {
+                // Leave Quarantined set. Drop will retain every referenced
+                // native object, and the Python wrapper will refuse to hand
+                // the acquired frame back to DXGI.
+                Err(windows::core::Error::new(
+                    signal.code(),
+                    format!(
+                        "shared-fence Signal failed after submission and the private \
+                         fence could not drain it while the device remained live; the \
+                         submission is quarantined until process exit: \
+                         signal={signal}; drain={drain}"
+                    ),
+                ))
+            }
+        }
+    }
+
+    /// Block until the shared fence reaches `value`. 0 returns immediately.
+    pub fn wait_shared_fence(&self, value: u64) -> windows::core::Result<()> {
+        if let Some(raw) = self.arm_shared_fence_wait(value)? {
+            let event = OwnedHandle(HANDLE(raw as *mut core::ffi::c_void));
+            unsafe { WaitForSingleObject(event.0, INFINITE) };
+        }
+        Ok(())
+    }
+
+    /// Arm the wait and hand back the event, or `None` if already complete.
+    ///
+    /// Split out so a caller holding the Python GIL can release it around the
+    /// blocking half. `py.detach` needs a `Send` closure, and this type holds
+    /// `Cell`/`RefCell`, so a reference to it cannot cross that boundary --
+    /// but a raw event handle can, and waiting on one touches no state here.
+    /// That keeps the GIL release provably sound rather than asserted.
+    pub fn arm_shared_fence_wait(&self, value: u64) -> windows::core::Result<Option<isize>> {
+        let event = arm_or_poll_fence_wait_with(
+            value,
+            || unsafe { self.shared_fence.GetCompletedValue() },
+            || {
+                Ok(OwnedHandle(unsafe {
+                    CreateEventW(None, false, false, None)?
+                }))
+            },
+            |value, event| unsafe { self.shared_fence.SetEventOnCompletion(value, event.0) },
+            || std::thread::sleep(std::time::Duration::from_millis(1)),
+        );
+        Ok(event.map(|event| event.release().0 as isize))
+    }
+
+    /// Adopt the consumer's fence, from a shared NT handle it created.
+    ///
+    /// Verified 2026-08-22 that this works across vendors in the direction
+    /// that matters: CUDA on an RTX 4060 signalled a D3D12 fence created on
+    /// the Intel iGPU and the Intel device observed the new value.
+    pub fn set_consumer_fence(&self, handle: isize) -> windows::core::Result<()> {
+        let mut fence: Option<ID3D12Fence> = None;
+        unsafe {
+            self.src_device
+                .OpenSharedHandle(HANDLE(handle as *mut core::ffi::c_void), &mut fence)?;
+        }
+        let fence = fence.expect("OpenSharedHandle reported success");
+        replace_and_retain(
+            &mut self.consumer_fence.borrow_mut(),
+            &mut self.retired_consumer_fences.borrow_mut(),
+            fence,
+        );
+        Ok(())
+    }
+
+    /// Make the source queue wait until the consumer reaches `value`.
+    ///
+    /// A GPU-side wait: it returns immediately and the *queue* blocks, so the
+    /// calling thread keeps running. Queue this before the next transfer and
+    /// the copy cannot begin until the consumer has finished reading the
+    /// buffer it is about to overwrite.
+    pub fn wait_for_consumer(&self, value: u64) -> windows::core::Result<()> {
+        let borrowed = self.consumer_fence.borrow();
+        let fence = borrowed.as_ref().ok_or_else(|| {
+            windows::core::Error::new(
+                windows::Win32::Foundation::E_INVALIDARG,
+                "no consumer fence adopted; call set_consumer_fence() first",
+            )
+        })?;
+        unsafe { self.src.queue.Wait(fence, value) }
+    }
+
+    /// Value the shared fence has actually reached on the GPU.
+    ///
+    /// Diagnostic: `shared_fence_value()` is what was submitted, this is what
+    /// has completed. Also the instrument for asking whether a *consumer* can
+    /// signal this fence -- if CUDA signals it, this is where that shows up.
+    pub fn shared_fence_completed(&self) -> u64 {
+        unsafe { self.shared_fence.GetCompletedValue() }
+    }
+
+    /// Highest value submitted to the shared fence so far.
+    pub fn shared_fence_submitted(&self) -> u64 {
+        self.shared_fence_value.get()
+    }
+
+    /// NT handle for the cross-adapter fence. Borrowed, closed on `Drop`.
+    ///
+    /// A consumer on the destination adapter opens this with
+    /// `ID3D12Device::OpenSharedHandle` and waits on it from its own queue, so
+    /// the copy and the consuming work overlap without a CPU round-trip.
+    pub fn shared_fence_handle(&self) -> isize {
+        self.shared_fence_handle.0 as isize
+    }
+
+    /// Split one `transfer()` into its phases, to size what a shared fence
+    /// would actually buy.
+    ///
+    /// Section 6.1 deferred the fence on a measurement taken against WARP:
+    /// the blocking wait looked free because the copy dominated. Real hybrid
+    /// hardware runs the Intel -> NVIDIA direction at roughly half that
+    /// throughput, so the share is not the same number and the argument has to
+    /// be re-derived rather than carried over.
+    ///
+    /// Phases, in the order `copy_from` performs them:
+    ///
+    /// - `open`: CreateSharedHandle + OpenSharedHandle on the capture texture.
+    ///   Cached per texture now; it cost 268 us a frame before that.
+    /// - `record`: allocator reset + CopyTextureRegion.
+    /// - `submit`: Close + ExecuteCommandLists.
+    /// - `signal`: Signal on the queue.
+    /// - `wait`: SetEventOnCompletion + WaitForSingleObject. The only phase a
+    ///   shared fence removes, and 85% of the transfer before it did.
+    /// - `close`: CloseHandle, 114 us a frame before caching.
+    ///
+    /// Returns `(min, median)` microseconds per phase. **Read `wait` as the
+    /// median, never the minimum**: it is bimodal, because whenever the GPU
+    /// has already finished, `GetCompletedValue` clears immediately and the
+    /// sample is ~0. Section 10 records that trap costing a previous probe its
+    /// conclusion.
+    ///
+    /// `use_cache` selects which open path is measured, so the per-frame
+    /// handle cache can be A/B'd inside one harness rather than across two
+    /// runs -- comparing separate harnesses is what section 2 warns produces
+    /// verdicts about conditions rather than code.
+    pub fn probe_transfer_phases(
+        &self,
+        texture: &ID3D11Texture2D,
+        iterations: u32,
+        use_cache: bool,
+        source_id: u64,
+    ) -> windows::core::Result<[(f64, f64); 6]> {
+        self.ensure_submission_usable()?;
+        let mut desc = Default::default();
+        unsafe { texture.GetDesc(&mut desc) };
+        self.validate_texture_desc(&desc)?;
+        // The first measured iteration resets the same allocator used by
+        // transfer_async(). A caller is allowed to mix the public diagnostic
+        // and transfer APIs, so drain the latest async copy before the probe
+        // touches it. This wait is intentionally outside the timings.
+        self.wait_shared_fence(self.shared_fence_value.get())?;
+
+        let count = iterations.max(1) as usize;
+        let mut phases: [Vec<f64>; 6] = Default::default();
+
+        for _ in 0..count {
+            let t0 = std::time::Instant::now();
+            let (shared, handle) = if use_cache {
+                (
+                    self.open_capture_texture(texture, source_id)?,
+                    HANDLE::default(),
+                )
+            } else {
+                let resource: IDXGIResource1 = texture.cast()?;
+                let handle =
+                    unsafe { resource.CreateSharedHandle(None, DXGI_SHARED_RESOURCE_READ, None)? };
+                let mut shared: Option<ID3D12Resource> = None;
+                unsafe { self.src_device.OpenSharedHandle(handle, &mut shared)? };
+                (shared.expect("OpenSharedHandle reported success"), handle)
+            };
+            let t1 = std::time::Instant::now();
+
+            let mut src_location = D3D12_TEXTURE_COPY_LOCATION {
+                pResource: core::mem::ManuallyDrop::new(Some(shared)),
+                Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                    SubresourceIndex: 0,
+                },
+            };
+            let mut destination = placed_location(&self.src_buffer, self.footprint);
+            let list = self.src.begin()?;
+            unsafe { list.CopyTextureRegion(&destination, 0, 0, 0, &src_location, None) };
+            let t2 = std::time::Instant::now();
+
+            unsafe {
+                list.Close()?;
+                self.src
+                    .queue
+                    .ExecuteCommandLists(&[Some(list.cast::<ID3D12CommandList>()?)]);
+            }
+            let t3 = std::time::Instant::now();
+
+            // Use the same post-Execute policy as transfer_async(). A failed
+            // probe Signal is no less real than a failed production Signal:
+            // the command list is already queued and its resources cannot be
+            // reset or freed until a fallback drain proves completion.
+            let value = self.settle_shared_submission_after_execute()?;
+            let t4 = std::time::Instant::now();
+
+            self.wait_shared_fence(value)?;
+            let t5 = std::time::Instant::now();
+
+            unsafe {
+                core::mem::ManuallyDrop::drop(&mut destination.pResource);
+                core::mem::ManuallyDrop::drop(&mut src_location.pResource);
+                // Only the uncached path owns a handle here; the cached one
+                // belongs to the cache and is closed when it is replaced.
+                if !handle.is_invalid() {
+                    let _ = CloseHandle(handle);
+                }
+            }
+            let t6 = std::time::Instant::now();
+
+            let us = |a: std::time::Instant, b: std::time::Instant| {
+                b.duration_since(a).as_secs_f64() * 1e6
+            };
+            phases[0].push(us(t0, t1));
+            phases[1].push(us(t1, t2));
+            phases[2].push(us(t2, t3));
+            phases[3].push(us(t3, t4));
+            phases[4].push(us(t4, t5));
+            phases[5].push(us(t5, t6));
+        }
+
+        fn min_and_median(mut xs: Vec<f64>) -> (f64, f64) {
+            xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            (xs[0], xs[xs.len() / 2])
+        }
+
+        let mut out = [(0.0, 0.0); 6];
+        for (slot, samples) in out.iter_mut().zip(phases) {
+            *slot = min_and_median(samples);
+        }
+        Ok(out)
+    }
+
+    /// Which objects will yield an NT handle for the transferred frame.
+    ///
+    /// Diagnostic. It exists to settle empirically which handle a consumer on
+    /// the destination adapter can obtain, rather than picking one from
+    /// documentation that does not say -- in particular whether
+    /// `CreateSharedHandle` succeeds on a placed resource inside a heap that
+    /// was itself obtained from `OpenSharedHandle`. Measured 2026-08-22 on an
+    /// Intel iGPU -> RTX 4060 pair: **only the heaps can be shared.** Both
+    /// placed resources fail with `E_INVALIDARG`, which is why
+    /// `shared_destination_handle` shares `dst_heap` and a CUDA consumer
+    /// imports it as `CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_HEAP` (4) rather
+    /// than the `D3D12_RESOURCE` (5) the Stage 6 preprocessor uses.
+    ///
+    /// Run this first on any new adapter pairing; the answer is a property of
+    /// the driver pair, and this project has verified exactly one.
+    ///
+    /// **Leaks nothing.** Every handle it mints is closed before returning, so
+    /// the result is the outcome of the attempt rather than a usable handle.
+    /// For a handle you can actually import, use `shared_destination_handle`.
+    ///
+    /// Returns `(label, cuda_handle_type, outcome)` per candidate, where
+    /// `cuda_handle_type` is what the handle would import as: 4 = D3D12_HEAP,
+    /// 5 = D3D12_RESOURCE.
+    pub fn probe_shared_handles(&self) -> Vec<SharedHandleAttempt> {
+        let attempts: [(&str, u32, &HandleMaker<'_>); 4] = [
+            ("dst_resource", 5, &|| unsafe {
+                self.dst_device
+                    .CreateSharedHandle(&self.dst_buffer, None, GENERIC_ALL, None)
+            }),
+            ("dst_heap", 4, &|| unsafe {
+                self.dst_device
+                    .CreateSharedHandle(&self._dst_heap, None, GENERIC_ALL, None)
+            }),
+            ("src_resource", 5, &|| unsafe {
+                self.src_device
+                    .CreateSharedHandle(&self.src_buffer, None, GENERIC_ALL, None)
+            }),
+            ("src_heap", 4, &|| unsafe {
+                self.src_device
+                    .CreateSharedHandle(&self._src_heap, None, GENERIC_ALL, None)
+            }),
+        ];
+
+        attempts
+            .iter()
+            .map(|(label, kind, make)| {
+                let outcome = match make() {
+                    Ok(handle) => {
+                        // Closed immediately: this reports whether the call is
+                        // permitted, and a probe that hands back live handles
+                        // makes the caller responsible for cleanup it did not
+                        // ask for.
+                        unsafe {
+                            let _ = CloseHandle(handle);
+                        }
+                        Ok(())
+                    }
+                    Err(e) => Err(format!("{e}")),
+                };
+                (label.to_string(), *kind, outcome)
+            })
+            .collect()
+    }
+
+    /// NT handle for the destination heap the transferred frame lives in.
+    ///
+    /// **Borrowed, not owned.** It is closed when this object is dropped, and
+    /// the heap goes with it -- so a consumer holding only the integer, or a
+    /// mapped pointer derived from it, has nothing that looks wrong afterwards.
+    /// Keep the transfer alive for as long as anything reads the frame.
+    ///
+    /// Import it as a **heap** (`CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_HEAP`,
+    /// 4), sized `total_bytes`, offset 0 -- not as a resource. Measured
+    /// 2026-08-22, Intel iGPU -> RTX 4060: the imported buffer reads
+    /// byte-identical to `read_back_destination()` and observes later
+    /// `transfer()` calls without re-importing.
+    /// Raw pointer of the capture texture currently cached, or 0.
+    ///
+    /// Exposed for tests. Reopening per frame cost 411 us here and produces
+    /// output that looks correct either way, so a change that quietly disabled
+    /// the cache would be a silent regression -- the assertion has to be on the
+    /// key, not on pixels.
+    pub fn cached_texture_address(&self) -> usize {
+        if self.cached_shared.borrow().is_some() {
+            self.cached_texture.get().0
+        } else {
+            0
+        }
+    }
+
+    /// `source_id` of the cached entry, or 0. The other half of the key.
+    pub fn cached_source_id(&self) -> u64 {
+        if self.cached_shared.borrow().is_some() {
+            self.cached_texture.get().1
+        } else {
+            0
+        }
+    }
+
+    pub fn shared_destination_handle(&self) -> isize {
+        self.shared_destination_handle.0 as isize
+    }
+
     pub fn destination_resource_address(&self) -> usize {
         self.dst_buffer.as_raw() as usize
     }
@@ -944,8 +1991,17 @@ impl CrossAdapterTransfer {
         self.total_bytes
     }
 
+    /// Numeric DXGI_FORMAT of the raw pixels in the shared buffer.
+    pub fn dxgi_format(&self) -> i32 {
+        self.format.0
+    }
+
+    pub fn bytes_per_pixel(&self) -> u32 {
+        self.bytes_per_pixel
+    }
+
     /// Bytes per row in the shared buffer. Padded to D3D12's 256-byte copy
-    /// alignment, so this is not always `width * 4`.
+    /// alignment, so this is not always `width * bytes_per_pixel`.
     pub fn row_pitch(&self) -> u32 {
         self.footprint.Footprint.RowPitch
     }
@@ -1202,4 +2258,327 @@ fn make_default_buffer(device: &ID3D12Device, size: u64) -> windows::core::Resul
         )?;
     }
     Ok(resource.expect("CreateCommittedResource reported success"))
+}
+
+#[cfg(test)]
+mod submission_failure_tests {
+    use super::{
+        arm_fence_wait_with, arm_or_poll_fence_wait_with, build_copy_footprint_with,
+        copy_format_bytes_per_pixel, copy_texture_mismatch, replace_and_retain,
+        settle_submitted_copy, CopyTextureMismatch, SubmittedCopyOutcome, D3D11_TEXTURE2D_DESC,
+        DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT,
+        DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN,
+    };
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    #[derive(Clone, Debug)]
+    struct MockEvent {
+        id: usize,
+        drops: Rc<Cell<usize>>,
+    }
+
+    impl Drop for MockEvent {
+        fn drop(&mut self) {
+            self.drops.set(self.drops.get() + 1);
+        }
+    }
+
+    #[test]
+    fn every_duplicator_format_reaches_footprint_sizing_unchanged() {
+        let formats = [
+            (DXGI_FORMAT_B8G8R8A8_UNORM, 4u32),
+            (DXGI_FORMAT_R8G8B8A8_UNORM, 4u32),
+            (DXGI_FORMAT_R10G10B10A2_UNORM, 4u32),
+            (DXGI_FORMAT_R16G16B16A16_FLOAT, 8u32),
+        ];
+
+        for (format, bytes_per_pixel) in formats {
+            assert_eq!(copy_format_bytes_per_pixel(format), Some(bytes_per_pixel));
+            let (footprint, total_bytes) =
+                build_copy_footprint_with(65, 3, format, &mut |desc, footprint, total_bytes| {
+                    assert_eq!(desc.Format, format);
+                    let row_bytes = 65 * bytes_per_pixel;
+                    let row_pitch = (row_bytes + 255) & !255;
+                    footprint.Footprint.Format = desc.Format;
+                    footprint.Footprint.Width = 65;
+                    footprint.Footprint.Height = 3;
+                    footprint.Footprint.Depth = 1;
+                    footprint.Footprint.RowPitch = row_pitch;
+                    *total_bytes = u64::from(row_pitch) * 3;
+                });
+            assert_eq!(footprint.Footprint.Format, format);
+            assert!(footprint.Footprint.RowPitch >= 65 * bytes_per_pixel);
+            assert_eq!(total_bytes, u64::from(footprint.Footprint.RowPitch) * 3);
+        }
+        assert_eq!(copy_format_bytes_per_pixel(DXGI_FORMAT_UNKNOWN), None);
+    }
+
+    #[test]
+    fn r16_footprint_uses_eight_bytes_per_pixel() {
+        let (footprint, total_bytes) = build_copy_footprint_with(
+            64,
+            2,
+            DXGI_FORMAT_R16G16B16A16_FLOAT,
+            &mut |desc, footprint, total_bytes| {
+                let bytes = copy_format_bytes_per_pixel(desc.Format).unwrap();
+                footprint.Footprint.Format = desc.Format;
+                footprint.Footprint.RowPitch = desc.Width as u32 * bytes;
+                *total_bytes = u64::from(footprint.Footprint.RowPitch) * desc.Height as u64;
+            },
+        );
+        assert_eq!(footprint.Footprint.RowPitch, 64 * 8);
+        assert_eq!(total_bytes, 64 * 2 * 8);
+    }
+
+    #[test]
+    fn a_later_sdr_hdr_format_change_is_rejected() {
+        let mut desc = D3D11_TEXTURE2D_DESC {
+            Width: 1920,
+            Height: 1080,
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            ..Default::default()
+        };
+        assert_eq!(
+            copy_texture_mismatch(&desc, 1920, 1080, DXGI_FORMAT_B8G8R8A8_UNORM),
+            None
+        );
+
+        desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        assert_eq!(
+            copy_texture_mismatch(&desc, 1920, 1080, DXGI_FORMAT_B8G8R8A8_UNORM),
+            Some(CopyTextureMismatch::Format {
+                expected: DXGI_FORMAT_B8G8R8A8_UNORM.0,
+                actual: DXGI_FORMAT_R16G16B16A16_FLOAT.0,
+            })
+        );
+    }
+
+    #[test]
+    fn concurrent_waits_get_distinct_owned_events() {
+        let next_id = Cell::new(0usize);
+        let drops = Rc::new(Cell::new(0usize));
+        let registrations = RefCell::new(Vec::new());
+
+        let arm = |value| {
+            arm_fence_wait_with(
+                value,
+                || 0,
+                || {
+                    let id = next_id.get() + 1;
+                    next_id.set(id);
+                    Ok::<MockEvent, &'static str>(MockEvent {
+                        id,
+                        drops: drops.clone(),
+                    })
+                },
+                |value, event| {
+                    registrations.borrow_mut().push((value, event.id));
+                    Ok(())
+                },
+            )
+            .unwrap()
+            .unwrap()
+        };
+
+        let lower = arm(10);
+        let higher = arm(20);
+        assert_ne!(lower.id, higher.id);
+        assert_eq!(
+            *registrations.borrow(),
+            vec![(10, lower.id), (20, higher.id)]
+        );
+        assert_eq!(drops.get(), 0);
+        drop(lower);
+        drop(higher);
+        assert_eq!(drops.get(), 2);
+    }
+
+    #[test]
+    fn a_registration_failure_closes_its_new_event() {
+        let drops = Rc::new(Cell::new(0usize));
+        let result = arm_fence_wait_with(
+            10,
+            || 0,
+            || {
+                Ok(MockEvent {
+                    id: 1,
+                    drops: drops.clone(),
+                })
+            },
+            |_value, _event| Err("SetEventOnCompletion failed"),
+        );
+        assert_eq!(result.unwrap_err(), "SetEventOnCompletion failed");
+        assert_eq!(drops.get(), 1);
+    }
+
+    #[test]
+    fn an_already_completed_wait_allocates_no_event() {
+        let creates = Cell::new(0usize);
+        let result = arm_fence_wait_with(
+            10,
+            || 10,
+            || {
+                creates.set(creates.get() + 1);
+                Ok::<usize, &'static str>(1)
+            },
+            |_value, _event| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(result, None);
+        assert_eq!(creates.get(), 0);
+    }
+
+    #[test]
+    fn event_creation_failure_polls_until_the_submission_completes() {
+        let completed = Cell::new(7u64);
+        let polls = Cell::new(0usize);
+        let event = arm_or_poll_fence_wait_with(
+            10,
+            || completed.get(),
+            || Err::<MockEvent, _>("CreateEventW failed"),
+            |_value, _event| Ok(()),
+            || {
+                polls.set(polls.get() + 1);
+                completed.set(completed.get() + 1);
+            },
+        );
+        assert!(event.is_none());
+        assert_eq!(completed.get(), 10);
+        assert_eq!(polls.get(), 3);
+    }
+
+    #[test]
+    fn event_registration_failure_closes_the_event_and_then_polls() {
+        let drops = Rc::new(Cell::new(0usize));
+        let completed = Cell::new(9u64);
+        let polls = Cell::new(0usize);
+        let event = arm_or_poll_fence_wait_with(
+            10,
+            || completed.get(),
+            || {
+                Ok::<MockEvent, &'static str>(MockEvent {
+                    id: 1,
+                    drops: drops.clone(),
+                })
+            },
+            |_value, _event| Err("SetEventOnCompletion failed"),
+            || {
+                polls.set(polls.get() + 1);
+                completed.set(10);
+            },
+        );
+        assert!(event.is_none());
+        assert_eq!(drops.get(), 1);
+        assert_eq!(polls.get(), 1);
+    }
+
+    #[test]
+    fn replacing_a_consumer_fence_retains_the_previous_owner() {
+        let drops = Rc::new(Cell::new(0usize));
+        let make = |id| MockEvent {
+            id,
+            drops: drops.clone(),
+        };
+        let mut current = Some(make(1));
+        let mut retained = Vec::new();
+
+        replace_and_retain(&mut current, &mut retained, make(2));
+        assert_eq!(current.as_ref().unwrap().id, 2);
+        assert_eq!(retained[0].id, 1);
+        assert_eq!(drops.get(), 0);
+
+        drop(current);
+        assert_eq!(drops.get(), 1);
+        drop(retained);
+        assert_eq!(drops.get(), 2);
+    }
+
+    #[test]
+    fn successful_shared_signal_skips_every_recovery_path() {
+        let last_signaled = Cell::new(6);
+        let drain_calls = Cell::new(0);
+        let removal_checks = Cell::new(0);
+        let outcome = settle_submitted_copy(
+            &last_signaled,
+            |value| {
+                assert_eq!(value, 7);
+                Ok::<(), &'static str>(())
+            },
+            || {
+                drain_calls.set(drain_calls.get() + 1);
+                Ok(())
+            },
+            || {
+                removal_checks.set(removal_checks.get() + 1);
+                false
+            },
+        );
+        assert_eq!(outcome, SubmittedCopyOutcome::Signaled);
+        assert_eq!(last_signaled.get(), 7);
+        assert_eq!(drain_calls.get(), 0);
+        assert_eq!(removal_checks.get(), 0);
+    }
+
+    #[test]
+    fn failed_shared_signal_uses_the_private_fence_drain() {
+        let last_signaled = Cell::new(7);
+        let removal_checks = Cell::new(0);
+        let outcome = settle_submitted_copy(
+            &last_signaled,
+            |value| {
+                assert_eq!(value, 8);
+                Err("shared Signal failed")
+            },
+            || Ok(()),
+            || {
+                removal_checks.set(removal_checks.get() + 1);
+                false
+            },
+        );
+        assert_eq!(
+            outcome,
+            SubmittedCopyOutcome::DrainedAfterSignalFailure("shared Signal failed")
+        );
+        assert_eq!(last_signaled.get(), 7);
+        assert_eq!(removal_checks.get(), 0);
+    }
+
+    #[test]
+    fn two_failed_signals_are_safe_when_device_removal_is_confirmed() {
+        let last_signaled = Cell::new(8);
+        let outcome = settle_submitted_copy(
+            &last_signaled,
+            |_value| Err("shared Signal failed"),
+            || Err("private Signal failed"),
+            || true,
+        );
+        assert_eq!(
+            outcome,
+            SubmittedCopyOutcome::DeviceRemovedAfterSignalFailure {
+                signal: "shared Signal failed",
+                drain: "private Signal failed",
+            }
+        );
+        assert_eq!(last_signaled.get(), 8);
+    }
+
+    #[test]
+    fn two_failed_signals_on_a_live_device_quarantine_the_submission() {
+        let last_signaled = Cell::new(9);
+        let outcome = settle_submitted_copy(
+            &last_signaled,
+            |_value| Err("shared Signal failed"),
+            || Err("private Signal failed"),
+            || false,
+        );
+        assert_eq!(
+            outcome,
+            SubmittedCopyOutcome::Quarantined {
+                signal: "shared Signal failed",
+                drain: "private Signal failed",
+            }
+        );
+        assert_eq!(last_signaled.get(), 9);
+    }
 }

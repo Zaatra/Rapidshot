@@ -24,6 +24,11 @@ from rapidshot.core.device import Device
 from rapidshot.core.output import Output
 from rapidshot.core.stagesurf import StageSurface
 from rapidshot.core.duplicator import Duplicator
+from rapidshot._libs.dxgi import (
+    DXGI_ERROR_UNSUPPORTED,
+    DXGI_ERROR_INVALID_CALL,
+)
+from rapidshot.util.topology import probe_topology
 from rapidshot._libs.d3d11 import D3D11_BOX
 from rapidshot.processor import Processor
 from rapidshot.util.ctypes_helpers import describe_destination
@@ -60,6 +65,7 @@ class ScreenCapture:
         pool_size_frames: int = 4,
         pool_output: bool = True,
         timeout_ms: int = 10,
+        candidate_devices: Optional[List[Device]] = None,
     ) -> None:
         """
         Initialize a ScreenCapture instance.
@@ -108,6 +114,20 @@ class ScreenCapture:
         # Initialize basic attributes first to prevent errors during cleanup if initialization fails
         self._output = output
         self._device = device
+        self._init_error: Optional[Exception] = None
+        # Every adapter that could duplicate this output, in preference order
+        # as the factory ranked it. On a hybrid system the adapter that owns
+        # the output is not necessarily the one Desktop Duplication accepts,
+        # and with prefer_integrated the iGPU may deliberately rank ahead of
+        # `device` -- so this order is honoured rather than overridden.
+        #
+        # `device` is included even when the caller omits it: _build_duplicator
+        # reassigns self._device to whichever adapter wins, so a set missing one
+        # would shrink on every fallback and strand that adapter.
+        candidates = list(candidate_devices or [])
+        if not any(d is device for d in candidates):
+            candidates.insert(0, device)
+        self._all_devices = candidates
         self._timeout_ms = timeout_ms
         self._duplicator = None
         self._stagesurf = None
@@ -189,7 +209,10 @@ class ScreenCapture:
         
         try:
             if not self._initialize_resources():
-                # _initialize_resources logs errors, raise a generic one if it fails on first try
+                # Prefer the specific cause _initialize_resources recorded; the
+                # generic message is only for the case where nothing was.
+                if self._init_error is not None:
+                    raise self._init_error
                 raise RapidShotError("Initial resource initialization failed. Check logs for details.")
 
         except Exception as e: # Catch errors from _initialize_resources or other __init__ steps
@@ -198,6 +221,85 @@ class ScreenCapture:
             self.release() # Call release to clean up whatever was set up
             raise # Re-raise the exception to signal construction failure
             
+    def _device_label(self, device: Device) -> str:
+        """Adapter description, for messages. Never raises."""
+        try:
+            return str(device.desc.Description)
+        except Exception:
+            return repr(device)
+
+    def _build_duplicator(self) -> Duplicator:
+        """Create a Duplicator, trying each candidate adapter in turn.
+
+        Which adapter Desktop Duplication will accept cannot be deduced from
+        which adapter enumerates the output. On a hybrid system the adapter
+        owning the display can refuse while another succeeds, so the working
+        pairing is found by trying rather than by assuming -- previously the
+        display-owning adapter was assumed and a refusal ended capture.
+
+        ``self._device`` is updated to whichever adapter worked, because the
+        stage surface must be built on the same device as the duplicated
+        texture; the two cannot be chosen independently.
+
+        Raises:
+            RapidShotConfigError: every candidate refused. The message names
+                the likely system-level cause, which the raw HRESULT did not.
+        """
+        # Try in the stored preference order. Not "current device first":
+        # `self._device` starts as the adapter that owns the output, and with
+        # prefer_integrated the iGPU is deliberately ranked ahead of it, so
+        # promoting the current device would silently override the request.
+        # The winner is moved to the front *after* it succeeds, which keeps
+        # rebuilds cheap without pre-empting the preference on the first
+        # attempt. The set is never reduced -- an adapter that refuses once may
+        # be the only valid one after a MUX or output change.
+        candidates = list(self._all_devices)
+        refusals = []
+        for device in candidates:
+            try:
+                duplicator = Duplicator(
+                    output=self._output, device=device,
+                    timeout_ms=self._timeout_ms,
+                )
+            except RapidShotConfigError as e:
+                # Only an adapter-specific refusal is worth retrying elsewhere.
+                # A desktop refusal is also a RapidShotConfigError, but applies
+                # to every adapter equally and already carries an actionable
+                # message, so it propagates untouched instead of being retried
+                # against adapters that will refuse it for the same reason.
+                if getattr(e, "hresult", None) not in (
+                    DXGI_ERROR_UNSUPPORTED,
+                    DXGI_ERROR_INVALID_CALL,
+                ):
+                    raise
+                label = self._device_label(device)
+                refusals.append(f"  {label}: {e}")
+                logger.info(
+                    f"{label} refused to duplicate {self._output.devicename}; "
+                    "trying the next adapter."
+                )
+                continue
+            if device is not self._device:
+                logger.warning(
+                    f"Duplication is running on {self._device_label(device)}, "
+                    f"which does not own {self._output.devicename} "
+                    f"({self._device_label(self._device)} does)."
+                )
+                self._device = device
+            # Winner first for the next rebuild: cheap, and it can only
+            # reorder, never hide an adapter. Identity, not equality -- Device
+            # defines no __eq__ and two adapters must never compare equal here.
+            self._all_devices = [device] + [
+                d for d in self._all_devices if d is not device
+            ]
+            return duplicator
+
+        raise RapidShotConfigError(
+            probe_topology().duplication_failure_help()
+            + "\n\nWhat each adapter reported:\n"
+            + "\n".join(refusals)
+        )
+
     def _initialize_resources(self, is_reinit=False) -> bool:
         """
         Initializes or re-initializes DXGI/D3D resources (Device, Output, Duplicator).
@@ -271,10 +373,7 @@ class ScreenCapture:
             self._validate_region(self.region) # This updates self.region and shot_w, shot_h
 
             logger.debug(f"Creating Duplicator for output: {self._output.devicename}")
-            self._duplicator = Duplicator(
-                output=self._output, device=self._device,
-                timeout_ms=self._timeout_ms,
-            )
+            self._duplicator = self._build_duplicator()
             
             logger.debug(f"Creating StageSurface for output: {self._output.devicename}")
             self._stagesurf = StageSurface(output=self._output, device=self._device)
@@ -328,11 +427,17 @@ class ScreenCapture:
         except (RapidShotConfigError, RapidShotDeviceError, RapidShotDXGIError, RapidShotError) as e:
             logger.error(f"Failed to {'re-initialize' if is_reinit else 'initialize'} resources: {e}")
             self._is_initialized = False
+            # Keep the real cause. This used to be logged and dropped, and the
+            # caller then raised "Check logs for details" -- which discarded a
+            # diagnosis that had already been made, in the one situation where
+            # the caller most needs it.
+            self._init_error = e
             # self.release() # Clean up anything that might have been created
             return False
         except Exception as e: # Catch any other unexpected error
             logger.error(f"Unexpected error during resource {'re-initialization' if is_reinit else 'initialization'}: {e}")
             self._is_initialized = False
+            self._init_error = e
             # self.release()
             return False
 
@@ -1137,15 +1242,39 @@ class ScreenCapture:
 
         for attempt in range(self._max_output_change_retries):
             try:
-                self._stagesurf.rebuild(output=self._output, device=self._device)
-                # Carry the caller's timeout across the rebuild. Dropping it here
-                # would silently reset the setting to the default on the first
-                # resolution change or display reconnect -- a regression that
-                # only shows up as "it got slower after I unplugged a monitor".
-                self._duplicator = Duplicator(
-                    output=self._output, device=self._device,
-                    timeout_ms=self._timeout_ms,
-                )
+                # Duplicator first: _build_duplicator may settle on a
+                # different adapter, and the stage surface must be created on
+                # whichever device ended up owning the duplicated texture.
+                # The caller's timeout is carried across the rebuild -- dropping
+                # it would silently reset the setting on the first resolution
+                # change or display reconnect, a regression that only shows up
+                # as "it got slower after I unplugged a monitor".
+                candidate = self._build_duplicator()
+                try:
+                    self._stagesurf.rebuild(
+                        output=self._output, device=self._device)
+                except Exception:
+                    # The duplication interface is live as soon as
+                    # _build_duplicator returns. Do not publish it until its
+                    # matching stage surface also exists, and never carry a
+                    # partial pair into the next retry: DXGI permits only one
+                    # active duplication interface per output/process.
+                    try:
+                        candidate.release()
+                    except Exception as cleanup_error:
+                        logger.warning(
+                            "Failed to release partial duplicator after stage "
+                            f"surface rebuild failure: {cleanup_error}"
+                        )
+                    try:
+                        self._stagesurf.release()
+                    except Exception as cleanup_error:
+                        logger.warning(
+                            "Failed to release partial stage surface after "
+                            f"rebuild failure: {cleanup_error}"
+                        )
+                    raise
+                self._duplicator = candidate
                 logger.info(
                     f"Duplication rebuilt after output change "
                     f"(attempt {attempt + 1}, resolution {self.width}x{self.height})."

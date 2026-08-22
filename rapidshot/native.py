@@ -483,6 +483,16 @@ def probe_cross_adapter(
     )
 
 
+def _source_id(frame) -> int:
+    """Which duplicator produced this frame, for cache keys.
+
+    A texture address alone is not an identity: COM addresses are recycled, so
+    a released surface and a later unrelated one can share a pointer. See
+    ``Frame.source_id``.
+    """
+    return int(getattr(frame, "source_id", 0))
+
+
 class CrossAdapterTransfer:
     """Carries captured frames to a second GPU (ROADMAP.md 6.1).
 
@@ -500,8 +510,13 @@ class CrossAdapterTransfer:
             transfer.transfer(frame)
             # consume transfer.destination_resource_address on the other adapter
 
-    The frame passed to :meth:`transfer` must have the same dimensions as the
-    one the transfer was built from; rebuild it after a resolution change.
+    The frame passed to :meth:`transfer` must have the same dimensions and DXGI
+    format as the one the transfer was built from; rebuild it after a
+    resolution or SDR/HDR mode change.
+
+    Pixels cross losslessly in their source format; this layer does not convert
+    HDR or 10-bit content to BGRA8. Inspect :attr:`dxgi_format` and
+    :attr:`bytes_per_pixel` before interpreting the destination buffer.
 
     Note that the shared heap lives in **system memory**, not either adapter's
     VRAM. This is not peer-to-peer VRAM-to-VRAM DMA — the win is that a GPU copy
@@ -517,7 +532,7 @@ class CrossAdapterTransfer:
         Blocks until the source GPU has finished, so the frame is readable from
         the destination adapter when this returns.
         """
-        self._inner.transfer(_texture_address(frame))
+        self._inner.transfer(_texture_address(frame), _source_id(frame))
 
     def read_back_destination(self) -> bytes:
         """Read the frame back through the destination device.
@@ -525,7 +540,8 @@ class CrossAdapterTransfer:
         Verification only — in production, bind
         :attr:`destination_resource_address` on that adapter instead. Rows are
         :attr:`row_pitch` bytes apart, which is padded to D3D12's 256-byte copy
-        alignment and so is not always ``width * 4``.
+        alignment and so is not always ``width * bytes_per_pixel``. Pixels stay
+        in :attr:`dxgi_format`; this method performs no colour conversion.
         """
         return bytes(self._inner.read_back_destination())
 
@@ -536,7 +552,244 @@ class CrossAdapterTransfer:
         in a single command list, because the duplicated surface is live: copies
         submitted separately genuinely observe different pixels.
         """
-        return bytes(self._inner.transfer_with_reference(_texture_address(frame)))
+        return bytes(self._inner.transfer_with_reference(
+            _texture_address(frame), _source_id(frame)))
+
+    def transfer_async(self, frame) -> int:
+        """Submit a transfer without blocking; returns the fence value to await.
+
+        :meth:`transfer` blocks until the copy completes, and on a hybrid
+        laptop that is most of its cost -- measured 2026-08-22 at 2.67 ms of a
+        2.70 ms transfer (Intel iGPU to RTX 4060, 2560x1600). This hands the
+        calling thread back instead and leaves synchronisation to you::
+
+            value = transfer.transfer_async(frame)
+            ...                                   # your work overlaps the copy
+            transfer.wait_shared_fence(value)     # or wait GPU-side, below
+
+        Measured against the blocking path with 2 ms of consumer work per
+        frame: **wall clock 6.22 -> 3.59 ms (42% faster), and 98% of
+        calling-thread time returned.** The gain is real overlap, not
+        bookkeeping -- the copy runs while the caller works.
+
+        It still waits for the *previous* submission before recording, because
+        the command allocator cannot be reset while the GPU is reading it, so
+        this pipelines to depth one. Frame N's copy overlaps whatever you do
+        next; you pay at the start of frame N+1 only if the GPU has not
+        finished.
+
+        A consumer on the destination adapter can skip the CPU round-trip
+        entirely by opening :attr:`shared_fence_handle` and waiting on it from
+        its own queue.
+
+        .. warning::
+
+            **Every transfer reuses one destination buffer, and this fence
+            says nothing about the consumer.** It reports that the *copy*
+            finished. If your consumer is still reading frame N when you submit
+            frame N+1, the copy overwrites the buffer underneath it and the
+            consumer silently reads a mixture -- nothing raises.
+
+            Measured 2026-08-22 over a 60-frame loop whose consumer was slower
+            than the producer: **28 of 60 frames were wrong** without a
+            handshake, and 0 with one. With a fast consumer the same loop shows
+            no corruption at all over 100 frames, which is why this is easy to
+            miss until a real workload arrives.
+
+            If your consumer is asynchronous, use :meth:`set_consumer_fence`
+            and :meth:`wait_for_consumer`. If it synchronises on the CPU
+            between frames, you do not need them.
+        """
+        try:
+            value = int(self._inner.transfer_async(
+                _texture_address(frame), _source_id(frame)))
+        except Exception as exc:
+            # ExecuteCommandLists has no return value, so a later Signal failure
+            # can leave real GPU work with no completion marker. The native
+            # layer first tries a private fallback fence and checks for device
+            # removal. Only the remaining, genuinely untrackable case reports
+            # `submission_quarantined`.
+            try:
+                quarantined = bool(self._inner.submission_quarantined)
+            except Exception:
+                quarantined = False
+            if quarantined:
+                quarantine = getattr(frame, "_quarantine_release", None)
+                if quarantine is not None:
+                    quarantine(str(exc))
+            raise
+        # Keep the captured surface acquired until this copy finishes.
+        #
+        # The duplicated surface is only valid between AcquireNextFrame and
+        # ReleaseFrame, and this call returns while the GPU is still reading
+        # it. The documented idiom -- `with camera.grab_frame() as frame:` --
+        # releases at scope exit, so without this the surface goes back to DXGI
+        # mid-copy, DXGI recycles it, and the destination silently receives a
+        # blend of two frames. Nothing raises; the pixels are just wrong.
+        #
+        # Releasing therefore waits for this fence. That does not undo the
+        # async win: the calling thread is free between submit and release, and
+        # a consumer that waits GPU-side on `shared_fence_handle` pays nothing
+        # extra, because by the time it releases the copy has long finished.
+        defer = getattr(frame, "defer_release_until", None)
+        if defer is not None:
+            defer(lambda: self.wait_shared_fence(value),
+                  quarantine_on_failure=True)
+        return value
+
+    def wait_shared_fence(self, value: int) -> None:
+        """Block until the shared fence reaches ``value``. 0 returns at once."""
+        self._inner.wait_shared_fence(int(value))
+
+    def set_consumer_fence(self, handle: int) -> None:
+        """Adopt the consumer's fence so the producer can wait on it.
+
+        `handle` is a shared NT handle for a D3D12 fence that the consumer
+        signals once it has finished reading the destination buffer. A CUDA
+        consumer produces one by importing this transfer's own fence style --
+        ``cuImportExternalSemaphore`` then ``cuSignalExternalSemaphoresAsync``
+        -- which is verified to work across vendors here: CUDA on an NVIDIA
+        dGPU signalled a fence created by an Intel iGPU's D3D12 device and the
+        producer observed it.
+
+        Opened once on the source device; calling again replaces it.
+        """
+        self._inner.set_consumer_fence(int(handle))
+
+    def wait_for_consumer(self, value: int) -> None:
+        """Make the next copy wait until the consumer has reached `value`.
+
+        **Every transfer reuses one destination buffer.** The producer fence
+        only says "the copy finished"; it says nothing about whether the
+        consumer is still reading. Without this, an asynchronous consumer that
+        waits GPU-side on :attr:`shared_fence_handle` can still be reading
+        frame N when the copy for frame N+1 overwrites the allocation under it
+        -- the two frames blend, and nothing raises.
+
+        The wait is queued on the source queue, so it orders ahead of the next
+        copy without blocking the calling thread. The loop is::
+
+            transfer.set_consumer_fence(consumer_handle)   # once
+            v = transfer.transfer_async(frame)             # frame N
+            # consumer waits for v GPU-side, reads, signals consumer fence = N
+            transfer.wait_for_consumer(N)                  # before frame N+1
+            v = transfer.transfer_async(next_frame)
+
+        A consumer that synchronises on the CPU between frames does not need
+        this; one that stays asynchronous does.
+        """
+        self._inner.wait_for_consumer(int(value))
+
+    @property
+    def shared_fence_completed(self) -> int:
+        """Value the shared fence has actually reached on the GPU.
+
+        Diagnostic. :attr:`shared_fence_submitted` is what was handed to the
+        queue; this is what has completed.
+        """
+        return int(self._inner.shared_fence_completed)
+
+    @property
+    def shared_fence_submitted(self) -> int:
+        """Highest value submitted to the shared fence so far."""
+        return int(self._inner.shared_fence_submitted)
+
+    @property
+    def shared_fence_handle(self) -> int:
+        """NT handle for the cross-adapter fence, for a GPU-side wait.
+
+        Open it on the destination adapter with
+        ``ID3D12Device::OpenSharedHandle`` and wait on it from that queue, so
+        the copy and the consuming work overlap with no CPU involvement. The
+        fence is created with ``SHARED | SHARED_CROSS_ADAPTER``, which is the
+        only configuration both adapters can observe.
+
+        Waiting on this tells you the copy landed. It does **not** coordinate
+        the other direction: see the warning on :meth:`transfer_async` about
+        the shared destination buffer, and :meth:`wait_for_consumer` for the
+        return path.
+
+        Borrowed, like :attr:`shared_destination_handle`: closed when this
+        transfer is dropped, and likewise **not yours to close**.
+        """
+        return int(self._inner.shared_fence_handle)
+
+    @property
+    def cached_texture_address(self) -> int:
+        """Raw pointer of the capture texture currently cached, or 0.
+
+        Opening the captured texture is cached per texture rather than redone
+        per frame. Measured 2026-08-22, Intel iGPU to RTX 4060: that removed
+        268 us of opening and 114 us of closing from every transfer, 10.3% of
+        the whole. Keyed on the pointer, so a changed surface reopens.
+
+        Exposed because the cache produces identical output either way, so a
+        change that silently disabled it would be a large regression with no
+        visible symptom -- tests assert on this key, not on pixels.
+        """
+        return int(self._inner.cached_texture_address)
+
+    @property
+    def cached_source_id(self) -> int:
+        """``source_id`` of the cached capture texture, or 0.
+
+        The other half of the cache key. The texture address alone is not an
+        identity, so tests assert on both.
+        """
+        return int(self._inner.cached_source_id)
+
+    @property
+    def shared_destination_handle(self) -> int:
+        """NT handle for the destination heap, for a consumer on that adapter.
+
+        This is what makes the Optimus path complete. Capture runs on the
+        integrated GPU, so the Stage 6 tensor lands on an adapter CUDA cannot
+        see (ROADMAP.md 6.1); the frame crosses here, and this handle is how a
+        consumer on the destination adapter gets at it.
+
+        **Import it as a heap, not a resource.** The transferred buffers are
+        *placed* resources and cannot be shared at all -- ``CreateSharedHandle``
+        refuses them with E_INVALIDARG on both devices, which
+        ``probe_shared_handles()`` demonstrates. So the shared object is the
+        heap, and CUDA imports it as
+        ``CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_HEAP`` (4), size
+        :attr:`total_bytes`, offset 0. This differs from
+        :attr:`GpuPreprocessor12.shared_output_handle`, which is a committed
+        resource and imports as type 5.
+
+        **Borrowed, not owned. Do not close it.** This transfer closes it on
+        drop, and Windows recycles handle *values* -- so closing it yourself
+        leaves the transfer holding a number that may by then name an unrelated
+        file, event or socket, which it will duly close later. Import from it
+        and leave it alone.
+
+        A consumer holding the integer, or a device pointer mapped from it, has
+        nothing that looks wrong once the transfer is gone, so keep the
+        transfer alive for as long as anything reads the frame. If you need an
+        independently owned handle, duplicate it with ``DuplicateHandle``.
+
+        Verified 2026-08-22 on an Intel iGPU -> RTX 4060 pair: the imported
+        buffer reads byte-identical to :meth:`read_back_destination`, and
+        observes later :meth:`transfer` calls without re-importing.
+        """
+        return int(self._inner.shared_destination_handle)
+
+    def probe_shared_handles(self) -> list:
+        """Which objects on this transfer will yield a shareable NT handle.
+
+        Diagnostic, for bringing up a new adapter pairing: the answer is a
+        property of the driver pair, and this project has verified exactly one
+        (Intel iGPU to NVIDIA dGPU). Run it before assuming
+        :attr:`shared_destination_handle` behaves the same elsewhere.
+
+        Leaks nothing -- every handle it mints is closed before returning, so
+        the result reports whether each call is permitted rather than handing
+        back handles to clean up.
+
+        Returns a list of dicts with ``label``, ``cuda_handle_type``
+        (4 = D3D12_HEAP, 5 = D3D12_RESOURCE), ``ok``, and ``error`` when not ok.
+        """
+        return [dict(row) for row in self._inner.probe_shared_handles()]
 
     @property
     def destination_resource_address(self) -> int:
@@ -570,6 +823,16 @@ class CrossAdapterTransfer:
     @property
     def total_bytes(self) -> int:
         return int(self._inner.total_bytes)
+
+    @property
+    def dxgi_format(self) -> int:
+        """Numeric DXGI_FORMAT of the raw pixels in the shared destination."""
+        return int(self._inner.dxgi_format)
+
+    @property
+    def bytes_per_pixel(self) -> int:
+        """Storage bytes per pixel for :attr:`dxgi_format`."""
+        return int(self._inner.bytes_per_pixel)
 
     @property
     def row_pitch(self) -> int:

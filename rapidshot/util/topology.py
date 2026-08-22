@@ -70,11 +70,55 @@ _NO_ADAPTER_HELP = (
 )
 
 _HYBRID_NOTE = (
-    "Hybrid GPU system detected. Capture runs on {capture}, which drives the "
-    "display. {others} has no outputs, so Desktop Duplication cannot run "
-    "against it at all (DXGI_ERROR_UNSUPPORTED). If your inference device is "
-    "that adapter, a GPU-resident frame needs a cross-adapter copy to reach "
-    "it; a CPU frame from grab() is unaffected."
+    "Hybrid GPU system detected. {capture} owns the display, so duplication is "
+    "attempted there first. {others} owns no output, which usually means "
+    "Desktop Duplication refuses it with DXGI_ERROR_UNSUPPORTED -- but that "
+    "is where the attempt starts, "
+    "not a verdict: every adapter is tried and the first one granted "
+    "duplication is used. If your inference device is an adapter that is not "
+    "capturing, a GPU-resident frame needs a cross-adapter copy to reach it; a "
+    "CPU frame from grab() is unaffected.\n"
+    "\n"
+    "Owning an output is necessary but not sufficient. On some hybrid "
+    "configurations the display-owning adapter still refuses to duplicate, so "
+    "whether capture works is only known once it has been tried -- this note "
+    "describes the arrangement, not a guarantee."
+)
+
+# Every adapter refused DuplicateOutput. Distinct from headless (nothing to
+# capture) and from a single adapter refusing (try another one): when the
+# adapter that owns the display refuses too, adapter selection cannot help,
+# because nothing is composing a desktop DDA can attach to. Measured
+# 2026-08-21 on an Acer PHN16-72 with the MUX set to Optimus but the OS-level
+# hybrid path never brought up -- NVIDIA (1 output), Intel (0 outputs) and
+# WARP all returned DXGI_ERROR_UNSUPPORTED for the only output present.
+_HYBRID_NO_TARGET_HELP = (
+    "No adapter on this hybrid system can duplicate the display.\n"
+    "\n"
+    "Every adapter was tried, including the one that owns the display, and "
+    "each refused with DXGI_ERROR_UNSUPPORTED. Because the display-owning "
+    "adapter refused too, selecting a different adapter cannot fix this: the "
+    "OS-level hybrid graphics path is not running, so no adapter is composing "
+    "a desktop for Desktop Duplication to attach to.\n"
+    "\n"
+    "This is a system configuration problem rather than a capture failure. On "
+    "a laptop with a MUX switch, check that:\n"
+    "  - the GPU mode (Optimus / Hybrid / Discrete) is set consistently in the "
+    "vendor utility and in firmware, and the machine was rebooted after it was "
+    "changed;\n"
+    "  - the integrated GPU driver is current. A stale iGPU driver can leave "
+    "the hybrid path uninitialised while the GPU still enumerates normally;\n"
+    "  - the GPU control panel is not forcing every application onto the "
+    "discrete GPU."
+)
+
+_NO_TARGET_HELP = (
+    "No adapter could duplicate the display.\n"
+    "\n"
+    "Every adapter was tried and each refused. Desktop Duplication needs an "
+    "adapter that is composing an attached desktop; a remote session, a "
+    "process outside the interactive session, or a display driver in a failed "
+    "state all produce this."
 )
 
 
@@ -179,6 +223,18 @@ class GpuTopology:
             return f"{_HEADLESS_HELP}\n\nAdapters found, none with an output:\n{adapters}"
         return ""
 
+    def duplication_failure_help(self) -> str:
+        """Actionable text for "every adapter refused to duplicate".
+
+        Separate from :meth:`help_text`, which answers "there is nothing here
+        to capture". This one answers "there is a display and no adapter would
+        duplicate it" -- a different cause with a different fix, and previously
+        surfaced as a raw COM string that named neither.
+        """
+        adapters = "\n".join(f"  {a}" for a in self.adapters)
+        base = _HYBRID_NO_TARGET_HELP if self.is_hybrid else _NO_TARGET_HELP
+        return f"{base}\n\nAdapters tried:\n{adapters}"
+
     def describe(self) -> str:
         """Multi-line human summary — what device_info() appends."""
         lines = [f"Topology: {self.kind}"]
@@ -190,8 +246,13 @@ class GpuTopology:
                 others=", ".join(a.description for a in self.render_only_adapters),
             )
             lines.append("")
-            lines += textwrap.wrap(note, width=76, initial_indent="  ",
-                                   subsequent_indent="  ")
+            # Wrap per paragraph: a single wrap() call folds the blank lines
+            # out of the note and runs the paragraphs together.
+            for i, para in enumerate(note.split("\n\n")):
+                if i:
+                    lines.append("")
+                lines += textwrap.wrap(para, width=76, initial_indent="  ",
+                                       subsequent_indent="  ")
         return "\n".join(lines)
 
 

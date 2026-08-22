@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rapidshot"
-version = "2.3.0"
+version = "2.4.0"
 description = "A high-performance screencapture library for Windows using Desktop Duplication API"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -42,12 +42,26 @@ dependencies = [
 
 [project.optional-dependencies]
 cv2 = ["opencv-python>=4.5.0"]
-gpu = ["cupy-cuda11x>=11.0.0", "opencv-python>=4.5.0"]
-gpu_cuda12 = ["cupy-cuda12x>=12.0.0", "opencv-python>=4.5.0"]
+# CuPy only. OpenCV was dropped from these extras in 2.3.0 because the code no
+# longer uses it here: CupyProcessor used to convert colour by copying the frame
+# off the GPU with `cp.asnumpy`, running cv2 on the CPU, and copying the result
+# back -- three PCIe crossings on a path whose whole premise is GPU residency.
+# Every mode is now expressed in CuPy and stays on the device, so installing
+# 60+ MB of OpenCV alongside CuPy buys nothing. Add `[cv2]` if you want it for
+# your own code.
+#
+# The suffix is the CUDA major version and must match your toolkit; the version
+# specifier is CuPy's own, which is a different number and an easy one to
+# conflate. CUDA 13 support arrived in CuPy 14. `gpu` remains CUDA 11 so that
+# existing installs do not silently change wheels -- it is a compatibility
+# alias, not a recommendation. Development runs CUDA 13.2 / CuPy 14.1.1.
+gpu = ["cupy-cuda11x>=11.0.0"]
+gpu_cuda12 = ["cupy-cuda12x>=12.0.0"]
+gpu_cuda13 = ["cupy-cuda13x>=14.0.0"]
 pil = ["pillow>=8.0.0"]
-# Everything that is not CUDA-version-specific. cupy-cuda11x and cupy-cuda12x
-# cannot both be installed, so neither belongs in a catch-all extra -- pick
-# `gpu` or `gpu_cuda12` explicitly.
+# Everything that is not CUDA-version-specific. The cupy-cudaNNx wheels are
+# mutually exclusive, so none of them belongs in a catch-all extra -- pick
+# `gpu`, `gpu_cuda12` or `gpu_cuda13` explicitly.
 all = [
     "opencv-python>=4.5.0",
     "pillow>=8.0.0",

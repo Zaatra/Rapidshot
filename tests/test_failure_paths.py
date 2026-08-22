@@ -385,11 +385,86 @@ def test_output_change_rebuild_is_bounded_and_does_not_hang(monkeypatch):
     cam._last_capture_error_message = ""
     cam._max_output_change_retries = 5
     cam._timeout_ms = 10                          # __init__ always sets this
+    cam._all_devices = [None]                     # ditto: adapters to try
 
     assert cam._on_output_change() is False       # reports failure
     assert attempts["n"] == 5                     # bounded, did not spin
     assert cam._needs_reinit is True
     assert "Failed to rebuild" in cam._last_capture_error_message
+
+
+def test_stage_surface_failure_releases_duplicator_before_retry(monkeypatch):
+    """A retry must not coexist with the duplicator from the failed attempt."""
+    import rapidshot.capture as capture_module
+    from rapidshot.capture import ScreenCapture
+
+    built = []
+
+    class FakeDuplicator:
+        def __init__(self, output=None, device=None, timeout_ms=10):
+            assert not built or built[-1].released, (
+                "a new duplicator was created while the previous attempt was live")
+            self.released = False
+            built.append(self)
+
+        def release(self):
+            assert not self.released, "partial duplicator released twice"
+            self.released = True
+
+    class FakeStageSurf:
+        def __init__(self):
+            self.rebuild_calls = 0
+            self.release_calls = 0
+            self.has_resource = True
+
+        def release(self):
+            self.release_calls += 1
+            self.has_resource = False
+
+        def rebuild(self, output=None, device=None):
+            assert not self.has_resource, (
+                "partial stage surface survived into the next retry")
+            self.rebuild_calls += 1
+            self.has_resource = True
+            if self.rebuild_calls < 3:
+                raise com_error(DXGI_ERROR_DEVICE_RESET)
+
+    class FakeOutput:
+        devicename = "FAKE"
+        resolution = (1920, 1080)
+        rotation_angle = 0
+
+        def update_desc(self):
+            pass
+
+    monkeypatch.setattr(capture_module, "Duplicator", FakeDuplicator)
+    monkeypatch.setattr(capture_module.time, "sleep", lambda _seconds: None)
+
+    stage = FakeStageSurf()
+    cam = ScreenCapture.__new__(ScreenCapture)
+    cam._duplicator = None
+    cam._stagesurf = stage
+    cam._output = FakeOutput()
+    cam._device = None
+    cam._all_devices = [None]
+    cam._timeout_ms = 10
+    cam.width, cam.height = 1920, 1080
+    cam.region = (0, 0, 1920, 1080)
+    cam._region_set_by_user = False
+    cam._sourceRegion = None
+    cam.is_capturing = False
+    cam.rotation_angle = 0
+    cam._needs_reinit = False
+    cam._last_capture_error_message = ""
+    cam._max_output_change_retries = 3
+
+    assert cam._on_output_change() is True
+    assert len(built) == 3
+    assert [duplicator.released for duplicator in built] == [True, True, False]
+    assert cam._duplicator is built[-1]
+    assert stage.rebuild_calls == 3
+    assert stage.release_calls == 3  # initial teardown + two failed attempts
+    assert stage.has_resource is True
 
 
 def test_output_change_gives_up_immediately_on_protected_content(monkeypatch):
@@ -438,9 +513,234 @@ def test_output_change_gives_up_immediately_on_protected_content(monkeypatch):
     # acquire timeout across; __init__ always sets this, but these fixtures
     # build the object with __new__.
     cam._timeout_ms = 10
+    # Candidate adapters. Just the one here, so the rebuild tries exactly one
+    # per attempt, which is what the attempt counts below are asserting.
+    cam._all_devices = [None]
 
     assert cam._on_output_change() is False
     assert attempts["n"] == 1  # no retry storm
+
+
+# --------------------------------------------------------------------------
+# Duplication must try every adapter, not just the one that owns the output
+# --------------------------------------------------------------------------
+
+def _capture_stub(primary, fallbacks):
+    """A ScreenCapture with just enough state to run _build_duplicator."""
+    from rapidshot.capture import ScreenCapture
+
+    class FakeOutput:
+        devicename = r"\\.\DISPLAY1"
+
+    cam = ScreenCapture.__new__(ScreenCapture)
+    cam._output = FakeOutput()
+    cam._device = primary
+    cam._all_devices = [primary] + list(fallbacks)   # ordered candidates
+    cam._timeout_ms = 10
+    return cam
+
+
+def test_duplication_falls_back_to_another_adapter(monkeypatch):
+    """The adapter owning the output is not always the one DDA accepts.
+
+    Measured 2026-08-21 on a hybrid laptop: the display-owning adapter refused
+    DuplicateOutput with DXGI_ERROR_UNSUPPORTED. Refusing there used to end
+    capture, even where another adapter would have been granted duplication.
+    """
+    import rapidshot.capture as capture_module
+    from rapidshot.util.errors import RapidShotConfigError
+
+    good, bad = object(), object()
+    tried = []
+
+    def picky_duplicator(output, device, timeout_ms=10):
+        tried.append(device)
+        if device is bad:
+            raise RapidShotConfigError("refused", hresult=DXGI_ERROR_UNSUPPORTED)
+        return "duplicator-on-good"
+
+    monkeypatch.setattr(capture_module, "Duplicator", picky_duplicator)
+    cam = _capture_stub(primary=bad, fallbacks=[good])
+
+    assert cam._build_duplicator() == "duplicator-on-good"
+    assert tried == [bad, good]           # primary first, then the fallback
+    # The stage surface is built on self._device and must land on the same
+    # adapter as the duplicated texture, so the winner has to be recorded.
+    assert cam._device is good
+
+
+def test_the_original_adapter_stays_a_candidate_after_a_fallback_wins(monkeypatch):
+    """Winning once must not remove the loser from the pool.
+
+    `_build_duplicator` reassigns `self._device` to whichever adapter was
+    granted duplication. If the candidate list were "everything except the
+    starting device", the original would vanish the moment a fallback won --
+    and a later rebuild where the fallback starts refusing and the original is
+    valid again would fail with a working adapter available. Ordering is a
+    preference; the set has to stay whole.
+    """
+    import rapidshot.capture as capture_module
+    from rapidshot.util.errors import RapidShotConfigError
+
+    original, fallback = object(), object()
+    refuse = {original}
+
+    def picky_duplicator(output, device, timeout_ms=10):
+        if device in refuse:
+            raise RapidShotConfigError("refused", hresult=DXGI_ERROR_UNSUPPORTED)
+        return f"duplicator-{'original' if device is original else 'fallback'}"
+
+    monkeypatch.setattr(capture_module, "Duplicator", picky_duplicator)
+    cam = _capture_stub(primary=original, fallbacks=[fallback])
+
+    assert cam._build_duplicator() == "duplicator-fallback"
+    assert cam._device is fallback
+
+    # The situation reverses -- a MUX flip, an output change -- and the
+    # original becomes the only adapter that will duplicate.
+    refuse.clear()
+    refuse.add(fallback)
+    assert cam._build_duplicator() == "duplicator-original"
+    assert cam._device is original
+
+
+def test_prefer_integrated_reaches_an_output_less_igpu(monkeypatch):
+    """The flag has to outrank the display-owning adapter, or it does nothing.
+
+    On a hybrid laptop the iGPU usually owns no output, so it is never the
+    device the factory selects. If it were merely ranked ahead of the *other*
+    fallbacks it would still sit behind the display-owning adapter -- which on
+    a working system duplicates successfully, so the integrated adapter would
+    never be tried at all. The flag would be inert in exactly the topology it
+    exists for.
+    """
+    import rapidshot.capture as capture_module
+
+    igpu, dgpu = object(), object()
+    tried = []
+
+    def duplicator(output, device, timeout_ms=10):
+        tried.append(device)
+        return "duplicator"
+
+    monkeypatch.setattr(capture_module, "Duplicator", duplicator)
+    # As the factory ranks them with prefer_integrated=True: iGPU first, even
+    # though dgpu is the adapter that owns the output.
+    cam = _capture_stub(primary=dgpu, fallbacks=[])
+    cam._all_devices = [igpu, dgpu]
+
+    assert cam._build_duplicator() == "duplicator"
+    assert tried == [igpu], "the integrated adapter was not tried first"
+    assert cam._device is igpu
+
+
+def test_capture_cache_separates_adapter_preferences(monkeypatch):
+    """Opposite duplication orders must not share a cached capture.
+
+    On the Optimus topology this option exists for, the iGPU owns no output.
+    Both calls therefore retain the same public device/output indices; only the
+    candidate order differs. A two-component cache key returned the first
+    capture and never tried the requested order on the second call.
+    """
+    import weakref
+    import rapidshot
+
+    class Device:
+        def __init__(self, description):
+            self.desc = type("Desc", (), {"Description": description})()
+
+    class Output:
+        devicename = "DISPLAY1"
+
+        def update_desc(self):
+            pass
+
+    class Capture:
+        def __init__(self, **kwargs):
+            self.candidates = tuple(kwargs["candidate_devices"])
+
+    dgpu, igpu = Device("NVIDIA GeForce"), Device("Intel Graphics")
+    factory = object.__new__(rapidshot.RapidshotFactory)
+    factory.devices = [dgpu]
+    factory.outputs = [[Output()]]
+    factory.all_devices = [dgpu, igpu]
+    factory.output_metadata = {"DISPLAY1": (None, True)}
+    factory._screencapture_instances = weakref.WeakValueDictionary()
+
+    monkeypatch.setattr(rapidshot, "ScreenCapture", Capture)
+    monkeypatch.setattr(rapidshot.time, "sleep", lambda _seconds: None)
+
+    display_first = factory.create(output_idx=0, prefer_integrated=False)
+    integrated_first = factory.create(output_idx=0, prefer_integrated=True)
+
+    assert display_first is not integrated_first
+    assert display_first.candidates == (dgpu, igpu)
+    assert integrated_first.candidates == (igpu, dgpu)
+    assert factory.create(output_idx=0, prefer_integrated=True) is integrated_first
+
+
+def test_a_successful_adapter_moves_to_the_front(monkeypatch):
+    """Winner first on the next rebuild -- reordering only, never removing."""
+    import rapidshot.capture as capture_module
+    from rapidshot.util.errors import RapidShotConfigError
+
+    first, second = object(), object()
+
+    def picky(output, device, timeout_ms=10):
+        if device is first:
+            raise RapidShotConfigError("refused", hresult=DXGI_ERROR_UNSUPPORTED)
+        return "duplicator"
+
+    monkeypatch.setattr(capture_module, "Duplicator", picky)
+    cam = _capture_stub(primary=first, fallbacks=[second])
+
+    assert cam._build_duplicator() == "duplicator"
+    assert cam._all_devices[0] is second, "the winner was not promoted"
+    assert set(map(id, cam._all_devices)) == {id(first), id(second)}, (
+        "promotion dropped an adapter instead of reordering")
+
+
+def test_duplication_does_not_retry_a_non_adapter_refusal(monkeypatch):
+    """A desktop refusal applies to every adapter equally.
+
+    It is also a RapidShotConfigError, so retrying on the type alone would
+    burn through every adapter and then replace an already-actionable message
+    ("you are not on the input desktop") with a generic one.
+    """
+    import rapidshot.capture as capture_module
+    from rapidshot._libs.dxgi import E_ACCESSDENIED
+    from rapidshot.util.errors import RapidShotConfigError
+
+    tried = []
+
+    def refusing_duplicator(output, device, timeout_ms=10):
+        tried.append(device)
+        raise RapidShotConfigError("not on the input desktop", hresult=E_ACCESSDENIED)
+
+    monkeypatch.setattr(capture_module, "Duplicator", refusing_duplicator)
+    cam = _capture_stub(primary=object(), fallbacks=[object(), object()])
+
+    with pytest.raises(RapidShotConfigError, match="input desktop"):
+        cam._build_duplicator()
+    assert len(tried) == 1                # gave up after the first, as it should
+
+
+def test_duplication_failure_explains_itself(monkeypatch):
+    """Every adapter refusing must produce a diagnosis, not an HRESULT."""
+    import rapidshot.capture as capture_module
+    from rapidshot.util.errors import RapidShotConfigError
+
+    def always_refusing(output, device, timeout_ms=10):
+        raise RapidShotConfigError("refused", hresult=DXGI_ERROR_UNSUPPORTED)
+
+    monkeypatch.setattr(capture_module, "Duplicator", always_refusing)
+    cam = _capture_stub(primary=object(), fallbacks=[object()])
+
+    with pytest.raises(RapidShotConfigError) as excinfo:
+        cam._build_duplicator()
+    message = str(excinfo.value)
+    assert "No adapter" in message
+    assert "What each adapter reported" in message
 
 
 # --------------------------------------------------------------------------
@@ -596,6 +896,7 @@ def test_timeout_ms_survives_a_duplication_rebuild(monkeypatch):
 
     cam = ScreenCapture.__new__(ScreenCapture)
     cam._timeout_ms = 0                      # the caller asked for polling
+    cam._all_devices = [None]                # __init__ sets this; __new__ does not
     cam._duplicator = None
     cam._stagesurf = FakeStageSurf()
     cam._output = FakeOutput()

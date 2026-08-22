@@ -326,7 +326,11 @@ class Duplicator:
         if hresult in DXGI_RECOVERABLE_ERRORS:
             return RapidShotReinitError(detail, hresult=hresult)
         if hresult in (DXGI_ERROR_INVALID_CALL, DXGI_ERROR_UNSUPPORTED):
-            return RapidShotConfigError(detail)
+            # Carry the HRESULT. Callers need it to tell "this adapter will not
+            # duplicate this output, try another" (UNSUPPORTED) apart from a
+            # desktop refusal, which is also a RapidShotConfigError but is not
+            # adapter-specific and must not trigger a retry on other adapters.
+            return RapidShotConfigError(detail, hresult=hresult)
         return RapidShotDXGIError(detail, hresult=hresult)
 
     def update_frame(self) -> bool:
