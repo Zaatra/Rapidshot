@@ -82,7 +82,7 @@ LOW_RESOLUTION_MS = 0.5
 # Keyed by the version the row's definition changed *in*: a baseline recorded on
 # an earlier version cannot be compared on it.
 _REDEFINED_IN: Dict[str, str] = {
-    "pipeline.cpu_to_nchw": "2.2.0",
+    "pipeline.cpu_to_nchw": "2.3.0",
     "pipeline.gpu_plus_readback": "2.3.0",
 }
 

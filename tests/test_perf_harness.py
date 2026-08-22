@@ -279,7 +279,11 @@ class TestRedefinedRows:
         assert perf_suite._redefined_since(
             "pipeline.gpu_plus_readback", "2.1.0") == "2.3.0"
         assert perf_suite._redefined_since(
-            "pipeline.cpu_to_nchw", "2.1.0") == "2.2.0"
+            "pipeline.cpu_to_nchw", "2.1.0") == "2.3.0"
+        assert perf_suite._redefined_since(
+            "pipeline.cpu_to_nchw", "2.2.0") == "2.3.0"
+        assert perf_suite._redefined_since(
+            "pipeline.cpu_to_nchw", "2.2.99") == "2.3.0"
 
     def test_baseline_at_or_after_the_change_compares_normally(self):
         # The whole point is to suppress only what is genuinely incomparable.
@@ -289,7 +293,9 @@ class TestRedefinedRows:
         assert perf_suite._redefined_since(
             "pipeline.gpu_plus_readback", "2.4.0") is None
         assert perf_suite._redefined_since(
-            "pipeline.cpu_to_nchw", "2.2.0") is None
+            "pipeline.cpu_to_nchw", "2.3.0") is None
+        assert perf_suite._redefined_since(
+            "pipeline.cpu_to_nchw", "2.4.0") is None
 
     def test_untouched_rows_are_never_flagged(self):
         for name in ("convert.RGB", "shot.GRAY", "control.memcopy"):
@@ -346,7 +352,7 @@ SYNTHETIC_MACHINE = {
 
 
 def _compare(tmp_path, capsys, baseline_rows, current_rows, machine=None,
-             monkeypatch=None):
+             monkeypatch=None, return_regressions=False):
     """Run print_comparison over hand-built rows and return its output.
 
     Both sides use SYNTHETIC_MACHINE so the comparison is unambiguously
@@ -370,8 +376,11 @@ def _compare(tmp_path, capsys, baseline_rows, current_rows, machine=None,
             row["name"], row.get("kind", "synthetic"), [row["min_ms"] / 1000.0])
         result.median_ms = row["min_ms"]
         current.append(result)
-    perf_suite.print_comparison(current, path)
-    return capsys.readouterr().out
+    regressions = perf_suite.print_comparison(current, path)
+    output = capsys.readouterr().out
+    if return_regressions:
+        return output, regressions
+    return output
 
 
 class TestCaveatsApplyBothWays:
@@ -405,6 +414,21 @@ class TestCaveatsApplyBothWays:
             monkeypatch=monkeypatch,
         )
         assert "NOT COMPARABLE" in out
+
+    def test_cpu_row_redefined_in_230_does_not_gate_against_220(
+            self, tmp_path, capsys, monkeypatch):
+        out, regressions = _compare(
+            tmp_path, capsys,
+            [{"name": "pipeline.cpu_to_nchw", "min_ms": 1.0,
+              "median_ms": 1.0}],
+            [{"name": "pipeline.cpu_to_nchw", "min_ms": 8.0}],
+            machine={"rapidshot": "2.2.0"},
+            monkeypatch=monkeypatch,
+            return_regressions=True,
+        )
+        assert "SLOWER" in out
+        assert "redefined in 2.3.0: NOT COMPARABLE" in out
+        assert regressions == 0
 
     def test_a_caveated_row_never_counts_as_a_regression(self, tmp_path, capsys, monkeypatch):
         """The caveat and the gate must agree, or the suite gates on noise."""
