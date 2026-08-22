@@ -858,7 +858,7 @@ impl CrossAdapterTransfer {
     /// Verification only: in production a consumer on that adapter binds
     /// `destination_resource_address` and never touches the CPU. Rows are
     /// `row_pitch` bytes apart, which is padded to D3D12's 256-byte alignment
-    /// and so is not always `width * 4`.
+    /// and so is not always `width * bytes_per_pixel`.
     fn read_back_destination(&self) -> PyResult<Vec<u8>> {
         let inner = self.lock()?;
         inner
@@ -1108,6 +1108,17 @@ impl CrossAdapterTransfer {
     #[getter]
     fn total_bytes(&self) -> PyResult<u64> {
         Ok(self.lock()?.total_bytes())
+    }
+
+    /// Numeric DXGI_FORMAT of the raw pixels in the destination buffer.
+    #[getter]
+    fn dxgi_format(&self) -> PyResult<i32> {
+        Ok(self.lock()?.dxgi_format())
+    }
+
+    #[getter]
+    fn bytes_per_pixel(&self) -> PyResult<u32> {
+        Ok(self.lock()?.bytes_per_pixel())
     }
 
     #[getter]

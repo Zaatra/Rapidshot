@@ -510,8 +510,13 @@ class CrossAdapterTransfer:
             transfer.transfer(frame)
             # consume transfer.destination_resource_address on the other adapter
 
-    The frame passed to :meth:`transfer` must have the same dimensions as the
-    one the transfer was built from; rebuild it after a resolution change.
+    The frame passed to :meth:`transfer` must have the same dimensions and DXGI
+    format as the one the transfer was built from; rebuild it after a
+    resolution or SDR/HDR mode change.
+
+    Pixels cross losslessly in their source format; this layer does not convert
+    HDR or 10-bit content to BGRA8. Inspect :attr:`dxgi_format` and
+    :attr:`bytes_per_pixel` before interpreting the destination buffer.
 
     Note that the shared heap lives in **system memory**, not either adapter's
     VRAM. This is not peer-to-peer VRAM-to-VRAM DMA — the win is that a GPU copy
@@ -535,7 +540,8 @@ class CrossAdapterTransfer:
         Verification only — in production, bind
         :attr:`destination_resource_address` on that adapter instead. Rows are
         :attr:`row_pitch` bytes apart, which is padded to D3D12's 256-byte copy
-        alignment and so is not always ``width * 4``.
+        alignment and so is not always ``width * bytes_per_pixel``. Pixels stay
+        in :attr:`dxgi_format`; this method performs no colour conversion.
         """
         return bytes(self._inner.read_back_destination())
 
@@ -817,6 +823,16 @@ class CrossAdapterTransfer:
     @property
     def total_bytes(self) -> int:
         return int(self._inner.total_bytes)
+
+    @property
+    def dxgi_format(self) -> int:
+        """Numeric DXGI_FORMAT of the raw pixels in the shared destination."""
+        return int(self._inner.dxgi_format)
+
+    @property
+    def bytes_per_pixel(self) -> int:
+        """Storage bytes per pixel for :attr:`dxgi_format`."""
+        return int(self._inner.bytes_per_pixel)
 
     @property
     def row_pitch(self) -> int:

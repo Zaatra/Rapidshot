@@ -32,10 +32,12 @@ use std::cell::Cell;
 use windows::core::Interface;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0;
-use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D};
+use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D, D3D11_TEXTURE2D_DESC};
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
+    DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM,
+    DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN,
+    DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, IDXGIAdapter, IDXGIAdapter1, IDXGIDevice, IDXGIFactory1, IDXGIResource1,
@@ -235,11 +237,87 @@ fn make_device(adapter: &IDXGIAdapter1) -> windows::core::Result<ID3D12Device> {
     Ok(device.expect("D3D12CreateDevice reported success"))
 }
 
-/// A GPU-local BGRA texture standing in for a captured frame.
+/// Bytes per pixel for every format Desktop Duplication is asked to return.
+fn copy_format_bytes_per_pixel(format: DXGI_FORMAT) -> Option<u32> {
+    match format {
+        DXGI_FORMAT_B8G8R8A8_UNORM | DXGI_FORMAT_R8G8B8A8_UNORM | DXGI_FORMAT_R10G10B10A2_UNORM => {
+            Some(4)
+        }
+        DXGI_FORMAT_R16G16B16A16_FLOAT => Some(8),
+        _ => None,
+    }
+}
+
+fn copy_texture_desc(width: u32, height: u32, format: DXGI_FORMAT) -> D3D12_RESOURCE_DESC {
+    D3D12_RESOURCE_DESC {
+        Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+        Alignment: 0,
+        Width: width as u64,
+        Height: height,
+        DepthOrArraySize: 1,
+        MipLevels: 1,
+        Format: format,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
+        Flags: D3D12_RESOURCE_FLAG_NONE,
+    }
+}
+
+/// Build the exact linear footprint for a captured texture.
+///
+/// The callback keeps `GetCopyableFootprints` injectable: CI can prove each
+/// accepted DXGI format reaches the sizing operation without requiring an HDR
+/// desktop or a real D3D12 device.
+fn build_copy_footprint_with(
+    width: u32,
+    height: u32,
+    format: DXGI_FORMAT,
+    get_footprint: &mut dyn FnMut(
+        &D3D12_RESOURCE_DESC,
+        &mut D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
+        &mut u64,
+    ),
+) -> (D3D12_PLACED_SUBRESOURCE_FOOTPRINT, u64) {
+    let desc = copy_texture_desc(width, height, format);
+    let mut footprint = D3D12_PLACED_SUBRESOURCE_FOOTPRINT::default();
+    let mut total_bytes = 0u64;
+    get_footprint(&desc, &mut footprint, &mut total_bytes);
+    (footprint, total_bytes)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CopyTextureMismatch {
+    Size,
+    Format { expected: i32, actual: i32 },
+}
+
+fn copy_texture_mismatch(
+    desc: &D3D11_TEXTURE2D_DESC,
+    width: u32,
+    height: u32,
+    format: DXGI_FORMAT,
+) -> Option<CopyTextureMismatch> {
+    if desc.Width != width || desc.Height != height {
+        Some(CopyTextureMismatch::Size)
+    } else if desc.Format != format {
+        Some(CopyTextureMismatch::Format {
+            expected: format.0,
+            actual: desc.Format.0,
+        })
+    } else {
+        None
+    }
+}
+
+/// A GPU-local texture standing in for a captured frame.
 fn make_local_texture(
     device: &ID3D12Device,
     width: u32,
     height: u32,
+    format: DXGI_FORMAT,
 ) -> windows::core::Result<ID3D12Resource> {
     let heap_props = D3D12_HEAP_PROPERTIES {
         Type: D3D12_HEAP_TYPE_DEFAULT,
@@ -248,21 +326,7 @@ fn make_local_texture(
         CreationNodeMask: 1,
         VisibleNodeMask: 1,
     };
-    let desc = D3D12_RESOURCE_DESC {
-        Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
-        Alignment: 0,
-        Width: width as u64,
-        Height: height,
-        DepthOrArraySize: 1,
-        MipLevels: 1,
-        Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-        SampleDesc: DXGI_SAMPLE_DESC {
-            Count: 1,
-            Quality: 0,
-        },
-        Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
-        Flags: D3D12_RESOURCE_FLAG_NONE,
-    };
+    let desc = copy_texture_desc(width, height, format);
     let mut resource: Option<ID3D12Resource> = None;
     unsafe {
         device.CreateCommittedResource(
@@ -409,7 +473,7 @@ fn run_probe(
     height: u32,
     iterations: usize,
 ) -> windows::core::Result<()> {
-    let local = make_local_texture(source_device, width, height)?;
+    let local = make_local_texture(source_device, width, height, DXGI_FORMAT_B8G8R8A8_UNORM)?;
     let local_desc = unsafe { local.GetDesc() };
 
     // How many bytes the frame occupies once laid out linearly, including the
@@ -858,6 +922,8 @@ pub struct CrossAdapterTransfer {
     /// recreation is rare, so bounded cleanup bookkeeping is not worth
     /// weakening this lifetime guarantee.
     retired_consumer_fences: std::cell::RefCell<Vec<ID3D12Fence>>,
+    format: DXGI_FORMAT,
+    bytes_per_pixel: u32,
     footprint: D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
     total_bytes: u64,
     pub width: u32,
@@ -876,6 +942,18 @@ impl CrossAdapterTransfer {
         let mut desc = Default::default();
         unsafe { texture.GetDesc(&mut desc) };
         let (width, height) = (desc.Width, desc.Height);
+        let format = desc.Format;
+        let bytes_per_pixel = copy_format_bytes_per_pixel(format).ok_or_else(|| {
+            windows::core::Error::new(
+                windows::Win32::Foundation::E_INVALIDARG,
+                format!(
+                    "captured surface has unsupported DXGI format {}; expected \
+                     B8G8R8A8_UNORM (87), R8G8B8A8_UNORM (28), \
+                     R10G10B10A2_UNORM (24), or R16G16B16A16_FLOAT (10)",
+                    format.0
+                ),
+            )
+        })?;
 
         // Fail at setup rather than on the first frame. A texture that cannot
         // be shared with D3D12 will never work on this path, and finding that
@@ -934,35 +1012,23 @@ impl CrossAdapterTransfer {
 
         // Lay the frame out linearly, including the 256-byte row alignment
         // D3D12 requires for copies. This is the size of the shared heap.
-        let texture_desc = D3D12_RESOURCE_DESC {
-            Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
-            Alignment: 0,
-            Width: width as u64,
-            Height: height,
-            DepthOrArraySize: 1,
-            MipLevels: 1,
-            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
+        let (footprint, total_bytes) = build_copy_footprint_with(
+            width,
+            height,
+            format,
+            &mut |texture_desc, footprint, total| unsafe {
+                src_device.GetCopyableFootprints(
+                    texture_desc,
+                    0,
+                    1,
+                    0,
+                    Some(footprint),
+                    None,
+                    None,
+                    Some(total),
+                );
             },
-            Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
-            Flags: D3D12_RESOURCE_FLAG_NONE,
-        };
-        let mut footprint = D3D12_PLACED_SUBRESOURCE_FOOTPRINT::default();
-        let mut total_bytes = 0u64;
-        unsafe {
-            src_device.GetCopyableFootprints(
-                &texture_desc,
-                0,
-                1,
-                0,
-                Some(&mut footprint),
-                None,
-                None,
-                Some(&mut total_bytes),
-            );
-        }
+        );
 
         let heap_desc = D3D12_HEAP_DESC {
             SizeInBytes: total_bytes,
@@ -1026,7 +1092,7 @@ impl CrossAdapterTransfer {
         // The reference for that readback: the same texture, read through the
         // source device without going near the shared heap.
         let src_readback = make_readback_buffer(&src_device, total_bytes)?;
-        let snapshot = make_local_texture(&src_device, width, height)?;
+        let snapshot = make_local_texture(&src_device, width, height, format)?;
 
         // Share the *heap*, not the placed resource. `probe_shared_handles`
         // measured both: `CreateSharedHandle` on either placed buffer fails
@@ -1077,6 +1143,8 @@ impl CrossAdapterTransfer {
             submission_health: Cell::new(SubmissionHealth::Usable),
             consumer_fence: std::cell::RefCell::new(None),
             retired_consumer_fences: std::cell::RefCell::new(Vec::new()),
+            format,
+            bytes_per_pixel,
             footprint,
             total_bytes,
             width,
@@ -1103,6 +1171,27 @@ impl CrossAdapterTransfer {
             windows::Win32::Foundation::E_FAIL,
             message,
         ))
+    }
+
+    fn validate_texture_desc(&self, desc: &D3D11_TEXTURE2D_DESC) -> windows::core::Result<()> {
+        match copy_texture_mismatch(desc, self.width, self.height, self.format) {
+            Some(CopyTextureMismatch::Size) => Err(windows::core::Error::new(
+                windows::Win32::Foundation::E_INVALIDARG,
+                "texture size does not match the one this transfer was built for; \
+                 rebuild it after a resolution change",
+            )),
+            Some(CopyTextureMismatch::Format { expected, actual }) => {
+                Err(windows::core::Error::new(
+                    windows::Win32::Foundation::E_INVALIDARG,
+                    format!(
+                        "texture DXGI format changed from {} to {}; rebuild the \
+                     cross-adapter transfer after an SDR/HDR mode change",
+                        expected, actual
+                    ),
+                ))
+            }
+            None => Ok(()),
+        }
     }
 
     /// Preserve every object that source or destination queue work may name.
@@ -1206,12 +1295,7 @@ impl CrossAdapterTransfer {
         self.ensure_submission_usable()?;
         let mut desc = Default::default();
         unsafe { texture.GetDesc(&mut desc) };
-        if desc.Width != self.width || desc.Height != self.height {
-            return Err(windows::core::Error::new(
-                windows::Win32::Foundation::E_INVALIDARG,
-                "texture size does not match the one this transfer was built for;                  build a new transfer after a resolution change",
-            ));
-        }
+        self.validate_texture_desc(&desc)?;
 
         // Drain any outstanding async submission before touching the source
         // allocator. `transfer_async()` waits for the *previous* one at its own
@@ -1375,12 +1459,7 @@ impl CrossAdapterTransfer {
         self.ensure_submission_usable()?;
         let mut desc = Default::default();
         unsafe { texture.GetDesc(&mut desc) };
-        if desc.Width != self.width || desc.Height != self.height {
-            return Err(windows::core::Error::new(
-                windows::Win32::Foundation::E_INVALIDARG,
-                "texture size does not match the one this transfer was built for",
-            ));
-        }
+        self.validate_texture_desc(&desc)?;
 
         // The allocator reset below is only safe once the GPU is done with it.
         self.wait_shared_fence(self.shared_fence_value.get())?;
@@ -1425,12 +1504,7 @@ impl CrossAdapterTransfer {
         self.ensure_submission_usable()?;
         let mut desc = Default::default();
         unsafe { texture.GetDesc(&mut desc) };
-        if desc.Width != self.width || desc.Height != self.height {
-            return Err(windows::core::Error::new(
-                windows::Win32::Foundation::E_INVALIDARG,
-                "texture size does not match the one this transfer was built for",
-            ));
-        }
+        self.validate_texture_desc(&desc)?;
 
         self.wait_shared_fence(self.shared_fence_value.get())?;
         let shared = self.open_capture_texture(texture, source_id)?;
@@ -1695,6 +1769,9 @@ impl CrossAdapterTransfer {
         source_id: u64,
     ) -> windows::core::Result<[(f64, f64); 6]> {
         self.ensure_submission_usable()?;
+        let mut desc = Default::default();
+        unsafe { texture.GetDesc(&mut desc) };
+        self.validate_texture_desc(&desc)?;
         // The first measured iteration resets the same allocator used by
         // transfer_async(). A caller is allowed to mix the public diagnostic
         // and transfer APIs, so drain the latest async copy before the probe
@@ -1903,8 +1980,17 @@ impl CrossAdapterTransfer {
         self.total_bytes
     }
 
+    /// Numeric DXGI_FORMAT of the raw pixels in the shared buffer.
+    pub fn dxgi_format(&self) -> i32 {
+        self.format.0
+    }
+
+    pub fn bytes_per_pixel(&self) -> u32 {
+        self.bytes_per_pixel
+    }
+
     /// Bytes per row in the shared buffer. Padded to D3D12's 256-byte copy
-    /// alignment, so this is not always `width * 4`.
+    /// alignment, so this is not always `width * bytes_per_pixel`.
     pub fn row_pitch(&self) -> u32 {
         self.footprint.Footprint.RowPitch
     }
@@ -2166,8 +2252,11 @@ fn make_default_buffer(device: &ID3D12Device, size: u64) -> windows::core::Resul
 #[cfg(test)]
 mod submission_failure_tests {
     use super::{
-        arm_fence_wait_with, arm_or_poll_fence_wait_with, replace_and_retain,
-        settle_submitted_copy, SubmittedCopyOutcome,
+        arm_fence_wait_with, arm_or_poll_fence_wait_with, build_copy_footprint_with,
+        copy_format_bytes_per_pixel, copy_texture_mismatch, replace_and_retain,
+        settle_submitted_copy, CopyTextureMismatch, SubmittedCopyOutcome, D3D11_TEXTURE2D_DESC,
+        DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT,
+        DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN,
     };
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
@@ -2182,6 +2271,76 @@ mod submission_failure_tests {
         fn drop(&mut self) {
             self.drops.set(self.drops.get() + 1);
         }
+    }
+
+    #[test]
+    fn every_duplicator_format_reaches_footprint_sizing_unchanged() {
+        let formats = [
+            (DXGI_FORMAT_B8G8R8A8_UNORM, 4u32),
+            (DXGI_FORMAT_R8G8B8A8_UNORM, 4u32),
+            (DXGI_FORMAT_R10G10B10A2_UNORM, 4u32),
+            (DXGI_FORMAT_R16G16B16A16_FLOAT, 8u32),
+        ];
+
+        for (format, bytes_per_pixel) in formats {
+            assert_eq!(copy_format_bytes_per_pixel(format), Some(bytes_per_pixel));
+            let (footprint, total_bytes) =
+                build_copy_footprint_with(65, 3, format, &mut |desc, footprint, total_bytes| {
+                    assert_eq!(desc.Format, format);
+                    let row_bytes = 65 * bytes_per_pixel;
+                    let row_pitch = (row_bytes + 255) & !255;
+                    footprint.Footprint.Format = desc.Format;
+                    footprint.Footprint.Width = 65;
+                    footprint.Footprint.Height = 3;
+                    footprint.Footprint.Depth = 1;
+                    footprint.Footprint.RowPitch = row_pitch;
+                    *total_bytes = u64::from(row_pitch) * 3;
+                });
+            assert_eq!(footprint.Footprint.Format, format);
+            assert!(footprint.Footprint.RowPitch >= 65 * bytes_per_pixel);
+            assert_eq!(total_bytes, u64::from(footprint.Footprint.RowPitch) * 3);
+        }
+        assert_eq!(copy_format_bytes_per_pixel(DXGI_FORMAT_UNKNOWN), None);
+    }
+
+    #[test]
+    fn r16_footprint_uses_eight_bytes_per_pixel() {
+        let (footprint, total_bytes) = build_copy_footprint_with(
+            64,
+            2,
+            DXGI_FORMAT_R16G16B16A16_FLOAT,
+            &mut |desc, footprint, total_bytes| {
+                let bytes = copy_format_bytes_per_pixel(desc.Format).unwrap();
+                footprint.Footprint.Format = desc.Format;
+                footprint.Footprint.RowPitch = desc.Width as u32 * bytes;
+                *total_bytes = u64::from(footprint.Footprint.RowPitch) * desc.Height as u64;
+            },
+        );
+        assert_eq!(footprint.Footprint.RowPitch, 64 * 8);
+        assert_eq!(total_bytes, 64 * 2 * 8);
+    }
+
+    #[test]
+    fn a_later_sdr_hdr_format_change_is_rejected() {
+        let mut desc = D3D11_TEXTURE2D_DESC {
+            Width: 1920,
+            Height: 1080,
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            ..Default::default()
+        };
+        assert_eq!(
+            copy_texture_mismatch(&desc, 1920, 1080, DXGI_FORMAT_B8G8R8A8_UNORM),
+            None
+        );
+
+        desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        assert_eq!(
+            copy_texture_mismatch(&desc, 1920, 1080, DXGI_FORMAT_B8G8R8A8_UNORM),
+            Some(CopyTextureMismatch::Format {
+                expected: DXGI_FORMAT_B8G8R8A8_UNORM.0,
+                actual: DXGI_FORMAT_R16G16B16A16_FLOAT.0,
+            })
+        );
     }
 
     #[test]

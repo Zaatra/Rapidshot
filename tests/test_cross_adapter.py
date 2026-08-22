@@ -376,6 +376,25 @@ def test_async_transfer_is_byte_exact(live_capture):
         f"differ, first at offset {int(np.flatnonzero(arrived != expected)[0])}")
 
 
+def test_live_layout_reports_the_captured_dxgi_format(live_capture):
+    """Consumers need the raw format and its real footprint, not a BGRA guess."""
+    frame = _grab(live_capture)
+    if frame is None:
+        pytest.skip("no frame captured -- the screen must be changing")
+    try:
+        transfer = native.cross_adapter_transfer(frame)
+        bytes_per_pixel = {87: 4, 28: 4, 24: 4, 10: 8}
+        assert transfer.dxgi_format in bytes_per_pixel
+        assert transfer.bytes_per_pixel == bytes_per_pixel[transfer.dxgi_format]
+        assert transfer.row_pitch >= transfer.width * transfer.bytes_per_pixel
+        assert transfer.total_bytes >= transfer.row_pitch * transfer.height
+
+        transfer.transfer(frame)
+        assert len(transfer.read_back_destination()) == transfer.total_bytes
+    finally:
+        frame.release()
+
+
 def test_destination_readback_waits_for_an_async_copy(live_capture):
     """Immediate verification readback must order behind the source queue."""
     frame = _grab(live_capture)
