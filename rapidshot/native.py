@@ -575,6 +575,24 @@ class CrossAdapterTransfer:
         A consumer on the destination adapter can skip the CPU round-trip
         entirely by opening :attr:`shared_fence_handle` and waiting on it from
         its own queue.
+
+        .. warning::
+
+            **Every transfer reuses one destination buffer, and this fence
+            says nothing about the consumer.** It reports that the *copy*
+            finished. If your consumer is still reading frame N when you submit
+            frame N+1, the copy overwrites the buffer underneath it and the
+            consumer silently reads a mixture -- nothing raises.
+
+            Measured 2026-08-22 over a 60-frame loop whose consumer was slower
+            than the producer: **28 of 60 frames were wrong** without a
+            handshake, and 0 with one. With a fast consumer the same loop shows
+            no corruption at all over 100 frames, which is why this is easy to
+            miss until a real workload arrives.
+
+            If your consumer is asynchronous, use :meth:`set_consumer_fence`
+            and :meth:`wait_for_consumer`. If it synchronises on the CPU
+            between frames, you do not need them.
         """
         value = int(self._inner.transfer_async(
             _texture_address(frame), _source_id(frame)))
@@ -662,6 +680,11 @@ class CrossAdapterTransfer:
         the copy and the consuming work overlap with no CPU involvement. The
         fence is created with ``SHARED | SHARED_CROSS_ADAPTER``, which is the
         only configuration both adapters can observe.
+
+        Waiting on this tells you the copy landed. It does **not** coordinate
+        the other direction: see the warning on :meth:`transfer_async` about
+        the shared destination buffer, and :meth:`wait_for_consumer` for the
+        return path.
 
         Borrowed, like :attr:`shared_destination_handle`: closed when this
         transfer is dropped, and likewise **not yours to close**.

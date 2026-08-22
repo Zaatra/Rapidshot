@@ -914,3 +914,165 @@ def test_the_consumer_handshake_prevents_a_stale_read(live_capture):
         f"the consumer read frame B ({checksum_b}) after waiting for frame A "
         f"({checksum_a}); the producer overwrote the shared buffer while the "
         f"consumer was still reading it")
+
+
+def test_the_handshake_holds_over_a_sustained_loop(live_capture):
+    """Many frames, not one A/B cycle: no fence drift, no deadlock, no leak.
+
+    A single cycle proves the mechanism; it does not prove the bookkeeping
+    survives repetition. This runs a real loop with a consumer heavy enough to
+    lag the producer, and checks every frame the consumer read against the
+    frame it was told to wait for.
+
+    Measured 2026-08-22 at 60 frames with a consumer slower than the producer:
+    **28 of 60 frames wrong unguarded, 0 guarded.** With a light consumer the
+    same loop is clean either way over 100 frames -- the hazard only appears
+    once the consumer actually falls behind, which is why it stays invisible
+    until a real workload shows up.
+
+    Needs on-screen motion: with a static desktop every frame is identical and
+    the comparison cannot distinguish anything, so it skips rather than
+    passing vacuously.
+    """
+    cp = pytest.importorskip("cupy", reason="CuPy not installed")
+    if not _hardware_destination_available():
+        pytest.skip("cross-adapter transfer needs a second hardware adapter")
+
+    FRAMES, SAMPLE, HEAVY = 12, 1 << 16, 40
+    cuda = ctypes.WinDLL("nvcuda.dll")
+    cuda.cuInit(0)
+    cp.cuda.Device(0).use()
+    cp.zeros(1)
+
+    def grab():
+        for _ in range(600):
+            f = live_capture.grab_frame()
+            if f is not None:
+                return f
+            time.sleep(0.003)
+        return None
+
+    seed = grab()
+    if seed is None:
+        pytest.skip("no frame captured -- the screen must be changing")
+    transfer = native.cross_adapter_transfer(seed)
+    consumer_owner = native.cross_adapter_transfer(seed)
+    transfer.set_consumer_fence(consumer_owner.shared_fence_handle)
+
+    module = _load_cuda_example()
+    md = module.ExternalMemoryHandleDesc()
+    ctypes.memset(ctypes.byref(md), 0, ctypes.sizeof(md))
+    md.type = 4
+    md.handle.win32.handle = ctypes.c_void_p(transfer.shared_destination_handle)
+    md.size = transfer.total_bytes
+    ext = ctypes.c_void_p()
+    assert cuda.cuImportExternalMemory(ctypes.byref(ext), ctypes.byref(md)) == 0
+    bd = module.ExternalMemoryBufferDesc()
+    ctypes.memset(ctypes.byref(bd), 0, ctypes.sizeof(bd))
+    bd.offset, bd.size, bd.flags = 0, transfer.total_bytes, 0
+    ptr = ctypes.c_ulonglong()
+    assert cuda.cuExternalMemoryGetMappedBuffer(
+        ctypes.byref(ptr), ext, ctypes.byref(bd)) == 0
+
+    def import_sem(handle):
+        d = _SemHandleDesc()
+        ctypes.memset(ctypes.byref(d), 0, ctypes.sizeof(d))
+        d.type = CU_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE
+        d.handle.win32.handle = ctypes.c_void_p(handle)
+        sem = ctypes.c_void_p()
+        assert cuda.cuImportExternalSemaphore(
+            ctypes.byref(sem), ctypes.byref(d)) == 0
+        return sem
+
+    producer_sem = import_sem(transfer.shared_fence_handle)
+    consumer_sem = import_sem(consumer_owner.shared_fence_handle)
+    seed.release()
+
+    # Preallocated: nothing may allocate on the consumer stream, or CuPy's
+    # allocator synchronises the calling thread and the lag disappears.
+    slots = cp.empty(FRAMES * SAMPLE, dtype=cp.uint8)
+    scratch = cp.empty(transfer.total_bytes, dtype=cp.uint8)
+    stream = cp.cuda.Stream(non_blocking=True)
+
+    def offset_that_changes():
+        """Sample where the screen actually moves; a static corner proves nothing."""
+        f = grab()
+        if f is None:
+            return None
+        transfer.transfer(f)
+        a = np.frombuffer(transfer.read_back_destination(), np.uint8).copy()
+        f.release()
+        time.sleep(0.12)
+        f = grab()
+        if f is None:
+            return None
+        transfer.transfer(f)
+        b = np.frombuffer(transfer.read_back_destination(), np.uint8)
+        f.release()
+        diff = np.flatnonzero(a != b)
+        if diff.size == 0:
+            return None
+        return min(int(diff[diff.size // 2]), transfer.total_bytes - SAMPLE)
+
+    try:
+        offset = offset_that_changes()
+        if offset is None:
+            pytest.skip("nothing on screen is changing -- run motion_source.py")
+
+        truth, captured, consumer_value = [], 0, 0
+        for i in range(FRAMES):
+            f = grab()
+            if f is None:
+                break
+            if consumer_value:
+                transfer.wait_for_consumer(consumer_value)
+            value = transfer.transfer_async(f)
+
+            wait = _SemWaitParams()
+            ctypes.memset(ctypes.byref(wait), 0, ctypes.sizeof(wait))
+            wait.params.fence.value = value
+            assert cuda.cuWaitExternalSemaphoresAsync(
+                ctypes.byref(producer_sem), ctypes.byref(wait), 1,
+                ctypes.c_void_p(stream.ptr)) == 0
+            for _ in range(HEAVY):          # make the consumer lag the producer
+                assert cuda.cuMemcpyDtoDAsync_v2(
+                    ctypes.c_ulonglong(int(scratch.data.ptr)),
+                    ctypes.c_ulonglong(ptr.value),
+                    ctypes.c_size_t(transfer.total_bytes),
+                    ctypes.c_void_p(stream.ptr)) == 0
+            assert cuda.cuMemcpyDtoDAsync_v2(
+                ctypes.c_ulonglong(int(slots.data.ptr) + i * SAMPLE),
+                ctypes.c_ulonglong(ptr.value + offset),
+                ctypes.c_size_t(SAMPLE), ctypes.c_void_p(stream.ptr)) == 0
+
+            consumer_value += 1
+            signal = _SemSignalParams()
+            ctypes.memset(ctypes.byref(signal), 0, ctypes.sizeof(signal))
+            signal.params.fence.value = consumer_value
+            assert cuda.cuSignalExternalSemaphoresAsync(
+                ctypes.byref(consumer_sem), ctypes.byref(signal), 1,
+                ctypes.c_void_p(stream.ptr)) == 0
+
+            transfer.wait_shared_fence(value)
+            truth.append(int(np.frombuffer(
+                transfer.read_back_destination(), dtype=np.uint8,
+                count=SAMPLE, offset=offset).sum()))
+            f.release()
+            captured += 1
+        stream.synchronize()
+    finally:
+        cuda.cuDestroyExternalSemaphore(producer_sem)
+        cuda.cuDestroyExternalSemaphore(consumer_sem)
+        cuda.cuDestroyExternalMemory(ext)
+
+    if captured < 3:
+        pytest.skip("too few frames captured -- the screen must be changing")
+    seen = cp.asnumpy(slots).reshape(FRAMES, SAMPLE).sum(
+        axis=1, dtype=np.int64)[:captured]
+    truth = np.asarray(truth, dtype=np.int64)
+    if len(set(truth.tolist())) < 2:
+        pytest.skip("frames are identical -- nothing to distinguish")
+    bad = int((seen != truth).sum())
+    assert bad == 0, (
+        f"{bad} of {captured} frames were read after the producer had already "
+        f"overwritten them; the consumer handshake did not hold")

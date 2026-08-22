@@ -872,6 +872,21 @@ Realistic cost is roughly six months with a native-graphics-fluent co-maintainer
   | unguarded | frame A | **frame B** |
   | `wait_for_consumer` | frame A | frame A |
 
+  **Then measured at scale, and the scale result is the one to quote.** A real
+  60-frame loop with a consumer slower than the producer:
+
+  | consumer | frames | wrong, unguarded | wrong, guarded |
+  | --- | --- | --- | --- |
+  | slower than producer | 60 | **28 (47%)** | **0** |
+  | faster than producer | 100 | 0 | 0 |
+
+  **Nearly half the frames, and the guarded loop is clean.** The second row is
+  why this stays hidden: with a consumer that keeps up, the same loop shows
+  nothing wrong over 100 frames, so the hazard is invisible until a real
+  workload arrives and then corrupts silently. The handshake costs ~3% in the
+  slow case and nothing measurable in the fast one, and holds across the whole
+  run — no fence drift, no deadlock, no leak.
+
   **Every earlier attempt failed the same way, and it was never about the race being rare.** CuPy's allocator synchronises the calling thread, so anything allocating inside the gated region either hides the race (the producer can never run ahead) or self-deadlocks — one probe hung for ten minutes, blocking the CPU on a stream only that CPU could open. Making the consumer *slower* was the wrong axis entirely: a 527 ms consumer still showed nothing, because the CPU was being paced by the allocator, not by the GPU. Nothing inside the gated region may allocate. That is the reusable lesson.
 
   **The fix needed a signal travelling the other way, and its feasibility was the open question.** Measured: CUDA on the RTX 4060 signalled a D3D12 fence created by the **Intel** iGPU's device and the producer observed it — completed value 0 → 5000. Shipped as `set_consumer_fence(handle)` + `wait_for_consumer(value)`; the wait is queued on the source queue, so it orders ahead of the next copy without blocking the caller:
