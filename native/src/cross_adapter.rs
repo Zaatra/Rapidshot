@@ -613,6 +613,34 @@ pub type SharedHandleAttempt = (String, u32, Result<(), String>);
 /// A candidate way of minting a shared handle, for the probe's table.
 type HandleMaker<'a> = dyn Fn() -> windows::core::Result<HANDLE> + 'a;
 
+/// Closes a Windows handle on drop unless it is released into an owner.
+///
+/// `CrossAdapterTransfer::new` creates three raw handles and then keeps doing
+/// fallible work: fence creation, event creation, two `Submitter::new` calls.
+/// `Drop` cannot help there, because the object does not exist yet -- so a
+/// device-lost or unsupported adapter pair used to leak every handle created
+/// so far, and repeated setup attempts would walk the process handle table up.
+struct OwnedHandle(HANDLE);
+
+impl OwnedHandle {
+    /// Hand the handle to a longer-lived owner; this guard stops closing it.
+    fn release(mut self) -> HANDLE {
+        let raw = self.0;
+        self.0 = HANDLE::default();
+        raw
+    }
+}
+
+impl Drop for OwnedHandle {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() {
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
+}
+
 pub struct CrossAdapterTransfer {
     src_device: ID3D12Device,
     dst_device: ID3D12Device,
@@ -848,8 +876,9 @@ impl CrossAdapterTransfer {
         // additionally require the consumer's runtime to accept a handle made
         // by a different vendor's device. That held on the one Intel -> NVIDIA
         // pair measured, which is not enough to depend on it.
-        let shared_destination_handle =
-            unsafe { dst_device.CreateSharedHandle(&dst_heap, None, GENERIC_ALL, None)? };
+        let shared_destination_handle = OwnedHandle(unsafe {
+            dst_device.CreateSharedHandle(&dst_heap, None, GENERIC_ALL, None)?
+        });
 
         // A fence both adapters can observe. SHARED alone is not enough across
         // adapters -- SHARED_CROSS_ADAPTER is what makes the destination able
@@ -860,9 +889,10 @@ impl CrossAdapterTransfer {
                 D3D12_FENCE_FLAG_SHARED | D3D12_FENCE_FLAG_SHARED_CROSS_ADAPTER,
             )?
         };
-        let shared_fence_handle =
-            unsafe { src_device.CreateSharedHandle(&shared_fence, None, GENERIC_ALL, None)? };
-        let shared_fence_event = unsafe { CreateEventW(None, false, false, None)? };
+        let shared_fence_handle = OwnedHandle(unsafe {
+            src_device.CreateSharedHandle(&shared_fence, None, GENERIC_ALL, None)?
+        });
+        let shared_fence_event = OwnedHandle(unsafe { CreateEventW(None, false, false, None)? });
 
         Ok(Self {
             src: Submitter::new(&src_device)?,
@@ -876,13 +906,13 @@ impl CrossAdapterTransfer {
             readback,
             src_readback,
             snapshot,
-            shared_destination_handle,
+            shared_destination_handle: shared_destination_handle.release(),
             cached_texture: Cell::new((0, 0)),
             cached_shared: std::cell::RefCell::new(None),
             shared_fence,
-            shared_fence_handle,
+            shared_fence_handle: shared_fence_handle.release(),
             shared_fence_value: Cell::new(0),
-            shared_fence_event,
+            shared_fence_event: shared_fence_event.release(),
             footprint,
             total_bytes,
             width,
@@ -965,6 +995,14 @@ impl CrossAdapterTransfer {
                 "texture size does not match the one this transfer was built for;                  build a new transfer after a resolution change",
             ));
         }
+
+        // Drain any outstanding async submission before touching the source
+        // allocator. `transfer_async()` waits for the *previous* one at its own
+        // entry, but a caller who submits asynchronously and then synchronises
+        // GPU-side -- the whole point of `shared_fence_handle` -- never returns
+        // through that path. `begin()` below resets the allocator the GPU may
+        // still be reading, which is device removal or corruption.
+        self.wait_shared_fence(self.shared_fence_value.get())?;
 
         let shared = self.open_capture_texture(texture, source_id)?;
 

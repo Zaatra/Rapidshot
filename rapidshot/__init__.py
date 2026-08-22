@@ -199,16 +199,25 @@ class RapidshotFactory(metaclass=Singleton):
         return "intel" in str(desc).lower()
 
     def _duplication_candidates(self, chosen, prefer_integrated: bool):
-        """Adapters to try if `chosen` refuses to duplicate the output.
+        """Every adapter that could duplicate this output, in preference order.
+
+        Includes `chosen` -- the caller does not prepend it separately. That
+        matters for `prefer_integrated`: on a hybrid laptop the iGPU usually
+        owns no output, so it is not in `self.devices` and cannot be `chosen`.
+        Ordering it merely ahead of the *other* fallbacks would put it behind
+        the display-owning adapter, which on a working system duplicates
+        successfully -- so the integrated adapter would never be tried and the
+        flag would do nothing in exactly the topology it exists for.
 
         Includes adapters with no outputs of their own: which adapter Desktop
         Duplication accepts depends on where the desktop is composed, not on
         which adapter enumerates the output.
         """
-        others = [d for d in self.all_devices if d is not chosen]
+        candidates = [chosen] + [d for d in self.all_devices if d is not chosen]
         if prefer_integrated:
-            others.sort(key=lambda d: not self._is_integrated(d))
-        return others
+            # Stable, so this reorders without dropping or shuffling anything.
+            candidates.sort(key=lambda d: not self._is_integrated(d))
+        return candidates
 
     def create(
         self,
@@ -328,7 +337,7 @@ class RapidshotFactory(metaclass=Singleton):
             screencapture = ScreenCapture(
                 output=output,
                 device=device,
-                fallback_devices=self._duplication_candidates(
+                candidate_devices=self._duplication_candidates(
                     device, prefer_integrated
                 ),
                 region=region,

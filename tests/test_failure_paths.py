@@ -461,7 +461,7 @@ def _capture_stub(primary, fallbacks):
     cam = ScreenCapture.__new__(ScreenCapture)
     cam._output = FakeOutput()
     cam._device = primary
-    cam._all_devices = [primary] + list(fallbacks)
+    cam._all_devices = [primary] + list(fallbacks)   # ordered candidates
     cam._timeout_ms = 10
     return cam
 
@@ -528,6 +528,57 @@ def test_the_original_adapter_stays_a_candidate_after_a_fallback_wins(monkeypatc
     refuse.add(fallback)
     assert cam._build_duplicator() == "duplicator-original"
     assert cam._device is original
+
+
+def test_prefer_integrated_reaches_an_output_less_igpu(monkeypatch):
+    """The flag has to outrank the display-owning adapter, or it does nothing.
+
+    On a hybrid laptop the iGPU usually owns no output, so it is never the
+    device the factory selects. If it were merely ranked ahead of the *other*
+    fallbacks it would still sit behind the display-owning adapter -- which on
+    a working system duplicates successfully, so the integrated adapter would
+    never be tried at all. The flag would be inert in exactly the topology it
+    exists for.
+    """
+    import rapidshot.capture as capture_module
+
+    igpu, dgpu = object(), object()
+    tried = []
+
+    def duplicator(output, device, timeout_ms=10):
+        tried.append(device)
+        return "duplicator"
+
+    monkeypatch.setattr(capture_module, "Duplicator", duplicator)
+    # As the factory ranks them with prefer_integrated=True: iGPU first, even
+    # though dgpu is the adapter that owns the output.
+    cam = _capture_stub(primary=dgpu, fallbacks=[])
+    cam._all_devices = [igpu, dgpu]
+
+    assert cam._build_duplicator() == "duplicator"
+    assert tried == [igpu], "the integrated adapter was not tried first"
+    assert cam._device is igpu
+
+
+def test_a_successful_adapter_moves_to_the_front(monkeypatch):
+    """Winner first on the next rebuild -- reordering only, never removing."""
+    import rapidshot.capture as capture_module
+    from rapidshot.util.errors import RapidShotConfigError
+
+    first, second = object(), object()
+
+    def picky(output, device, timeout_ms=10):
+        if device is first:
+            raise RapidShotConfigError("refused", hresult=DXGI_ERROR_UNSUPPORTED)
+        return "duplicator"
+
+    monkeypatch.setattr(capture_module, "Duplicator", picky)
+    cam = _capture_stub(primary=first, fallbacks=[second])
+
+    assert cam._build_duplicator() == "duplicator"
+    assert cam._all_devices[0] is second, "the winner was not promoted"
+    assert set(map(id, cam._all_devices)) == {id(first), id(second)}, (
+        "promotion dropped an adapter instead of reordering")
 
 
 def test_duplication_does_not_retry_a_non_adapter_refusal(monkeypatch):

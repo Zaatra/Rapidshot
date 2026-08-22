@@ -65,7 +65,7 @@ class ScreenCapture:
         pool_size_frames: int = 4,
         pool_output: bool = True,
         timeout_ms: int = 10,
-        fallback_devices: Optional[List[Device]] = None,
+        candidate_devices: Optional[List[Device]] = None,
     ) -> None:
         """
         Initialize a ScreenCapture instance.
@@ -115,16 +115,19 @@ class ScreenCapture:
         self._output = output
         self._device = device
         self._init_error: Optional[Exception] = None
-        # Every adapter that could duplicate this output, the given one first.
-        # See _build_duplicator: on a hybrid system the adapter that owns the
-        # output is not necessarily the one Desktop Duplication will accept.
+        # Every adapter that could duplicate this output, in preference order
+        # as the factory ranked it. On a hybrid system the adapter that owns
+        # the output is not necessarily the one Desktop Duplication accepts,
+        # and with prefer_integrated the iGPU may deliberately rank ahead of
+        # `device` -- so this order is honoured rather than overridden.
         #
-        # This is the full set, not "the others": _build_duplicator reassigns
-        # self._device to whichever adapter wins, so a set that excluded the
-        # starting device would shrink by one on every fallback.
-        self._all_devices = [device] + [
-            d for d in (fallback_devices or []) if d is not device
-        ]
+        # `device` is included even when the caller omits it: _build_duplicator
+        # reassigns self._device to whichever adapter wins, so a set missing one
+        # would shrink on every fallback and strand that adapter.
+        candidates = list(candidate_devices or [])
+        if not any(d is device for d in candidates):
+            candidates.insert(0, device)
+        self._all_devices = candidates
         self._timeout_ms = timeout_ms
         self._duplicator = None
         self._stagesurf = None
@@ -242,16 +245,15 @@ class ScreenCapture:
             RapidShotConfigError: every candidate refused. The message names
                 the likely system-level cause, which the raw HRESULT did not.
         """
-        # Current device first, then every other candidate -- reordered, never
-        # removed. `self._device` is reassigned below when a fallback wins, so
-        # excluding "the original" from the list would make it permanently
-        # unreachable: a later rebuild where the fallback starts refusing and
-        # the original adapter is valid again would then fail with a working
-        # adapter sitting right there. Ordering is a preference; the candidate
-        # set has to stay whole.
-        candidates = [self._device] + [
-            d for d in self._all_devices if d is not self._device
-        ]
+        # Try in the stored preference order. Not "current device first":
+        # `self._device` starts as the adapter that owns the output, and with
+        # prefer_integrated the iGPU is deliberately ranked ahead of it, so
+        # promoting the current device would silently override the request.
+        # The winner is moved to the front *after* it succeeds, which keeps
+        # rebuilds cheap without pre-empting the preference on the first
+        # attempt. The set is never reduced -- an adapter that refuses once may
+        # be the only valid one after a MUX or output change.
+        candidates = list(self._all_devices)
         refusals = []
         for device in candidates:
             try:
@@ -284,6 +286,12 @@ class ScreenCapture:
                     f"({self._device_label(self._device)} does)."
                 )
                 self._device = device
+            # Winner first for the next rebuild: cheap, and it can only
+            # reorder, never hide an adapter. Identity, not equality -- Device
+            # defines no __eq__ and two adapters must never compare equal here.
+            self._all_devices = [device] + [
+                d for d in self._all_devices if d is not device
+            ]
             return duplicator
 
         raise RapidShotConfigError(
