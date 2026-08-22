@@ -393,6 +393,80 @@ def test_output_change_rebuild_is_bounded_and_does_not_hang(monkeypatch):
     assert "Failed to rebuild" in cam._last_capture_error_message
 
 
+def test_stage_surface_failure_releases_duplicator_before_retry(monkeypatch):
+    """A retry must not coexist with the duplicator from the failed attempt."""
+    import rapidshot.capture as capture_module
+    from rapidshot.capture import ScreenCapture
+
+    built = []
+
+    class FakeDuplicator:
+        def __init__(self, output=None, device=None, timeout_ms=10):
+            assert not built or built[-1].released, (
+                "a new duplicator was created while the previous attempt was live")
+            self.released = False
+            built.append(self)
+
+        def release(self):
+            assert not self.released, "partial duplicator released twice"
+            self.released = True
+
+    class FakeStageSurf:
+        def __init__(self):
+            self.rebuild_calls = 0
+            self.release_calls = 0
+            self.has_resource = True
+
+        def release(self):
+            self.release_calls += 1
+            self.has_resource = False
+
+        def rebuild(self, output=None, device=None):
+            assert not self.has_resource, (
+                "partial stage surface survived into the next retry")
+            self.rebuild_calls += 1
+            self.has_resource = True
+            if self.rebuild_calls < 3:
+                raise com_error(DXGI_ERROR_DEVICE_RESET)
+
+    class FakeOutput:
+        devicename = "FAKE"
+        resolution = (1920, 1080)
+        rotation_angle = 0
+
+        def update_desc(self):
+            pass
+
+    monkeypatch.setattr(capture_module, "Duplicator", FakeDuplicator)
+    monkeypatch.setattr(capture_module.time, "sleep", lambda _seconds: None)
+
+    stage = FakeStageSurf()
+    cam = ScreenCapture.__new__(ScreenCapture)
+    cam._duplicator = None
+    cam._stagesurf = stage
+    cam._output = FakeOutput()
+    cam._device = None
+    cam._all_devices = [None]
+    cam._timeout_ms = 10
+    cam.width, cam.height = 1920, 1080
+    cam.region = (0, 0, 1920, 1080)
+    cam._region_set_by_user = False
+    cam._sourceRegion = None
+    cam.is_capturing = False
+    cam.rotation_angle = 0
+    cam._needs_reinit = False
+    cam._last_capture_error_message = ""
+    cam._max_output_change_retries = 3
+
+    assert cam._on_output_change() is True
+    assert len(built) == 3
+    assert [duplicator.released for duplicator in built] == [True, True, False]
+    assert cam._duplicator is built[-1]
+    assert stage.rebuild_calls == 3
+    assert stage.release_calls == 3  # initial teardown + two failed attempts
+    assert stage.has_resource is True
+
+
 def test_output_change_gives_up_immediately_on_protected_content(monkeypatch):
     """Retrying a protected-content refusal is pointless; fail fast."""
     import rapidshot.capture as capture_module

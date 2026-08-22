@@ -1249,8 +1249,32 @@ class ScreenCapture:
                 # it would silently reset the setting on the first resolution
                 # change or display reconnect, a regression that only shows up
                 # as "it got slower after I unplugged a monitor".
-                self._duplicator = self._build_duplicator()
-                self._stagesurf.rebuild(output=self._output, device=self._device)
+                candidate = self._build_duplicator()
+                try:
+                    self._stagesurf.rebuild(
+                        output=self._output, device=self._device)
+                except Exception:
+                    # The duplication interface is live as soon as
+                    # _build_duplicator returns. Do not publish it until its
+                    # matching stage surface also exists, and never carry a
+                    # partial pair into the next retry: DXGI permits only one
+                    # active duplication interface per output/process.
+                    try:
+                        candidate.release()
+                    except Exception as cleanup_error:
+                        logger.warning(
+                            "Failed to release partial duplicator after stage "
+                            f"surface rebuild failure: {cleanup_error}"
+                        )
+                    try:
+                        self._stagesurf.release()
+                    except Exception as cleanup_error:
+                        logger.warning(
+                            "Failed to release partial stage surface after "
+                            f"rebuild failure: {cleanup_error}"
+                        )
+                    raise
+                self._duplicator = candidate
                 logger.info(
                     f"Duplication rebuilt after output change "
                     f"(attempt {attempt + 1}, resolution {self.width}x{self.height})."
