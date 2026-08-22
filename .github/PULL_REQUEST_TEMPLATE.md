@@ -18,7 +18,9 @@
 
 - [ ] `python benchmarks/perf_suite.py --self-test` run **first**, to establish
       this machine's noise floor
-- [ ] Compared against `benchmarks/baseline.json`, numbers below
+- [ ] Compared with `--compare auto`, which picks the baseline recorded on this
+      machine, numbers below. Naming a baseline from another machine reports
+      indicative verdicts that gate nothing
 - [ ] If two implementations were compared, they were interleaved in one
       process — separate runs on a loaded machine have produced 2.26x, 1.56x
       and 0.87x for the same comparison

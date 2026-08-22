@@ -13,6 +13,12 @@ Re-run after a change and compare::
 
     python benchmarks/perf_suite.py --out after.json --compare baseline.json
 
+Compare against whichever committed baseline was recorded on this machine,
+which is what a release should do -- naming one file gates on one machine and
+silently stops gating everywhere else::
+
+    python benchmarks/perf_suite.py --compare auto
+
 Only the deterministic benchmarks (no desktop session needed)::
 
     python benchmarks/perf_suite.py --synthetic-only
@@ -649,6 +655,21 @@ def machine_info() -> dict:
         info["gpu"] = rapidshot.get_factory().devices[0].description
     except Exception:
         pass
+    # Provenance for the same reason as the affinity mask above, and with the
+    # same failure mode. `baseline.json` is recorded with the optional native
+    # extension and `baseline-nonative.json` without it; pointed at the wrong
+    # one, every conversion row reports a 6-20x regression on every run forever
+    # (.github/workflows/ci.yml says so, and routes around it by hand). Nothing
+    # in a recording said which side of that line it came from, so after the
+    # fact the two were distinguishable only by filename -- and `--compare
+    # auto` cannot pick a file on a naming convention.
+    try:
+        from rapidshot import native
+        info["native_extension"] = native.is_available()
+    except Exception as e:
+        # Record the reason rather than dropping the key, so "could not tell"
+        # is never mistaken for "was not built".
+        info["native_extension"] = f"unknown ({type(e).__name__})"
     return info
 
 
@@ -707,6 +728,87 @@ def print_cpu_vs_gpu(results: List[Result]) -> None:
         print("  honest worst case, and it is SLOWER than the CPU arm -- which is")
         print("  the point: this path wins only when the tensor is consumed on the")
         print("  GPU. Pulling it back to the CPU gives up the entire advantage.")
+
+
+def resolve_auto_baseline(info: dict, directory: Path) -> Path:
+    """
+    Pick the committed baseline recorded on *this* machine.
+
+    `RELEASING.md` step 4 named `benchmarks/baseline.json` outright, and that is
+    one specific machine. Run anywhere else, `print_comparison` detects the
+    mismatch and declines to gate -- correctly -- so the release step printed a
+    table in which every verdict was indicative and nothing could fail. A gate
+    that always passes is worse than no gate, because it is quoted as evidence.
+    Once more than one machine records baselines, choosing the file has to
+    follow the host rather than the instructions.
+
+    Matched on the identity `print_comparison` already refuses to gate across,
+    plus `native_extension` -- pairing a native run against a `-nonative`
+    recording is the single most misleading comparison this repository can
+    produce, and it is invisible in the output because every row moves together.
+
+    Ambiguity fails loudly. Silently picking one of two equally valid baselines
+    would make the verdict depend on directory order, which is precisely the
+    kind of invisible coupling this suite exists to eliminate.
+    """
+    considered, candidates = [], []
+    for path in sorted(directory.glob("baseline*.json")):
+        try:
+            machine = json.loads(path.read_text()).get("machine", {})
+        except (OSError, ValueError) as e:
+            # An unreadable baseline must not drop silently out of the running
+            # and hand the comparison to some other machine's file.
+            considered.append(f"  {path.name}: unreadable ({type(e).__name__})")
+            continue
+        mismatched = [k for k in ("processor", "platform", "gpu")
+                      if machine.get(k) != info.get(k)]
+        # Absent on recordings that predate the field. Unknown is not a
+        # mismatch on its own -- it would disqualify every older baseline --
+        # but it cannot break a tie either, which is handled below.
+        if (machine.get("native_extension") is not None
+                and info.get("native_extension") is not None
+                and machine["native_extension"] != info["native_extension"]):
+            mismatched.append("native_extension")
+        if mismatched:
+            considered.append(f"  {path.name}: differs on {', '.join(mismatched)}")
+            continue
+        candidates.append((path, machine))
+
+    if not candidates:
+        raise SystemExit(
+            "--compare auto found no baseline recorded on this machine.\n"
+            + "\n".join(considered)
+            + f"\n\nThis host is {info.get('processor')} / {info.get('gpu')}"
+            f", native_extension={info.get('native_extension')}."
+            "\nRecord one with --out benchmarks/baseline-<machine>.json, or"
+            " pass an explicit path to compare across machines (which will"
+            " report indicative verdicts only)."
+        )
+
+    if len(candidates) > 1:
+        # Newest recording of the same machine wins: an older one is more
+        # likely to predate a redefinition and suppress rows.
+        candidates.sort(
+            key=lambda c: (_version_tuple(c[1].get("rapidshot", "")),
+                           c[1].get("timestamp", "")),
+            reverse=True)
+        best, runner_up = candidates[0], candidates[1]
+        tied = (_version_tuple(best[1].get("rapidshot", ""))
+                == _version_tuple(runner_up[1].get("rapidshot", ""))
+                and best[1].get("timestamp", "") == runner_up[1].get("timestamp", ""))
+        if tied:
+            raise SystemExit(
+                "--compare auto matched more than one baseline for this machine"
+                " and cannot choose between them:\n"
+                + "\n".join(f"  {p.name}" for p, _ in candidates)
+                + "\n\nPass the one you mean explicitly."
+            )
+
+    path, machine = candidates[0]
+    print(f"host: {info.get('processor')} / {info.get('gpu')}"
+          f" (native_extension={info.get('native_extension')})")
+    print(f"matched {path.name} (rapidshot {machine.get('rapidshot', '?')})")
+    return path
 
 
 def print_comparison(current: List[Result], baseline_path: Path,
@@ -1054,7 +1156,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, help="write results as JSON")
-    ap.add_argument("--compare", type=Path, help="compare against a baseline JSON")
+    ap.add_argument("--compare", type=Path,
+                    help="compare against a baseline JSON, or 'auto' to use "
+                         "the committed baseline recorded on this machine. "
+                         "A named file from another machine still compares, "
+                         "but reports indicative verdicts and gates nothing.")
     ap.add_argument("--synthetic-only", action="store_true",
                     help="skip benchmarks that need a desktop session")
     ap.add_argument("--reps", type=int, default=30, help="reps per benchmark")
@@ -1145,7 +1251,12 @@ def main() -> int:
         print(f"\nwrote {args.out}")
 
     if args.compare:
-        return 1 if print_comparison(results, args.compare, args.threshold) else 0
+        # Resolved here rather than in the parser: it needs `info`, which
+        # cannot be read until after the process has pinned itself.
+        compare_path = args.compare
+        if str(compare_path) == "auto":
+            compare_path = resolve_auto_baseline(info, Path(__file__).resolve().parent)
+        return 1 if print_comparison(results, compare_path, args.threshold) else 0
     return 0
 
 

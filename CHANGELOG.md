@@ -10,7 +10,54 @@ each release can be traced back to the plan it implements.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **The release performance gate had stopped gating anything.**
+  `RELEASING.md` step 4 named `benchmarks/baseline.json`, which is Machine A.
+  Run on Machine B the suite compared correctly, detected the hardware
+  mismatch, and declined to gate -- so the release step printed a full table in
+  which every verdict was indicative and no result could fail. The suite was
+  right each time; the instructions pointed it at the wrong file. Nothing was
+  broken and nothing was verified, which is the failure mode worth naming: a
+  gate that always passes still gets quoted as evidence that it passed.
+
+  `--compare auto` now selects the committed baseline recorded on the current
+  host and **exits non-zero if there is none**, rather than falling back to
+  another machine's file. `RELEASING.md` and the pull request template point at
+  it. Matching an explicit path still works and still reports indicative
+  verdicts, which is the right behaviour for a deliberate cross-machine look.
+
+### Added
+
+- **`native_extension` in the recorded machine block.** `baseline.json` is
+  recorded with the optional native extension and `baseline-nonative.json`
+  without it, and comparing across that line reports every conversion row
+  6-20x slower on every run -- the hazard `ci.yml` already routes around by
+  hand. Nothing in a recording said which side it came from, so the two were
+  distinguishable only by filename, and a chooser cannot read a naming
+  convention. Absent on older recordings, which is treated as unknown: it
+  cannot disqualify a baseline on its own, and it cannot break a tie either.
+
+  Ambiguity fails loudly rather than picking one. Two equally valid baselines
+  resolved by directory order would make a verdict depend on `glob()`, which is
+  the kind of invisible coupling this suite exists to remove.
+
+### Benchmarks
+
+- **Re-recorded `benchmarks/baseline-rtx4060-hybrid.json` at 2.4.0.** It was
+  recorded at 2.3.0, so the only same-machine baseline this host had was a
+  version stale. 2.4.0 measured against the old recording was `~ same` on every
+  synthetic row, and for the first time with **no NOT COMPARABLE rows** -- both
+  sides now sit after the 2.3.0 redefinitions, where the 2.1.0 `baseline.json`
+  suppressed two.
+
+  Noise floor verified on the host first: `--self-test` reported 0 of 16
+  benchmarks exceeding 1.30x with no code change, max drift 8%, so the default
+  threshold clears the measurement error here.
+
+- `baseline-rtx4060.json` (same machine, discrete-only) is **still at 2.3.0**.
+  Re-recording it needs the MUX switched out of hybrid, which is a firmware
+  change, not a benchmark flag.
 
 ## [2.4.0] - 2026-08-22
 

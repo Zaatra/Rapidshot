@@ -47,7 +47,25 @@ secret, or on anyone's laptop. Nothing to leak, nothing to rotate.
    ```bash
    python -m pytest tests/ -q
    python benchmarks/ab_conversion.py
-   python benchmarks/perf_suite.py --rounds 5 --reps 25 --compare benchmarks/baseline.json
+   python benchmarks/perf_suite.py --rounds 5 --reps 25 --compare auto
+   ```
+
+   `--compare auto` selects the committed baseline recorded on the machine you
+   are running on, and **fails** if there is none. This step used to name
+   `benchmarks/baseline.json`, which is one specific machine: run anywhere else
+   the suite detected the mismatch and declined to gate, so the table printed
+   verdicts that were all indicative and nothing could fail. Re-record this
+   machine's baseline first if the release changed anything performance-facing:
+
+   ```bash
+   python benchmarks/perf_suite.py --rounds 5 --reps 25 --out benchmarks/baseline-<machine>.json
+   ```
+
+   Verify the threshold clears the host's noise before trusting a verdict —
+   anything it reports here is measurement error, not a change:
+
+   ```bash
+   python benchmarks/perf_suite.py --self-test --rounds 5 --reps 25
    ```
 
 5. **Run the live suites on real hardware.** CI runners have no desktop session,
