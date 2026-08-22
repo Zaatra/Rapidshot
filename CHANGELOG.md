@@ -27,6 +27,15 @@ Nothing yet.
   dGPU can signal a D3D12 fence created by an Intel iGPU's device, and the
   producer observes it.
 
+  Measured at scale over a 60-frame loop whose consumer was slower than the
+  producer: **28 of 60 frames wrong without the handshake, 0 with it.** With a
+  consumer that keeps up the same loop is clean either way over 100 frames,
+  which is why the hazard stays invisible until a real workload arrives.
+
+  `transfer_async()` and `shared_fence_handle` now carry that warning and name
+  the remedy -- the mechanism existed but said nothing at the API a caller
+  actually reads.
+
   **Reproduced deterministically**, after four failed attempts: gate the
   consumer's read behind a semaphore, let frame B's copy complete while the
   read is provably still pending, then open the gate. Unguarded, the consumer
