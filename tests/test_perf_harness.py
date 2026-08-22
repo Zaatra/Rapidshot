@@ -324,14 +324,42 @@ class TestRedefinedRows:
 # Nobody investigates good news, which is exactly why the improvement
 # direction needs the label more, not less.
 
-def _compare(tmp_path, capsys, baseline_rows, current_rows, machine=None):
-    """Run print_comparison over hand-built rows and return its output."""
+# A fully specified machine record. Deriving one from the live machine_info()
+# makes these tests depend on the host: where the CPU topology query fails --
+# a non-Windows runner, or a Windows box whose GetSystemCpuSetInformation call
+# errors -- the record carries `cpu_topology="unknown (...)"` and no
+# `pinned_to_performance_cores`, which print_comparison deliberately treats as
+# an unknown-scheduling comparison that gates nothing. The gating tests would
+# then pass or fail for reasons having nothing to do with the code under test.
+SYNTHETIC_MACHINE = {
+    "rapidshot": "2.3.0",
+    "processor": "SyntheticCPU",
+    "platform": "SyntheticOS",
+    "gpu": "SyntheticGPU",
+    "python": "3.13.0",
+    "numpy": "2.0.0",
+    "frame": "1920x1080",
+    "cpu_topology": "uniform",
+    "pinned_to_performance_cores": False,
+    "affinity_mask": "0xff",
+}
+
+
+def _compare(tmp_path, capsys, baseline_rows, current_rows, machine=None,
+             monkeypatch=None):
+    """Run print_comparison over hand-built rows and return its output.
+
+    Both sides use SYNTHETIC_MACHINE so the comparison is unambiguously
+    same-machine with known scheduling, whatever the host reports.
+    """
     import json
     from pathlib import Path
 
-    base_machine = dict(perf_suite.machine_info())
-    base_machine["rapidshot"] = "2.3.0"
+    base_machine = dict(SYNTHETIC_MACHINE)
     base_machine.update(machine or {})
+    if monkeypatch is not None:
+        monkeypatch.setattr(perf_suite, "machine_info",
+                            lambda: dict(SYNTHETIC_MACHINE))
 
     path = Path(tmp_path) / "baseline.json"
     path.write_text(json.dumps({"machine": base_machine, "results": baseline_rows}))
@@ -347,40 +375,44 @@ def _compare(tmp_path, capsys, baseline_rows, current_rows, machine=None):
 
 
 class TestCaveatsApplyBothWays:
-    def test_a_live_row_is_labelled_when_it_reports_faster(self, tmp_path, capsys):
+    def test_a_live_row_is_labelled_when_it_reports_faster(self, tmp_path, capsys, monkeypatch):
         out = _compare(
             tmp_path, capsys,
             [{"name": "live.x", "kind": "live", "min_ms": 8.0, "median_ms": 8.0}],
             [{"name": "live.x", "kind": "live", "min_ms": 1.0}],
+            monkeypatch=monkeypatch,
         )
         assert "FASTER" in out
         assert "live: informational" in out, (
             "a live row reported an unqualified speed-up; the improvement "
             "direction needs the caveat more, not less")
 
-    def test_a_live_row_is_labelled_when_it_reports_slower(self, tmp_path, capsys):
+    def test_a_live_row_is_labelled_when_it_reports_slower(self, tmp_path, capsys, monkeypatch):
         out = _compare(
             tmp_path, capsys,
             [{"name": "live.x", "kind": "live", "min_ms": 1.0, "median_ms": 1.0}],
             [{"name": "live.x", "kind": "live", "min_ms": 8.0}],
+            monkeypatch=monkeypatch,
         )
         assert "SLOWER" in out and "live: informational" in out
 
-    def test_a_redefined_row_is_labelled_when_it_reports_faster(self, tmp_path, capsys):
+    def test_a_redefined_row_is_labelled_when_it_reports_faster(self, tmp_path, capsys, monkeypatch):
         out = _compare(
             tmp_path, capsys,
             [{"name": "pipeline.gpu_plus_readback", "min_ms": 14.8, "median_ms": 14.8}],
             [{"name": "pipeline.gpu_plus_readback", "min_ms": 2.8}],
             machine={"rapidshot": "2.1.0"},
+            monkeypatch=monkeypatch,
         )
         assert "NOT COMPARABLE" in out
 
-    def test_a_caveated_row_never_counts_as_a_regression(self, tmp_path, capsys):
+    def test_a_caveated_row_never_counts_as_a_regression(self, tmp_path, capsys, monkeypatch):
         """The caveat and the gate must agree, or the suite gates on noise."""
         import json
         from pathlib import Path
-        base_machine = dict(perf_suite.machine_info())
-        base_machine["rapidshot"] = "2.3.0"
+        monkeypatch.setattr(perf_suite, "machine_info",
+                            lambda: dict(SYNTHETIC_MACHINE))
+        base_machine = dict(SYNTHETIC_MACHINE)
         path = Path(tmp_path) / "b.json"
         path.write_text(json.dumps({
             "machine": base_machine,
@@ -392,12 +424,13 @@ class TestCaveatsApplyBothWays:
         assert perf_suite.print_comparison([result], path) == 0
         capsys.readouterr()
 
-    def test_an_ordinary_row_still_gates(self, tmp_path, capsys):
+    def test_an_ordinary_row_still_gates(self, tmp_path, capsys, monkeypatch):
         """The fix must not have made everything informational."""
         import json
         from pathlib import Path
-        base_machine = dict(perf_suite.machine_info())
-        base_machine["rapidshot"] = "2.3.0"
+        monkeypatch.setattr(perf_suite, "machine_info",
+                            lambda: dict(SYNTHETIC_MACHINE))
+        base_machine = dict(SYNTHETIC_MACHINE)
         path = Path(tmp_path) / "b.json"
         path.write_text(json.dumps({
             "machine": base_machine,

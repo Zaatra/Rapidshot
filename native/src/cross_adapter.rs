@@ -694,6 +694,14 @@ pub struct CrossAdapterTransfer {
     /// Submitter's, which `end_and_wait` owns -- sharing one would let a
     /// blocking transfer and an async wait clobber each other's signal.
     shared_fence_event: HANDLE,
+    /// The consumer's fence, opened from a handle the caller supplies.
+    ///
+    /// Every transfer writes the *same* shared buffer, and the producer fence
+    /// only says the copy finished -- it says nothing about whether the
+    /// destination has finished reading. Without a signal in the other
+    /// direction the next copy can overwrite the buffer mid-read, silently
+    /// mixing two frames. This is that signal.
+    consumer_fence: std::cell::RefCell<Option<ID3D12Fence>>,
     footprint: D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
     total_bytes: u64,
     pub width: u32,
@@ -913,6 +921,7 @@ impl CrossAdapterTransfer {
             shared_fence_handle: shared_fence_handle.release(),
             shared_fence_value: Cell::new(0),
             shared_fence_event: shared_fence_event.release(),
+            consumer_fence: std::cell::RefCell::new(None),
             footprint,
             total_bytes,
             width,
@@ -1225,6 +1234,52 @@ impl CrossAdapterTransfer {
                 .SetEventOnCompletion(value, self.shared_fence_event)?;
         }
         Ok(Some(self.shared_fence_event.0 as isize))
+    }
+
+    /// Adopt the consumer's fence, from a shared NT handle it created.
+    ///
+    /// Verified 2026-08-22 that this works across vendors in the direction
+    /// that matters: CUDA on an RTX 4060 signalled a D3D12 fence created on
+    /// the Intel iGPU and the Intel device observed the new value.
+    pub fn set_consumer_fence(&self, handle: isize) -> windows::core::Result<()> {
+        let mut fence: Option<ID3D12Fence> = None;
+        unsafe {
+            self.src_device
+                .OpenSharedHandle(HANDLE(handle as *mut core::ffi::c_void), &mut fence)?;
+        }
+        *self.consumer_fence.borrow_mut() = Some(fence.expect("OpenSharedHandle reported success"));
+        Ok(())
+    }
+
+    /// Make the source queue wait until the consumer reaches `value`.
+    ///
+    /// A GPU-side wait: it returns immediately and the *queue* blocks, so the
+    /// calling thread keeps running. Queue this before the next transfer and
+    /// the copy cannot begin until the consumer has finished reading the
+    /// buffer it is about to overwrite.
+    pub fn wait_for_consumer(&self, value: u64) -> windows::core::Result<()> {
+        let borrowed = self.consumer_fence.borrow();
+        let fence = borrowed.as_ref().ok_or_else(|| {
+            windows::core::Error::new(
+                windows::Win32::Foundation::E_INVALIDARG,
+                "no consumer fence adopted; call set_consumer_fence() first",
+            )
+        })?;
+        unsafe { self.src.queue.Wait(fence, value) }
+    }
+
+    /// Value the shared fence has actually reached on the GPU.
+    ///
+    /// Diagnostic: `shared_fence_value()` is what was submitted, this is what
+    /// has completed. Also the instrument for asking whether a *consumer* can
+    /// signal this fence -- if CUDA signals it, this is where that shows up.
+    pub fn shared_fence_completed(&self) -> u64 {
+        unsafe { self.shared_fence.GetCompletedValue() }
+    }
+
+    /// Highest value submitted to the shared fence so far.
+    pub fn shared_fence_submitted(&self) -> u64 {
+        self.shared_fence_value.get()
     }
 
     /// NT handle for the cross-adapter fence. Borrowed, closed on `Drop`.

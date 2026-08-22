@@ -966,6 +966,41 @@ impl CrossAdapterTransfer {
         Ok(())
     }
 
+    /// Adopt the consumer's fence, so the producer can wait for it GPU-side.
+    ///
+    /// `handle` is a shared NT handle for a D3D12 fence the consumer signals
+    /// after it has finished reading the destination buffer. Opened once on
+    /// the source device; call again to replace it.
+    fn set_consumer_fence(&self, handle: isize) -> PyResult<()> {
+        self.lock()?
+            .set_consumer_fence(handle)
+            .map_err(|e| PyRuntimeError::new_err(format!("consumer fence setup failed: {e}")))
+    }
+
+    /// Queue a GPU-side wait for the consumer to reach `value`.
+    ///
+    /// Enqueued on the source queue, so it orders ahead of the next copy
+    /// without blocking the calling thread. This is what stops the producer
+    /// overwriting the shared buffer while the consumer is still reading it.
+    fn wait_for_consumer(&self, value: u64) -> PyResult<()> {
+        self.lock()?
+            .wait_for_consumer(value)
+            .map_err(|e| PyRuntimeError::new_err(format!("consumer wait failed: {e}")))
+    }
+
+    /// Value the shared fence has reached on the GPU, versus what was
+    /// submitted. Diagnostic, and the instrument for checking whether an
+    /// external consumer can signal this fence at all.
+    #[getter]
+    fn shared_fence_completed(&self) -> PyResult<u64> {
+        Ok(self.lock()?.shared_fence_completed())
+    }
+
+    #[getter]
+    fn shared_fence_submitted(&self) -> PyResult<u64> {
+        Ok(self.lock()?.shared_fence_submitted())
+    }
+
     /// NT handle for the cross-adapter fence, for a GPU-side wait on the
     /// destination adapter. Borrowed: closed when this transfer is dropped.
     #[getter]

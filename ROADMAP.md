@@ -863,6 +863,23 @@ Realistic cost is roughly six months with a native-graphics-fluent co-maintainer
 
   **And it mutates process-global state from a constructor.** Building an `Output` changes DPI behaviour for the entire host application, including its own windows. That it happens per-`Output` rather than once at import makes it repeated rather than worse, but a library reshaping its host's window layout as a side effect of enumeration is a decision that should be explicit and documented, and currently is neither.
 
+- **One destination buffer, and nothing tells the producer the consumer is done. Mechanism shipped, race never reproduced.** Every `transfer()` writes the same `src_buffer`/`dst_buffer` pair on the shared heap, and `shared_fence` only reports that the *copy* finished. A consumer that waits on it GPU-side and keeps reading asynchronously can therefore still be reading frame N when the copy for N+1 overwrites the allocation underneath it — two frames blended, nothing raised.
+
+  **The fix is a reverse handshake, and its feasibility was the open question.** It needs the consumer to signal something the producer can wait on across vendors. Measured 2026-08-22: CUDA on the RTX 4060 signalled a D3D12 fence created by the **Intel** iGPU's device and the producer observed it — completed value 0 → 5000. Without that the design was not buildable at all.
+
+  Shipped as `set_consumer_fence(handle)` + `wait_for_consumer(value)`. The wait is queued on the source queue, so it orders ahead of the next copy without blocking the caller:
+
+  ```
+  transfer.set_consumer_fence(consumer_handle)   # once
+  v = transfer.transfer_async(frame)             # frame N
+  # consumer waits for v GPU-side, reads, signals its fence = N
+  transfer.wait_for_consumer(N)                  # before frame N+1
+  ```
+
+  **The race itself was never reproduced, and that is worth stating plainly.** Four probe designs failed to trigger it: synchronising each iteration hides it by construction, and without synchronising, CuPy's allocator synchronises the calling thread with the consumer anyway — so the producer never ran ahead, even against a 527 ms consumer. The mechanism is therefore justified *by construction*, not by an observed failure, which § 5's rule makes weaker evidence than a reproduced bug. Someone with a consumer that does not synchronise through its allocator should try again.
+
+  **The alternative was multiple destination buffers, and it was rejected on correctness rather than cost.** A ring of N buffers does not close the race, it widens it: the producer wraps after N frames, so a consumer lagging more than N corrupts again. It also costs N × 16.4 MB and forces a per-frame offset into the consumer's contract. The handshake closes the race outright for one queued wait, measured at +0.27 ms against a light consumer and +2.4% against a heavy one.
+
 - **No AMD hardware has ever run this project**, and nothing branches on vendor, so AMD is supported by design and unverified in fact. The coverage matrix is in § 2; the one genuinely NVIDIA-bound feature is CuPy, and AMD consumers reach the same GPU tensor through DirectML.
 - **Headless is classified but never observed; hybrid is now both observed and working.** The `hybrid` branch ran for real on 2026-08-22 — Intel iGPU owning the display, RTX 4060 render-only, `topology_info()` classifying it correctly, capture running on the iGPU and a frame crossing to the dGPU byte-exact (§ 6.1). Getting there also produced the lesson worth keeping: **classifying a topology correctly is not the same as being able to capture in it.** For most of a day the same machine classified as `hybrid` while every adapter refused `DuplicateOutput`, which is what § 10's adapter-selection entry came out of. The *single* branch has been observed on an Intel iGPU and on an NVIDIA dGPU. **`headless` remains tested by describing that topology rather than by having one.**
 - ~~**Cross-adapter sharing verified against WARP only.**~~ **Closed 2026-08-21.** Switching Machine B to Optimus put a second *hardware* adapter in the machine, and `probe_cross_adapter()` reports `destination_is_software: false` and **`representative: true`** for the first time in the project's history — an RTX 4060 source and an Intel UHD destination, both real drivers.

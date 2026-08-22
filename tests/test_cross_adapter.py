@@ -622,3 +622,78 @@ def test_a_failing_drain_still_releases_the_surface():
     frame.release()
     assert released == [True]
     assert frame.released
+
+
+# --------------------------------------------------------------------------
+# the reverse handshake: telling the producer the consumer is done
+# --------------------------------------------------------------------------
+#
+# Every transfer reuses one destination buffer, and the producer fence only
+# says the copy finished -- nothing says whether the consumer is still reading.
+# An asynchronous consumer can therefore be reading frame N when the copy for
+# N+1 overwrites the allocation under it.
+#
+# NOTE: this race has NOT been reproduced. Attempts to force it on the
+# development machine failed -- CuPy's allocator synchronises the calling
+# thread with the consumer, so the producer never ran far enough ahead, even
+# with a 527 ms consumer. The mechanism below is correct by construction
+# rather than validated against an observed failure, and ROADMAP section 5's
+# rule applies: that is weaker evidence than a reproduced bug.
+#
+# What *is* measured: CUDA on an NVIDIA dGPU can signal a D3D12 fence created
+# by an Intel iGPU's device, and the producer observes it (completed value
+# 0 -> 5000). Without that the handshake would not be buildable at all.
+
+
+def test_wait_for_consumer_refuses_before_a_fence_is_adopted(live_capture):
+    """Failing loudly beats queueing a wait on nothing."""
+    frame = _grab(live_capture)
+    if frame is None:
+        pytest.skip("no frame captured -- the screen must be changing")
+    try:
+        transfer = native.cross_adapter_transfer(frame)
+        with pytest.raises(RuntimeError, match="consumer fence"):
+            transfer.wait_for_consumer(1)
+    finally:
+        frame.release()
+
+
+def test_a_consumer_fence_can_be_adopted_and_waited_on(live_capture):
+    """Adopting a fence and queueing a wait must not disturb the transfer.
+
+    The wait is queued on the source queue, so it orders ahead of the next copy
+    without blocking the caller. Waiting for a value already reached must
+    return rather than hang, which is what makes the first iteration of a
+    capture loop safe before the consumer has signalled anything.
+    """
+    frame = _grab(live_capture)
+    if frame is None:
+        pytest.skip("no frame captured -- the screen must be changing")
+    try:
+        transfer = native.cross_adapter_transfer(frame)
+        donor = native.cross_adapter_transfer(frame)
+        transfer.set_consumer_fence(donor.shared_fence_handle)
+        transfer.wait_for_consumer(0)          # already reached; must not hang
+        value = transfer.transfer_async(frame)
+        assert value > 0
+        transfer.wait_shared_fence(value)
+        arrived = np.frombuffer(transfer.read_back_destination(), dtype=np.uint8)
+        assert arrived.any(), "the copy did not run after a queued consumer wait"
+    finally:
+        frame.release()
+
+
+def test_fence_progress_is_observable(live_capture):
+    """submitted vs completed -- the instrument the handshake was built with."""
+    frame = _grab(live_capture)
+    if frame is None:
+        pytest.skip("no frame captured -- the screen must be changing")
+    try:
+        transfer = native.cross_adapter_transfer(frame)
+        assert transfer.shared_fence_submitted == 0
+        value = transfer.transfer_async(frame)
+        assert transfer.shared_fence_submitted == value
+        transfer.wait_shared_fence(value)
+        assert transfer.shared_fence_completed >= value
+    finally:
+        frame.release()

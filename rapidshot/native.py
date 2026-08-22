@@ -600,6 +600,59 @@ class CrossAdapterTransfer:
         """Block until the shared fence reaches ``value``. 0 returns at once."""
         self._inner.wait_shared_fence(int(value))
 
+    def set_consumer_fence(self, handle: int) -> None:
+        """Adopt the consumer's fence so the producer can wait on it.
+
+        `handle` is a shared NT handle for a D3D12 fence that the consumer
+        signals once it has finished reading the destination buffer. A CUDA
+        consumer produces one by importing this transfer's own fence style --
+        ``cuImportExternalSemaphore`` then ``cuSignalExternalSemaphoresAsync``
+        -- which is verified to work across vendors here: CUDA on an NVIDIA
+        dGPU signalled a fence created by an Intel iGPU's D3D12 device and the
+        producer observed it.
+
+        Opened once on the source device; calling again replaces it.
+        """
+        self._inner.set_consumer_fence(int(handle))
+
+    def wait_for_consumer(self, value: int) -> None:
+        """Make the next copy wait until the consumer has reached `value`.
+
+        **Every transfer reuses one destination buffer.** The producer fence
+        only says "the copy finished"; it says nothing about whether the
+        consumer is still reading. Without this, an asynchronous consumer that
+        waits GPU-side on :attr:`shared_fence_handle` can still be reading
+        frame N when the copy for frame N+1 overwrites the allocation under it
+        -- the two frames blend, and nothing raises.
+
+        The wait is queued on the source queue, so it orders ahead of the next
+        copy without blocking the calling thread. The loop is::
+
+            transfer.set_consumer_fence(consumer_handle)   # once
+            v = transfer.transfer_async(frame)             # frame N
+            # consumer waits for v GPU-side, reads, signals consumer fence = N
+            transfer.wait_for_consumer(N)                  # before frame N+1
+            v = transfer.transfer_async(next_frame)
+
+        A consumer that synchronises on the CPU between frames does not need
+        this; one that stays asynchronous does.
+        """
+        self._inner.wait_for_consumer(int(value))
+
+    @property
+    def shared_fence_completed(self) -> int:
+        """Value the shared fence has actually reached on the GPU.
+
+        Diagnostic. :attr:`shared_fence_submitted` is what was handed to the
+        queue; this is what has completed.
+        """
+        return int(self._inner.shared_fence_completed)
+
+    @property
+    def shared_fence_submitted(self) -> int:
+        """Highest value submitted to the shared fence so far."""
+        return int(self._inner.shared_fence_submitted)
+
     @property
     def shared_fence_handle(self) -> int:
         """NT handle for the cross-adapter fence, for a GPU-side wait.

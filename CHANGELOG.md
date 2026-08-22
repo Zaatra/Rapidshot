@@ -12,6 +12,30 @@ each release can be traced back to the plan it implements.
 
 Nothing yet.
 
+## [Unreleased]
+
+### Added
+
+- **`set_consumer_fence()` / `wait_for_consumer()`** let the producer wait for
+  an asynchronous consumer before reusing the shared destination buffer. Every
+  transfer writes the same buffer and `shared_fence` only reports that the copy
+  finished, so a consumer still reading frame N could be overwritten by the
+  copy for N+1. The wait is queued on the source queue, so it orders ahead of
+  the next copy without blocking the caller.
+
+  Feasibility was the open question and is now measured: CUDA on an NVIDIA
+  dGPU can signal a D3D12 fence created by an Intel iGPU's device, and the
+  producer observes it.
+
+  **The race was never reproduced** -- four probe designs failed to trigger it,
+  because CuPy's allocator synchronises the calling thread with the consumer.
+  The mechanism is correct by construction rather than validated against an
+  observed failure. A buffer ring was rejected as the alternative: it widens
+  the window rather than closing it, since the producer wraps after N frames.
+- `shared_fence_submitted` / `shared_fence_completed` expose what was queued
+  versus what the GPU has reached. Diagnostic, and the instrument the
+  handshake was built with.
+
 ## [2.4.0] - 2026-08-22
 
 **The hybrid path works end to end.** Capture runs on the integrated GPU, the
