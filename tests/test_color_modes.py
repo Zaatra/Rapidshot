@@ -130,8 +130,8 @@ def test_gray_convert_into_handles_varying_shapes():
         assert np.array_equal(dst, bgra_to_gray(sub)), (top, left, bottom, right)
 
 
-def test_gray_numpy_path_allocates_nothing_in_steady_state(monkeypatch):
-    """Reusing intermediates is the whole point -- 1.83x came from the allocations.
+def test_gray_numpy_path_reuses_full_frame_scratch(monkeypatch):
+    """Reusing intermediates is the whole point -- 1.83x came from allocations.
 
     The previous formulation materialised a full-frame uint16 temporary per
     channel; on a 1080p frame those page faults cost more than the arithmetic.
@@ -148,19 +148,35 @@ def test_gray_numpy_path_allocates_nothing_in_steady_state(monkeypatch):
     proc = NumpyProcessor("GRAY")
     bgra = make_bgra(height=128, width=128)
     dst = np.empty((128, 128, 1), np.uint8)
-    proc.convert_into(bgra, dst)  # first call sizes the scratch
-
     import tracemalloc
 
     tracemalloc.start()
     try:
+        # Warm while tracing is active. CPython and NumPy may retain tiny
+        # bookkeeping allocations on their first traced calls; those are not
+        # image scratch and vary between interpreter patch releases.
+        for _ in range(10):
+            proc.convert_into(bgra, dst)
+        scratch_a = proc._luma_a
+        scratch_b = proc._luma_b
+        capacity = proc._luma_capacity
+
+        # Net memory at the end misses temporary arrays that were freed during
+        # the call. Peak memory is the invariant that catches the old full-frame
+        # uint16 materialisation, so reset it after warm-up and measure that.
+        tracemalloc.reset_peak()
         before = tracemalloc.get_traced_memory()[0]
         for _ in range(10):
             proc.convert_into(bgra, dst)
-        after = tracemalloc.get_traced_memory()[0]
+        _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
-    assert after - before == 0
+
+    assert proc._luma_a is scratch_a
+    assert proc._luma_b is scratch_b
+    assert proc._luma_capacity == capacity
+    one_uint16_plane = bgra.shape[0] * bgra.shape[1] * np.dtype(np.uint16).itemsize
+    assert peak - before < one_uint16_plane
 
 
 def test_gray_native_kernel_matches_numpy_exactly():

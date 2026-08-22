@@ -65,7 +65,7 @@ enum SubmittedCopyOutcome<E> {
 }
 
 fn settle_submitted_copy<E, Signal, Drain, Removed>(
-    value: u64,
+    last_signaled: &Cell<u64>,
     signal: Signal,
     drain: Drain,
     device_removed: Removed,
@@ -75,8 +75,15 @@ where
     Drain: FnOnce() -> Result<(), E>,
     Removed: FnOnce() -> bool,
 {
+    let value = last_signaled.get() + 1;
     match signal(value) {
-        Ok(()) => SubmittedCopyOutcome::Signaled,
+        Ok(()) => {
+            // A timeline value is a fact about work the queue accepted, not an
+            // attempted submission. Recording it before Signal succeeds makes
+            // later waits target a value that may never complete.
+            last_signaled.set(value);
+            SubmittedCopyOutcome::Signaled
+        }
         Err(signal) => match drain() {
             Ok(()) => SubmittedCopyOutcome::DrainedAfterSignalFailure(signal),
             Err(drain) if device_removed() => {
@@ -1577,23 +1584,30 @@ impl CrossAdapterTransfer {
                 .queue
                 .ExecuteCommandLists(&[Some(list.cast::<ID3D12CommandList>()?)]);
         }
+        self.settle_shared_submission_after_execute()
+    }
+
+    /// Attach the public completion marker after a command list was executed.
+    ///
+    /// `ExecuteCommandLists` has no result, so from its return until a fence is
+    /// successfully attached the submitted resources have an unknown lifetime.
+    /// Every path that submits without `Submitter::end_and_wait` comes through
+    /// this policy: try the public fence, drain with the private fence if that
+    /// fails, and quarantine a still-live submission if neither signal works.
+    fn settle_shared_submission_after_execute(&self) -> windows::core::Result<u64> {
         // From this instruction until one of the two fences completes, the
         // command list is real GPU work with no proven lifetime boundary.
         // Mark that explicitly before the fallible shared Signal.
         self.submission_health.set(SubmissionHealth::Quarantined);
-        let value = self.shared_fence_value.get() + 1;
         match settle_submitted_copy(
-            value,
+            &self.shared_fence_value,
             |value| unsafe { self.src.queue.Signal(&self.shared_fence, value) },
             || self.src.signal_and_wait_after_execute(),
             || unsafe { self.src_device.GetDeviceRemovedReason().is_err() },
         ) {
             SubmittedCopyOutcome::Signaled => {
-                // Signal first, record second. The public counter names only
-                // values the queue actually accepted.
-                self.shared_fence_value.set(value);
                 self.submission_health.set(SubmissionHealth::Usable);
-                Ok(value)
+                Ok(self.shared_fence_value.get())
             }
             SubmittedCopyOutcome::DrainedAfterSignalFailure(signal) => {
                 // The private fence proves the copy finished, so Python may
@@ -1818,17 +1832,14 @@ impl CrossAdapterTransfer {
             }
             let t3 = std::time::Instant::now();
 
-            let value = self.src.value.get() + 1;
-            self.src.value.set(value);
-            unsafe { self.src.queue.Signal(&self.src.fence, value)? };
+            // Use the same post-Execute policy as transfer_async(). A failed
+            // probe Signal is no less real than a failed production Signal:
+            // the command list is already queued and its resources cannot be
+            // reset or freed until a fallback drain proves completion.
+            let value = self.settle_shared_submission_after_execute()?;
             let t4 = std::time::Instant::now();
 
-            unsafe {
-                if self.src.fence.GetCompletedValue() < value {
-                    self.src.fence.SetEventOnCompletion(value, self.src.event)?;
-                    WaitForSingleObject(self.src.event, INFINITE);
-                }
-            }
+            self.wait_shared_fence(value)?;
             let t5 = std::time::Instant::now();
 
             unsafe {
@@ -2485,10 +2496,11 @@ mod submission_failure_tests {
 
     #[test]
     fn successful_shared_signal_skips_every_recovery_path() {
+        let last_signaled = Cell::new(6);
         let drain_calls = Cell::new(0);
         let removal_checks = Cell::new(0);
         let outcome = settle_submitted_copy(
-            7,
+            &last_signaled,
             |value| {
                 assert_eq!(value, 7);
                 Ok::<(), &'static str>(())
@@ -2503,16 +2515,21 @@ mod submission_failure_tests {
             },
         );
         assert_eq!(outcome, SubmittedCopyOutcome::Signaled);
+        assert_eq!(last_signaled.get(), 7);
         assert_eq!(drain_calls.get(), 0);
         assert_eq!(removal_checks.get(), 0);
     }
 
     #[test]
     fn failed_shared_signal_uses_the_private_fence_drain() {
+        let last_signaled = Cell::new(7);
         let removal_checks = Cell::new(0);
         let outcome = settle_submitted_copy(
-            8,
-            |_value| Err("shared Signal failed"),
+            &last_signaled,
+            |value| {
+                assert_eq!(value, 8);
+                Err("shared Signal failed")
+            },
             || Ok(()),
             || {
                 removal_checks.set(removal_checks.get() + 1);
@@ -2523,13 +2540,15 @@ mod submission_failure_tests {
             outcome,
             SubmittedCopyOutcome::DrainedAfterSignalFailure("shared Signal failed")
         );
+        assert_eq!(last_signaled.get(), 7);
         assert_eq!(removal_checks.get(), 0);
     }
 
     #[test]
     fn two_failed_signals_are_safe_when_device_removal_is_confirmed() {
+        let last_signaled = Cell::new(8);
         let outcome = settle_submitted_copy(
-            9,
+            &last_signaled,
             |_value| Err("shared Signal failed"),
             || Err("private Signal failed"),
             || true,
@@ -2541,12 +2560,14 @@ mod submission_failure_tests {
                 drain: "private Signal failed",
             }
         );
+        assert_eq!(last_signaled.get(), 8);
     }
 
     #[test]
     fn two_failed_signals_on_a_live_device_quarantine_the_submission() {
+        let last_signaled = Cell::new(9);
         let outcome = settle_submitted_copy(
-            10,
+            &last_signaled,
             |_value| Err("shared Signal failed"),
             || Err("private Signal failed"),
             || false,
@@ -2558,5 +2579,6 @@ mod submission_failure_tests {
                 drain: "private Signal failed",
             }
         );
+        assert_eq!(last_signaled.get(), 9);
     }
 }
