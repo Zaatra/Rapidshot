@@ -317,7 +317,13 @@ class RapidshotFactory(metaclass=Singleton):
             raise ConfigurationError(error_msg)
         
         # Check if instance already exists
-        instance_key = (device_idx, output_idx)
+        # The duplication preference is part of the capture configuration, not
+        # merely a hint used during construction. On an Optimus system whose
+        # iGPU owns no output, both calls below have the same public device and
+        # output indices but deliberately reverse the adapter candidate order.
+        # Reusing the first instance would silently make the second call's
+        # preference inert.
+        instance_key = (device_idx, output_idx, bool(prefer_integrated))
         if instance_key in self._screencapture_instances:
             logger.info(f"Found existing ScreenCapture instance for Device {device_idx}--Output {output_idx}")
             return self._screencapture_instances[instance_key]

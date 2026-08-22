@@ -560,6 +560,51 @@ def test_prefer_integrated_reaches_an_output_less_igpu(monkeypatch):
     assert cam._device is igpu
 
 
+def test_capture_cache_separates_adapter_preferences(monkeypatch):
+    """Opposite duplication orders must not share a cached capture.
+
+    On the Optimus topology this option exists for, the iGPU owns no output.
+    Both calls therefore retain the same public device/output indices; only the
+    candidate order differs. A two-component cache key returned the first
+    capture and never tried the requested order on the second call.
+    """
+    import weakref
+    import rapidshot
+
+    class Device:
+        def __init__(self, description):
+            self.desc = type("Desc", (), {"Description": description})()
+
+    class Output:
+        devicename = "DISPLAY1"
+
+        def update_desc(self):
+            pass
+
+    class Capture:
+        def __init__(self, **kwargs):
+            self.candidates = tuple(kwargs["candidate_devices"])
+
+    dgpu, igpu = Device("NVIDIA GeForce"), Device("Intel Graphics")
+    factory = object.__new__(rapidshot.RapidshotFactory)
+    factory.devices = [dgpu]
+    factory.outputs = [[Output()]]
+    factory.all_devices = [dgpu, igpu]
+    factory.output_metadata = {"DISPLAY1": (None, True)}
+    factory._screencapture_instances = weakref.WeakValueDictionary()
+
+    monkeypatch.setattr(rapidshot, "ScreenCapture", Capture)
+    monkeypatch.setattr(rapidshot.time, "sleep", lambda _seconds: None)
+
+    display_first = factory.create(output_idx=0, prefer_integrated=False)
+    integrated_first = factory.create(output_idx=0, prefer_integrated=True)
+
+    assert display_first is not integrated_first
+    assert display_first.candidates == (dgpu, igpu)
+    assert integrated_first.candidates == (igpu, dgpu)
+    assert factory.create(output_idx=0, prefer_integrated=True) is integrated_first
+
+
 def test_a_successful_adapter_moves_to_the_front(monkeypatch):
     """Winner first on the next rebuild -- reordering only, never removing."""
     import rapidshot.capture as capture_module

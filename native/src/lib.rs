@@ -1001,6 +1001,14 @@ impl CrossAdapterTransfer {
         Ok(self.lock()?.shared_fence_submitted())
     }
 
+    /// True only for the catastrophic post-submit case where neither fence
+    /// could prove completion while the D3D12 device still reported itself
+    /// alive. Python uses this to keep the acquired DXGI frame unreleased.
+    #[getter]
+    fn submission_quarantined(&self) -> PyResult<bool> {
+        Ok(self.lock()?.submission_quarantined())
+    }
+
     /// NT handle for the cross-adapter fence, for a GPU-side wait on the
     /// destination adapter. Borrowed: closed when this transfer is dropped.
     #[getter]

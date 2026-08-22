@@ -594,8 +594,24 @@ class CrossAdapterTransfer:
             and :meth:`wait_for_consumer`. If it synchronises on the CPU
             between frames, you do not need them.
         """
-        value = int(self._inner.transfer_async(
-            _texture_address(frame), _source_id(frame)))
+        try:
+            value = int(self._inner.transfer_async(
+                _texture_address(frame), _source_id(frame)))
+        except Exception as exc:
+            # ExecuteCommandLists has no return value, so a later Signal failure
+            # can leave real GPU work with no completion marker. The native
+            # layer first tries a private fallback fence and checks for device
+            # removal. Only the remaining, genuinely untrackable case reports
+            # `submission_quarantined`.
+            try:
+                quarantined = bool(self._inner.submission_quarantined)
+            except Exception:
+                quarantined = False
+            if quarantined:
+                quarantine = getattr(frame, "_quarantine_release", None)
+                if quarantine is not None:
+                    quarantine(str(exc))
+            raise
         # Keep the captured surface acquired until this copy finishes.
         #
         # The duplicated surface is only valid between AcquireNextFrame and

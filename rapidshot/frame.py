@@ -63,6 +63,10 @@ class FrameReleasedError(RapidShotError):
     """
 
 
+class FrameQuarantinedError(RapidShotError):
+    """Raised when releasing a frame could invalidate untracked GPU work."""
+
+
 class Frame:
     """
     A captured frame whose GPU texture is valid for a bounded window.
@@ -79,6 +83,7 @@ class Frame:
         "_present_time_qpc", "_accumulated_frames", "_protected_content",
         "_cursor_visible", "_width", "_height", "_dirty_rects",
         "_rects_coalesced", "_source_id", "_release_drains",
+        "_release_quarantine",
     )
 
     def __init__(
@@ -101,6 +106,7 @@ class Frame:
         # Work that must finish before the surface goes back to DXGI.
         # See defer_release_until().
         self._release_drains = []
+        self._release_quarantine = None
         self._region = region
         self._rotation_angle = rotation_angle
         self._present_time_qpc = present_time_qpc
@@ -279,6 +285,20 @@ class Frame:
         """
         self._release_drains.append(drain)
 
+    def _quarantine_release(self, reason: str) -> None:
+        """Keep this DXGI surface acquired because submitted work is untracked.
+
+        This is narrower than an ordinary failing drain. A drain failure still
+        releases so capture does not stall; here D3D12 accepted a command list
+        and both completion signals failed while the device remained live.
+        DXGI says the surface becomes invalid after ReleaseFrame, so releasing
+        would trade a visible capture stall for silent corruption or device
+        removal. The native transfer intentionally preserves its resources for
+        the same reason.
+        """
+        if not self._released:
+            self._release_quarantine = str(reason)
+
     def release(self) -> None:
         """
         Hand the texture back to DXGI. Idempotent.
@@ -289,6 +309,13 @@ class Frame:
         """
         if self._released:
             return
+        if self._release_quarantine is not None:
+            raise FrameQuarantinedError(
+                "Frame cannot be released because a GPU submission could not "
+                "be tracked to completion. Capture is intentionally stopped "
+                "to preserve the DXGI surface; restart the process. "
+                f"Native failure: {self._release_quarantine}"
+            )
         # Before the flag flips: a drain that raises must not leave the frame
         # marked released while the surface is still held.
         drains, self._release_drains = self._release_drains, []

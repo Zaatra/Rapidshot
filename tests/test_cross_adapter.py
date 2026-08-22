@@ -387,6 +387,22 @@ def test_the_fence_value_advances_per_transfer(live_capture):
     assert values == sorted(values) and len(set(values)) == len(values), values
 
 
+def test_phase_probe_drains_an_unwaited_async_submit(live_capture):
+    """The diagnostic must not reset an allocator the GPU is still reading."""
+    frame = _grab(live_capture)
+    if frame is None:
+        pytest.skip("no frame captured -- the screen must be changing")
+    try:
+        transfer = native.cross_adapter_transfer(frame)
+        value = transfer.transfer_async(frame)  # deliberately no explicit wait
+        phases = transfer._inner.probe_transfer_phases(
+            native._texture_address(frame), 2, True, native._source_id(frame))
+        assert set(phases) == {"open", "record", "submit", "signal", "wait", "close"}
+        assert transfer.shared_fence_completed >= value
+    finally:
+        frame.release()
+
+
 def test_waiting_on_zero_returns_immediately(live_capture):
     """Nothing submitted yet is not an error, and must not hang."""
     frame = _grab(live_capture)
