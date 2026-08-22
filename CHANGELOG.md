@@ -12,47 +12,6 @@ each release can be traced back to the plan it implements.
 
 Nothing yet.
 
-## [Unreleased]
-
-### Added
-
-- **`set_consumer_fence()` / `wait_for_consumer()`** let the producer wait for
-  an asynchronous consumer before reusing the shared destination buffer. Every
-  transfer writes the same buffer and `shared_fence` only reports that the copy
-  finished, so a consumer still reading frame N could be overwritten by the
-  copy for N+1. The wait is queued on the source queue, so it orders ahead of
-  the next copy without blocking the caller.
-
-  Feasibility was the open question and is now measured: CUDA on an NVIDIA
-  dGPU can signal a D3D12 fence created by an Intel iGPU's device, and the
-  producer observes it.
-
-  Measured at scale over a 60-frame loop whose consumer was slower than the
-  producer: **28 of 60 frames wrong without the handshake, 0 with it.** With a
-  consumer that keeps up the same loop is clean either way over 100 frames,
-  which is why the hazard stays invisible until a real workload arrives.
-
-  `transfer_async()` and `shared_fence_handle` now carry that warning and name
-  the remedy -- the mechanism existed but said nothing at the API a caller
-  actually reads.
-
-  **Reproduced deterministically**, after four failed attempts: gate the
-  consumer's read behind a semaphore, let frame B's copy complete while the
-  read is provably still pending, then open the gate. Unguarded, the consumer
-  read frame B after waiting for frame A -- 3/3 runs. With the handshake it
-  reads A. Covered by a test.
-
-  The earlier attempts all failed for one reason worth recording: CuPy's
-  allocator synchronises the calling thread, so anything allocating inside the
-  gated region either hides the race or self-deadlocks. Making the consumer
-  slower was the wrong axis -- a 527 ms consumer showed nothing.
-
-  A buffer ring was rejected as the alternative: it widens the window rather
-  than closing it, since the producer wraps after N frames.
-- `shared_fence_submitted` / `shared_fence_completed` expose what was queued
-  versus what the GPU has reached. Diagnostic, and the instrument the
-  handshake was built with.
-
 ## [2.4.0] - 2026-08-22
 
 **The hybrid path works end to end.** Capture runs on the integrated GPU, the
@@ -108,6 +67,42 @@ improvements as well as regressions, because nobody investigates good news.
   `transfer()` still blocks and remains the default. The async path pipelines
   to depth one: the command allocator cannot be reset while the GPU reads it,
   so it waits for the previous submission before recording.
+- **`set_consumer_fence()` / `wait_for_consumer()`** let the producer wait for
+  an asynchronous consumer before reusing the shared destination buffer. Every
+  transfer writes the same buffer and `shared_fence` only reports that the copy
+  finished, so a consumer still reading frame N could be overwritten by the
+  copy for N+1. The wait is queued on the source queue, so it orders ahead of
+  the next copy without blocking the caller.
+
+  Feasibility was the open question and is now measured: CUDA on an NVIDIA
+  dGPU can signal a D3D12 fence created by an Intel iGPU's device, and the
+  producer observes it.
+
+  Measured at scale over a 60-frame loop whose consumer was slower than the
+  producer: **28 of 60 frames wrong without the handshake, 0 with it.** With a
+  consumer that keeps up the same loop is clean either way over 100 frames,
+  which is why the hazard stays invisible until a real workload arrives.
+
+  `transfer_async()` and `shared_fence_handle` now carry that warning and name
+  the remedy -- the mechanism existed but said nothing at the API a caller
+  actually reads.
+
+  **Reproduced deterministically**, after four failed attempts: gate the
+  consumer's read behind a semaphore, let frame B's copy complete while the
+  read is provably still pending, then open the gate. Unguarded, the consumer
+  read frame B after waiting for frame A -- 3/3 runs. With the handshake it
+  reads A. Covered by a test.
+
+  The earlier attempts all failed for one reason worth recording: CuPy's
+  allocator synchronises the calling thread, so anything allocating inside the
+  gated region either hides the race or self-deadlocks. Making the consumer
+  slower was the wrong axis -- a 527 ms consumer showed nothing.
+
+  A buffer ring was rejected as the alternative: it widens the window rather
+  than closing it, since the producer wraps after N frames.
+- `shared_fence_submitted` / `shared_fence_completed` expose what was queued
+  versus what the GPU has reached. Diagnostic, and the instrument the
+  handshake was built with.
 - **`wait_shared_fence()` releases the GIL.** It previously held the
   interpreter for the entire wait, so the calling thread it handed back could
   not run Python -- a second thread made zero progress across a 7 ms wait.
