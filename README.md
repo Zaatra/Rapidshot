@@ -10,434 +10,223 @@
 [![shot to buffer](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Zaatra/Rapidshot/main/.github/badges/shot.json)](ROADMAP.md#3-measured-baseline)
 [![measured on](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Zaatra/Rapidshot/main/.github/badges/measured-on.json)](benchmarks/baseline.json)
 
-<sub>Generated from [`benchmarks/baseline.json`](benchmarks/baseline.json), recorded
-**with the optional native extension built**. A plain `pip install rapidshot`
-needs no toolchain and uses pure-NumPy conversion, which is slower — those
-numbers are in
-[`benchmarks/baseline-nonative.json`](benchmarks/baseline-nonative.json)
-(BGRA→RGB 1.9 ms rather than 0.32 ms). These are all deterministic synthetic
-benchmarks. The end-to-end `grab()` and `grab_frame()` figures are measured too
-but deliberately not badged: they depend on what is on screen, and
-`grab_frame()` alone spanned 0.17–0.77 ms across six recordings of unchanged
-code. See [ROADMAP.md § 3](ROADMAP.md#3-measured-baseline).</sub>
+<sub>Badge figures are generated from [`benchmarks/baseline.json`](benchmarks/baseline.json)
+and checked in CI, so they cannot drift from the recording. They are **synthetic
+conversion benchmarks with the optional native extension built** — not
+end-to-end capture rates, and not what a plain `pip install` produces. Read
+[Measurements](#measurements) before quoting any of them.</sub>
 
-Windows screen capture built for feeding models, not for saving screenshots.
+Windows screen capture through DXGI Desktop Duplication, with a route from a
+captured frame to GPU memory that does not pass through the CPU.
 
-RapidShot captures the desktop through DXGI Desktop Duplication and can hand a
-frame straight to a GPU consumer as a model-ready NCHW float32 tensor that never
-touches the CPU. Colour conversion runs in byte-exact SIMD kernels, frames carry
-the compositor's dirty-rect metadata so only what changed is converted, and a
-captured frame can be moved to the discrete GPU on hybrid laptops that Desktop
-Duplication refuses to capture from.
+Concretely, it can hand you a frame as a NumPy array, as a `cupy.ndarray`, as a
+Direct3D texture that never leaves the GPU, as an NCHW float32 tensor produced
+by one compute dispatch, or as a copy that has been moved to a second adapter on
+a hybrid laptop. Frames carry the compositor's dirty-rect metadata. Colour
+conversion has byte-exact AVX2 kernels behind an optional extension.
 
-**RapidShot is not the fastest library by raw frame count, and says so.** Measured
-against DXcam, BetterCam and mss on one 1080p 100 Hz display with a motion source
-fast enough to saturate it (`benchmarks/compare_libraries.py`, full numbers in
-`benchmarks/library-comparison.json`):
+It began as a merge of several DXcam forks and keeps a broadly familiar API. The
+capture path, the colour pipeline and the GPU interop have since been rewritten.
 
-Median of three independent runs per cell, 1080p BGRA on a 100 Hz display, with
-the spread across those runs:
+**What this library is not.** It is not the fastest by frame rate — see
+[Against other libraries](#against-other-libraries), where it loses that column
+in most cells. It uses noticeably more memory than DXcam, BetterCam or mss. If
+capture is the only thing your machine is doing and you want the lowest
+per-call latency, DXcam and BetterCam are good and you should use them.
 
-| | frames/s | CPU | per-call p50 | memory |
-| --- | --- | --- | --- | --- |
-| RapidShot | 99.9 ±0.5% | **13.6% ±15%** | 9.97 ms | 124.4 MB |
-| RapidShot (`timeout_ms=0`) | 100.1 ±0.1% | 95.9% ±17% | 2.73 ms | 125.2 MB |
-| DXcam | 100.5 ±1.1% | 79.7% ±2% | 5.43 ms | **87.1 MB** |
-| BetterCam | 100.5 ±17% | 74.4% ±12% | 2.31 ms | **80.0 MB** |
-| mss | 48.1 ±5.8% | 35.0% ±2.6% | 20.12 ms | **60.4 MB** |
+---
 
-**Nobody beats the compositor.** Every DXGI-based library lands at ~100 fps
-because that is where the ceiling is, RapidShot included — so a frame-rate win in
-this space is almost always measuring something else, most often a still desktop
-where capture returns stale buffers instantly. The interesting question is not
-who captures fastest. It is what those frames cost you.
+## Contents
 
-**RapidShot's answer is 13.6% of a core where DXcam spends 79.7%** — the same
-frames, several times cheaper. Part of that is a default you could set elsewhere:
-DXcam and BetterCam poll, racking up 100,000 empty returns in six seconds at a
-0.3% hit rate, while RapidShot waits. Row two of the table is there so you can
-see exactly that — `timeout_ms=0` buys DXcam's latency at DXcam's price, whenever
-you want it.
-
-**Memory is where RapidShot is behind**: 124 MB against BetterCam's 80 MB. It was
-174 MB until the pool default dropped from 10 frames to 4, and `pool_size_frames`
-takes it lower still if that matters more to you than reusing buffers.
-
-**The part that is genuinely engineering** shows up when you isolate the colour
-conversion, by subtracting each library's BGRA cost (no conversion) from its RGB
-cost:
-
-| | CPU cost of BGRA→RGB conversion |
-| --- | --- |
-| **RapidShot** | **+28.2 points** |
-| BetterCam | +78.1 points |
-| DXcam | +89.0 points |
-
-**RapidShot converts colour for about a third of the CPU**, which is the AVX2
-kernels rather than a scheduling choice.
-
-### What this table cannot show
-
-It measures `grab()` — the CPU round trip. The capabilities RapidShot is actually
-built around have no column here because the other libraries have no equivalent:
-
-- **`grab_frame()`** hands back a GPU-resident frame in 0.17–0.21 ms that never
-  crosses to system memory.
-- **The GPU tensor path** turns a frame into model-ready NCHW float32 in one
-  dispatch — 0.075 ms for a 2560×1600 frame, against 3.1 ms to do the same work
-  on the CPU — and the result stays in VRAM, where CUDA or DirectML can read it.
-- **Cross-adapter transfer** moves a frame to the discrete GPU on hybrid laptops,
-  which Desktop Duplication cannot capture from at all.
-- **Dirty-rect metadata**, so a consumer can skip regions that did not change.
-
-So the claim worth making is not "RapidShot is faster" — these numbers will not
-support it, and neither will anyone else's. It is this: **the same frame rate for
-a fraction of the CPU, colour conversion for a third of it, and a route to the GPU
-the others do not have, at the price of ~40 MB more memory.**
-
-Which is the better trade depends entirely on what else your machine is doing. If
-capture is the only thing running and you want the lowest per-call latency, DXcam
-and BetterCam are excellent and you should use them. If capture is one stage of a
-pipeline that needs its cores for inference, encoding, or anything else, that CPU
-column is the reason this library exists.
-
-### Reading the error bars
-
-Reproduce with `python benchmarks/compare_libraries.py --motion --with-motion`.
-Every library runs in its own process, because all three DXGI libraries declare
-the same COM interfaces and whichever imports first breaks the others.
-
-Treat the CPU column as directional. The dev machine was not quiet during this
-run — the control benchmark, whose code never changes, varied 42% across it — so
-the *gaps* are far larger than the noise and trustworthy, while the exact
-multiples are not. Longer windows and exact CPU accounting were both tried and
-did not tighten it; a quiet machine is what that needs.
-
-It began as a merge of several DXcam forks and keeps a broadly familiar API, but
-the capture path, the colour pipeline and the GPU interop have since been
-rewritten.
-
-## Features
-
-- **Capture as fast as the desktop actually changes**: Desktop Duplication
-  reports compositor *presents*, not display refreshes, so the ceiling is how
-  often the screen is redrawn — measured at 117 fps of distinct frames on a
-  100 Hz panel here, with the compositor itself producing ~188/s
-- **GPU-resident frames**: `grab_frame()` hands back a frame that never leaves
-  the GPU, skipping the CPU round-trip entirely — for consumers that feed a model
-  directly
-- **Colour conversion is essentially free** with the optional native extension:
-  BGRA→RGB in 0.31 ms and BGRA→GRAY in 0.26 ms per 1080p frame, at 80–96% of what
-  the memory system can move, and byte-identical to the pure-Python path
-- **Only process what changed**: frames carry the compositor's dirty-rect
-  metadata, typically under 1% of the screen on a normal desktop
-- **Feed CUDA directly**: the GPU tensor exposes a shared NT handle, so CuPy or
-  PyTorch can read it in place via `cudaImportExternalMemory` — capture to
-  `cupy.ndarray` with no CPU round-trip. One dispatch costs **0.075 ms** at
-  2560×1600 → 640×640, against 3.1 ms for the same work on the CPU
-- **Hybrid GPU laptops**: move a frame to the discrete GPU that Desktop
-  Duplication cannot capture from
-- **Multi-backend support**: NumPy, PIL, and CUDA/CuPy backends
-- **Cursor capture**: Capture mouse cursor position and shape
-- **Direct3D support**: Capture Direct3D exclusive full-screen applications without interruption
-- **NVIDIA GPU acceleration**: GPU-accelerated processing using CuPy
-- **Multi-monitor setup**: Support for multiple GPUs and monitors
-- **Flexible output formats**: RGB, RGBA, BGR, BGRA, and grayscale support
-- **Region-based capture**: Efficient capture of specific screen regions
-- **Rotation handling**: Automatic handling of rotated displays
-- **Actionable diagnostics**: headless machines, hybrid GPU setups, locked
-  workstations, UAC prompts and Session 0 services are detected and named
-  rather than failing opaquely
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Frame buffers](#frame-buffers)
+- [Trading CPU for frames](#trading-cpu-for-frames)
+- [Only process what changed](#only-process-what-changed)
+- [Colour formats](#colour-formats)
+- [Capturing into your own buffer](#capturing-into-your-own-buffer)
+- [GPU-resident capture](#gpu-resident-capture)
+- [The GPU tensor](#the-gpu-tensor)
+- [Hybrid GPU laptops](#hybrid-gpu-laptops)
+- [Headless machines](#headless-machines)
+- [The optional native extension](#the-optional-native-extension)
+- [Measurements](#measurements)
+- [Against other libraries](#against-other-libraries)
+- [System requirements](#system-requirements)
+- [Troubleshooting](#troubleshooting)
 
 ## Installation
 
-> **Note:** The package is installed as `rapidshot` and imported as `import rapidshot`.
-
-### Basic Installation
+Installed as `rapidshot`, imported as `import rapidshot`.
 
 ```bash
 pip install rapidshot
 ```
 
-### With OpenCV Support (recommended)
+That is pure Python and needs no toolchain. For the GPU tensor, cross-adapter
+transfer and the AVX2 conversion kernels, add the prebuilt extension — still no
+toolchain:
 
 ```bash
-pip install rapidshot[cv2]
+pip install rapidshot[native]
 ```
 
-### With NVIDIA GPU Acceleration
-
-Pick the extra matching your CUDA toolkit — the CuPy wheels are mutually
-exclusive, so there is no catch-all:
-
-```bash
-pip install rapidshot[gpu_cuda13]
-```
-
-`[gpu_cuda12]` for CUDA 12, and `[gpu]` for CUDA 11. Check yours with
-`nvidia-smi`. These install CuPy alone: since 2.3.0 colour conversion on the GPU
-is pure CuPy and stays on the device, so OpenCV is no longer part of this path.
-
-### With All Dependencies
+One `abi3` wheel covers Python 3.9 onward, Windows x86-64. See
+[the native extension](#the-optional-native-extension) for what it adds and how
+to build it yourself instead.
 
 ```bash
+pip install rapidshot[cv2]         # OpenCV, for your own downstream use
+pip install rapidshot[gpu_cuda13]  # CuPy for CUDA 13
+pip install rapidshot[gpu_cuda12]  # CUDA 12
+pip install rapidshot[gpu]         # CUDA 11
 pip install rapidshot[all]
 ```
 
-## Quick Start
+The CuPy wheels are mutually exclusive, so there is no catch-all extra — check
+your toolkit with `nvidia-smi`. RapidShot does not use OpenCV for colour
+conversion; since 2.3.0 the GPU path is pure CuPy and stays on the device.
 
-### Basic Screencapture
+## Quick start
 
 ```python
 import numpy as np
 import rapidshot
 
-# Create a ScreenCapture instance on the primary monitor
-screencapture = rapidshot.create()
+camera = rapidshot.create()
 
-# Take a screencapture
-frame = screencapture.grab()
-
-# Display the screencapture
-from PIL import Image
-Image.fromarray(np.asarray(frame)).show()
-
-# Hand the buffer back when done (see "Frame buffers" below)
-frame.release()
+frame = camera.grab()
+if frame is not None:
+    print(frame.shape)          # (H, W, 3), RGB by default
+    frame.release()             # hand the buffer back -- see Frame buffers
 ```
 
-> **New in 2.0:** `grab()` returns a pooled buffer that you `release()` when
-> done. It indexes and converts like the array it wraps, so most code needs only
-> the added `release()`. See [Frame buffers](#frame-buffers).
+`grab()` returns `None` when nothing has changed on screen. Desktop Duplication
+reports compositor *presents*, so a still desktop produces no frames at all.
+This surprises people benchmarking against a static screen; it is not a fault.
 
-### Region-based Capture
+### Region capture
 
 ```python
-# Define a specific region
-left, top = (1920 - 640) // 2, (1080 - 640) // 2
-right, bottom = left + 640, top + 640
-region = (left, top, right, bottom)
-
-# Capture only this region
-frame = screencapture.grab(region=region)  # 640x640x3 frame; release() when done
+region = (760, 340, 1160, 740)          # left, top, right, bottom
+frame = camera.grab(region=region)      # 400x400
 ```
 
-### Continuous Capture
+### Continuous capture
 
 ```python
-# Start capturing at 60 FPS
-screencapture.start(target_fps=60)
-
-# Get the latest frame
-for i in range(1000):
-    image = screencapture.get_latest_frame()  # Blocks until new frame is available
-    # Process the frame...
-
-# Stop capturing
-screencapture.stop()
+camera.start(target_fps=60)
+for _ in range(1000):
+    image = camera.get_latest_frame()   # blocks until a new frame arrives
+camera.stop()
 ```
 
-### Video Recording
+### Recording to a video file
 
 ```python
-import rapidshot
 import cv2
+import rapidshot
 
-# Create a ScreenCapture instance with BGR color format for OpenCV
-screencapture = rapidshot.create(output_color="BGR")
+camera = rapidshot.create(output_color="BGR")   # OpenCV's channel order
+camera.start(target_fps=30, video_mode=True)
 
-# Start capturing at 30 FPS in video mode
-screencapture.start(target_fps=30, video_mode=True)
-
-# Create a video writer
 writer = cv2.VideoWriter(
     "video.mp4", cv2.VideoWriter_fourcc(*"mp4v"), 30, (1920, 1080)
 )
+for _ in range(300):
+    writer.write(camera.get_latest_frame())
 
-# Record for 10 seconds (300 frames at 30 FPS)
-for i in range(300):
-    writer.write(screencapture.get_latest_frame())
-
-# Clean up
-screencapture.stop()
+camera.stop()
 writer.release()
 ```
 
-### NVIDIA GPU Acceleration
+`video_mode=True` repeats the last frame when the screen is idle, so the output
+keeps a constant frame rate rather than stalling.
+
+### Converting on the GPU
 
 ```python
-# Frames come back as cupy.ndarray, converted on the device
-screencapture = rapidshot.create(output_color="RGB", nvidia_gpu=True)
-
-frame = screencapture.grab()        # cupy.ndarray, stays in VRAM
+camera = rapidshot.create(output_color="RGB", nvidia_gpu=True)
+frame = camera.grab()                    # a cupy.ndarray, still in VRAM
 ```
 
-> **Note:** unlike the CPU path, `nvidia_gpu=True` returns a bare
-> `cupy.ndarray` rather than a pooled buffer, so there is no `.release()` to
-> call — CuPy's allocator owns it. `pool_size_frames` does not apply.
+Conversion runs in CuPy and is byte-identical to the CPU path, so enabling it
+changes no pixel. It returns a bare `cupy.ndarray` rather than a pooled buffer,
+so there is no `release()` to call and `pool_size_frames` does not apply.
 
-Colour conversion runs in CuPy on the GPU and is **byte-identical** to the CPU
-path, so turning `nvidia_gpu` on changes no pixel. OpenCV is not required.
+> Requires a working CuPy, which means CUDA headers as well as the wheel. If
+> CuPy imports but fails at its first JIT, `grab()` returns `None` and the CuPy
+> error goes to stderr — capture does **not** silently fall back to the CPU
+> processor in that case. The fallback covers CuPy being absent, not CuPy being
+> broken. See [Troubleshooting](#troubleshooting).
 
-> **Fixed in 2.3.0:** before this release, any `output_color` other than
-> `"BGRA"` silently returned an unconverted 4-channel BGRA array — wrong shape
-> and wrong channel order, reported as success. Conversion went through OpenCV,
-> which is not a dependency, and the failure was swallowed.
-
-### Cursor Capture
-
-RapidShot provides comprehensive cursor capture capabilities, allowing you to track cursor position, visibility, and shape in your screen captures.
+### Cursor
 
 ```python
-# Take a screenshot
-frame = screencapture.grab()
-
-# Get cursor information
-cursor = screencapture.grab_cursor()
-
-# Check if cursor is visible in the capture area
+cursor = camera.grab_cursor()
 if cursor.PointerPositionInfo.Visible:
-    # Get cursor position
-    x, y = cursor.PointerPositionInfo.Position.x, cursor.PointerPositionInfo.Position.y
-    print(f"Cursor position: ({x}, {y})")
-    
-    # Cursor shape information is also available
+    x = cursor.PointerPositionInfo.Position.x
+    y = cursor.PointerPositionInfo.Position.y
     if cursor.Shape is not None:
-        width = cursor.PointerShapeInfo.Width
-        height = cursor.PointerShapeInfo.Height
-        print(f"Cursor size: {width}x{height}")
+        w = cursor.PointerShapeInfo.Width
+        h = cursor.PointerShapeInfo.Height
 ```
 
-#### Advanced Cursor Handling
+Position, visibility and the raw shape buffer are exposed as Desktop
+Duplication reports them. Compositing the cursor onto a frame is left to the
+caller: doing it correctly means handling the monochrome, colour and
+masked-colour shape types separately, and the right blend depends on what you
+are compositing onto.
 
-The cursor information provided by RapidShot can be used in various ways:
+## Frame buffers
 
-1. **Overlay cursor on captured image:**
+`grab()` returns a `PooledBuffer` — a reused buffer, not a fresh array.
+Allocating one per frame costs about 1.6 ms on a 1080p RGB frame, because the
+page faults on first touch cost more than the conversion; reusing them makes
+`grab()` 1.3–2.1x faster.
 
-```python
-import numpy as np
-import cv2
-
-def overlay_cursor(frame, cursor):
-    """Overlay cursor on captured frame."""
-    if not cursor.PointerPositionInfo.Visible or cursor.Shape is None:
-        return frame
-    
-    # Create an overlay from cursor shape data
-    shape_type = cursor.PointerShapeInfo.Type
-    width = cursor.PointerShapeInfo.Width
-    height = cursor.PointerShapeInfo.Height
-    
-    # Different processing based on cursor type (monochrome, color, or masked)
-    if shape_type & DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME:
-        pass  # Process monochrome cursor
-    elif shape_type & DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR:
-        pass  # Process color cursor
-    elif shape_type & DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR:
-        pass  # Process masked color cursor
-    
-    # Position the cursor on the frame at its current coordinates
-    x, y = cursor.PointerPositionInfo.Position.x, cursor.PointerPositionInfo.Position.y
-    
-    # Ensure cursor is within frame boundaries
-    # ...
-    
-    # Blend cursor with frame
-    # ...
-    
-    return frame_with_cursor
-
-# Usage example
-frame = screencapture.grab()
-cursor = screencapture.grab_cursor()
-composite_image = overlay_cursor(frame, cursor)
-```
-
-2. **Track cursor movements:**
-
-```python
-import time
-
-# Record cursor positions over time
-positions = []
-screencapture = rapidshot.create()
-
-for i in range(100):
-    cursor = screencapture.grab_cursor()
-    if cursor.PointerPositionInfo.Visible:
-        positions.append((
-            time.time(),
-            cursor.PointerPositionInfo.Position.x,
-            cursor.PointerPositionInfo.Position.y
-        ))
-    time.sleep(0.05)  # Sample at 20Hz
-
-# Analyze cursor movement
-# ...
-```
-
-## Multiple Monitors / GPUs
-
-```python
-# Show available devices and outputs
-print(rapidshot.device_info())
-print(rapidshot.output_info())
-
-# Create ScreenCapture instances for specific devices/outputs
-capture1 = rapidshot.create(device_idx=0, output_idx=0)  # First monitor on first GPU
-capture2 = rapidshot.create(device_idx=0, output_idx=1)  # Second monitor on first GPU
-capture3 = rapidshot.create(device_idx=1, output_idx=0)  # First monitor on second GPU
-```
-
-### Frame buffers
-
-`grab()` returns a `PooledBuffer` — a reused buffer rather than a freshly
-allocated array. Allocating one per frame costs ~1.6 ms on a 1080p RGB frame,
-because the page faults on first touch cost more than the conversion itself;
-reusing buffers makes `grab()` **1.3–2.1× faster**.
-
-It behaves like the array it wraps, so most code is unchanged:
+It behaves like the array it wraps:
 
 ```python
 frame = camera.grab()
 if frame is not None:
-    frame.shape, frame.dtype, frame.ndim   # as before
-    pixel = frame[y, x]                    # indexing works
-    arr = np.asarray(frame)                # zero-copy, for cv2 / PIL / models
-    frame.release()                        # the one new line
+    frame.shape, frame.dtype, frame.ndim
+    pixel = frame[y, x]
+    arr = np.asarray(frame)             # zero-copy, for cv2 / PIL / a model
+    frame.release()                     # the one new line
 ```
 
-**Release when done.** The buffer goes back to the pool and is handed to the
-next capture, so anything still holding it would see the wrong frame. Reading it
+**Release when done.** The buffer returns to the pool and is handed to the next
+capture, so anything still holding it would see the wrong frame. Reading it
 after release raises `BufferReleasedError` rather than returning stale pixels.
-To keep data beyond the release, `frame.copy()`.
+To keep the data, `frame.copy()`.
 
-Forgetting to release is not fatal: the pool runs dry and capture falls back to
-allocating, which is slower but always correct. It will never hand you a buffer
-another caller is reading.
+Forgetting is not fatal: the pool runs dry and capture falls back to allocating,
+which is slower but always correct. It will never hand you a buffer another
+caller is reading.
 
-**Migrating from 1.x.** Add `release()`, and wrap in `np.asarray()` anywhere a
-true `ndarray` is required (`isinstance` checks, `Image.fromarray`). Or keep the
-old behaviour outright:
+**Coming from 1.x**: add `release()`, and wrap in `np.asarray()` where a true
+`ndarray` is required (`isinstance` checks, `Image.fromarray`). Or opt out:
 
 ```python
-camera = rapidshot.create(pool_output=False)   # returns plain ndarrays
+camera = rapidshot.create(pool_output=False)   # plain ndarrays, as before
 ```
 
 BGRA already worked this way before 2.0 — it does no conversion, so its staging
 buffer was always returned pooled.
 
-### Trading CPU for frames
+## Trading CPU for frames
 
-Each capture waits up to `timeout_ms` for the compositor to present. That one
-number is the whole difference between this library and the poll-based ones:
+Each capture waits up to `timeout_ms` for the compositor to present. That single
+number is most of the difference between this library and the polling ones:
 
 ```python
 camera = rapidshot.create(timeout_ms=0)   # poll instead of waiting
 camera.timeout_ms = 10                    # or change it on a live camera
 ```
 
-Measured on a 100 Hz output against a source presenting at ~610 updates/s:
+Measured on a 100 Hz output against a source presenting at ~610 updates/s
+(ROADMAP.md section 3):
 
 | `timeout_ms` | frames/s | hit rate | CPU |
 | --- | --- | --- | --- |
@@ -445,24 +234,22 @@ Measured on a 100 Hz output against a source presenting at ~610 updates/s:
 | 1 | 119.2 | 74.5% | 19.5% |
 | **10 (default)** | 118.9 | 100% | **15.7%** |
 
-The frame rate barely moves across that range and the CPU moves by more than
-four times. Polling is what DXcam does — it calls `AcquireNextFrame(0)` and
-reached 134 fps at 66% CPU in the same comparison, so those extra frames are
-real, just expensive. Use `0` if capture is the only thing the machine is doing;
-leave the default if it is one stage of a pipeline that needs its cores.
+The frame rate barely moves across that range while CPU moves by more than four
+times. Polling is what DXcam does, and the frames it buys are real — just
+expensive. Use `0` if capture is the only thing running; leave the default if it
+is one stage of a pipeline that needs its cores.
 
-Frames beyond the display's refresh rate were never shown as distinct images —
-useful as extra temporal samples for a model, redundant for a recorder.
+Frames beyond the display's refresh rate were never shown as distinct images.
+They are extra temporal samples for a model, and redundant for a recorder.
 
-### Only process what changed
+## Only process what changed
 
-`grab_frame()` frames carry the compositor's own dirty-rect metadata, so a
-consumer can skip regions that did not change:
+Frames from `grab_frame()` carry the compositor's dirty-rect metadata:
 
 ```python
 with camera.grab_frame() as frame:
     if frame.dirty_rects is None or not frame.dirty_rects:
-        process_everything(frame)          # unknown, or no metadata reported
+        process_everything(frame)
     else:
         for left, top, right, bottom in frame.dirty_rects:
             process_region(frame, left, top, right, bottom)
@@ -473,229 +260,139 @@ image even when `region=` is in use.
 
 Two things to get right. An **empty list does not mean nothing changed** — it
 means no rects were reported, which a mode change or a coalescing driver can
-also produce while the image differs completely; treat it as "assume everything
-changed". And `None` means the metadata could not be read at all. Check
-`frame.rects_coalesced` too: when true the driver merged rects, so they
+also produce while the image differs completely. Treat it as "assume everything
+changed". **`None` means the metadata could not be read at all.** And check
+`frame.rects_coalesced`: when true the driver merged rects, so they
 over-estimate what actually changed.
 
-### Hybrid GPU laptops and headless machines
-
-`device_info()` only lists adapters that drive a display, because only those can
-capture. `topology_info()` lists every adapter and says what that means:
+## Colour formats
 
 ```python
-print(rapidshot.topology_info())
+rapidshot.create(output_color="RGB")    # (H, W, 3) -- default
+rapidshot.create(output_color="RGBA")   # (H, W, 4)
+rapidshot.create(output_color="BGR")    # (H, W, 3) -- OpenCV order
+rapidshot.create(output_color="BGRA")   # (H, W, 4) -- raw, no conversion
+rapidshot.create(output_color="GRAY")   # (H, W, 1) -- Rec. 601 luma
 ```
 
-```
-Topology: hybrid
-  Adapter[0] (Intel(R) UHD Graphics) (Intel) (128MB VRAM) (1 output)
-  Adapter[1] (NVIDIA GeForce RTX 4070 Laptop GPU) (NVIDIA) (8192MB VRAM) (0 outputs)
+An unsupported value raises `ValueError` at creation. Conversion uses the
+native AVX2 kernels when the extension is present and NumPy otherwise; the two
+are byte-identical. OpenCV is never required.
 
-  Hybrid GPU system detected. Capture runs on Intel(R) UHD Graphics, which
-  drives the display. NVIDIA GeForce RTX 4070 Laptop GPU has no outputs, so
-  Desktop Duplication cannot run against it at all (DXGI_ERROR_UNSUPPORTED).
-  ...
-```
+## Capturing into your own buffer
 
-On an Optimus/switchable laptop the discrete GPU has no outputs, so Desktop
-Duplication cannot run against it — capture is always bound to the adapter that
-drives the display. `grab()` is unaffected. A GPU-resident frame is: it lives on
-the capture adapter, so feeding it to a model on the *other* adapter needs a
-cross-adapter copy. `rapidshot.native` provides one:
-
-```python
-from rapidshot import native
-
-with camera.grab_frame() as frame:
-    transfer = native.cross_adapter_transfer(frame)   # build once, reuse
-
-with camera.grab_frame() as frame:
-    transfer.transfer(frame)
-    # Now bind transfer.destination_resource_address on the other adapter.
-    print(transfer.source, "->", transfer.destination)
-```
-
-Costs about 0.87 ms per 1080p frame — roughly a third of what reading the same
-frame to the CPU costs, so crossing adapters beats leaving the GPU. The shared
-heap lives in **system memory**, not either adapter's VRAM; this is not
-peer-to-peer VRAM-to-VRAM DMA, and the win is that a GPU copy engine moves the
-bytes instead of CPU cores.
-
-On a machine with no monitor attached there is no desktop to duplicate at all,
-and `rapidshot.create()` raises `HeadlessError` explaining that a virtual
-display driver (IDD) is needed. `topology_info()` still works there — it probes
-DXGI directly rather than going through capture.
-
-> A virtual display's advertised refresh rate does **not** raise capture rate.
-> Desktop Duplication is driven by presents, not by refresh: a 500 Hz virtual
-> display does not make an application render 500 fps.
-
-## Advanced Usage
-
-### Custom Buffer Size
-
-```python
-# Create a ScreenCapture instance with a larger frame buffer
-screencapture = rapidshot.create(max_buffer_len=256)
-```
-
-### Different Color Formats
-
-```python
-# RGB (default)                      -> (H, W, 3)
-screencapture_rgb = rapidshot.create(output_color="RGB")
-
-# RGBA (with alpha channel)          -> (H, W, 4)
-screencapture_rgba = rapidshot.create(output_color="RGBA")
-
-# BGR (OpenCV format)                -> (H, W, 3)
-screencapture_bgr = rapidshot.create(output_color="BGR")
-
-# BGRA (raw, no conversion)          -> (H, W, 4)
-screencapture_bgra = rapidshot.create(output_color="BGRA")
-
-# Grayscale (Rec. 601 luma)          -> (H, W, 1)
-screencapture_gray = rapidshot.create(output_color="GRAY")
-```
-
-All conversions are pure NumPy — OpenCV is not required. An unsupported
-`output_color` raises `ValueError` at creation time.
-
-### Capturing Into Your Own Buffer
-
-`shot()` writes straight into a buffer you own, avoiding a per-frame
-allocation. The buffer receives pixels in the instance's `output_color`, so
-size it with `bytes_per_frame()`:
+`shot()` writes straight into memory you own, avoiding a per-frame allocation:
 
 ```python
 import numpy as np
 
-screencapture = rapidshot.create(output_color="RGB", region=(0, 0, 640, 480))
-
-buffer = np.zeros((480, 640, screencapture.channels), dtype=np.uint8)
-if screencapture.shot(buffer):
-    print("captured", buffer.shape)   # (480, 640, 3)
+camera = rapidshot.create(output_color="RGB", region=(0, 0, 640, 480))
+buffer = np.zeros((480, 640, camera.channels), dtype=np.uint8)
+if camera.shot(buffer):
+    print("captured", buffer.shape)
 ```
 
 The destination size is checked before anything is written, so an undersized
-buffer raises `ValueError` instead of corrupting memory. NumPy arrays,
-`ctypes` arrays, `bytearray` and `memoryview` all report their own size. A raw
-pointer cannot, so it must be paired with an explicit `buffer_size`:
+buffer raises `ValueError` instead of corrupting memory. NumPy arrays, `ctypes`
+arrays, `bytearray` and `memoryview` all report their own size. A raw pointer
+cannot, so it needs an explicit `buffer_size`:
 
 ```python
 import ctypes
-
-screencapture.shot(
-    ctypes.c_void_p(buffer.ctypes.data),
-    buffer_size=buffer.nbytes,
-)
+camera.shot(ctypes.c_void_p(buffer.ctypes.data), buffer_size=buffer.nbytes)
 ```
 
-### GPU-Resident Capture (no CPU round-trip)
+## GPU-resident capture
 
-`grab()` brings every frame down to the CPU — a staging read plus a color
-conversion, about 4.5 ms per 1080p frame. If you are handing the pixels to a GPU
-consumer (an inference runtime, a hardware encoder), `grab_frame()` skips all of
-that and gives you the Direct3D texture directly:
+`grab()` brings every frame to the CPU — a staging read plus a conversion. If
+you are handing pixels to a GPU consumer, `grab_frame()` skips that and gives
+you the Direct3D texture:
 
 ```python
-with screencapture.grab_frame() as frame:
-    texture = frame.d3d11_texture        # ID3D11Texture2D, valid in here only
+with camera.grab_frame() as frame:
+    texture = frame.d3d11_texture        # ID3D11Texture2D, valid inside the block
     print(frame.timestamp, frame.accumulated_frames)
 ```
 
-Both paths are measured in `benchmarks/baseline.json`, but **neither is a stable
-number**: each depends on what is on screen, because conversion is limited to the
-regions that changed. Over seven recordings of unchanged code, `grab_frame()`
-ranged 0.17–0.83 ms and `grab()` 1.65–4.53 ms. The gap is real and consistently
-in `grab_frame()`'s favour — it skips the CPU round-trip entirely — but quote the
-range, not a ratio. See ROADMAP.md section 3.
-
 > **The `with` block is not optional.** Direct3D cannot capture the next frame
-> while a reference to the previous one is outstanding, so an unreleased `Frame`
-> stalls capture entirely. Use the context manager (or call `frame.release()`),
-> and copy anything you need out before the block ends. `grab()`, `shot()` and
+> while a reference to the previous one is outstanding, so an unreleased frame
+> stalls capture entirely. Use the context manager or call `frame.release()`,
+> and copy out anything you need before the block ends. `grab()`, `shot()` and
 > `grab_frame()` all raise a clear error if a frame is still outstanding.
 
-Frame metadata stays readable after release: `timestamp` / `timestamp_qpc` (when
-the compositor presented the frame), `accumulated_frames` (greater than 1 means
-the OS dropped frames because your loop fell behind), `protected_content`,
+Metadata stays readable after release: `timestamp` / `timestamp_qpc` (when the
+compositor presented the frame), `accumulated_frames` (greater than 1 means the
+OS coalesced presents because your loop fell behind), `protected_content`,
 `cursor_visible`, `region`, `width`, `height`, `rotation_angle`.
 
-### GPU Inference: Handing Frames to DirectML
+## The GPU tensor
 
-Rapidshot can convert a captured frame into a **model-ready NCHW float32 tensor
-that never leaves the GPU** — no staging read, no colour conversion, no
-resize on the CPU. This needs the optional native extension (see below).
+Requires the [native extension](#the-optional-native-extension). One compute
+dispatch resizes, normalises, converts BGRA to RGB and transposes to NCHW, and
+the result stays in VRAM:
 
 ```python
 from rapidshot import native
 
-with screencapture.grab_frame() as frame:
+with camera.grab_frame() as frame:
     pre = native.GpuPreprocessor12(frame, 640, 640)   # build once, reuse
-    pre.process(frame)                                 # one GPU dispatch
+    pre.process(frame)                                # one dispatch
 
     print(pre.shape)                        # (1, 3, 640, 640)
     resource = pre.output_resource_address  # ID3D12Resource*
-    gpu_va = pre.output_gpu_address         # GPU virtual address
-    handle = pre.shared_output_handle       # shared NT handle, for CUDA etc.
+    gpu_va = pre.output_gpu_address
+    handle = pre.shared_output_handle       # shared NT handle, for CUDA
 ```
 
-`process()` resizes, normalises, converts BGRA→RGB and transposes to NCHW in a
-single compute shader. On the CPU that same work costs about **8 ms per 1080p
-frame**; here it is one dispatch and the result stays in VRAM. Optional
-arguments cover the usual normalisation ranges (`scale=2.0, bias=-1.0` for
-−1..1) and channel order (`bgr=True`).
+Optional arguments cover the usual normalisation ranges (`scale=2.0, bias=-1.0`
+for −1..1) and channel order (`bgr=True`).
 
-#### Reading the tensor from CuPy / CUDA
+### Reading it from CuPy
 
-`shared_output_handle` is a shared NT handle for the tensor, which CUDA imports
-with `cudaImportExternalMemory` — so the frame reaches a CUDA consumer without
-ever touching the CPU. **`examples/gpu_tensor_to_cupy.py` is a complete, working
-version** of the ~60 lines of `ctypes` this takes; it verifies the resulting
-`cupy.ndarray` is byte-identical to a readback of the same dispatch.
+`shared_output_handle` is imported by CUDA with `cudaImportExternalMemory`, so
+the frame reaches a CUDA consumer without touching the CPU.
+**`examples/gpu_tensor_to_cupy.py` is a complete working version** of the ~60
+lines of `ctypes` this takes, and verifies the resulting `cupy.ndarray` is
+byte-identical to a readback of the same dispatch.
 
-`CudaTensor` is defined in `examples/gpu_tensor_to_cupy.py`, not exported by
-the package — copy it into your project rather than importing it:
+`CudaTensor` lives in that example rather than in the package — copy it into
+your project:
 
 ```python
 with CudaTensor(pre, (1, 3, 640, 640)) as view:
-    tensor = view.array                          # a cupy.ndarray in VRAM
+    tensor = view.array                            # a cupy.ndarray in VRAM
     while capturing:
-        with screencapture.grab_frame() as frame:   # a *new* frame each pass
+        with camera.grab_frame() as frame:         # a *new* frame each pass
             if frame is None:
-                continue                         # nothing changed on screen
-            view.sync()                          # queued CUDA work must finish
-            pre.process(frame)                   # overwrites tensor's buffer
+                continue
+            view.sync()                            # queued CUDA work must finish
+            pre.process(frame)                     # overwrites the tensor buffer
         model(tensor)
 ```
 
-Note the fresh `grab_frame()` inside the loop. The preprocessor and the CUDA
-import are built once and reused; the *frame* is not — a released frame raises
-`FrameReleasedError`, and reusing a live one just re-processes the same image.
-Releasing it before `model()` also matters: DXGI cannot acquire the next frame
-while a reference to the previous surface is outstanding.
+Three things that bite:
 
-`sync()` is not optional. `process()` waits on the D3D12 fence but knows
-nothing about CUDA work you have queued against the same memory, so a kernel
-still reading the tensor when the next dispatch lands sees a half-overwritten
-frame — with no error, just wrong numbers.
+- **A fresh `grab_frame()` each pass.** The preprocessor and the CUDA import are
+  built once; the frame is not. A released frame raises `FrameReleasedError`,
+  and reusing a live one just re-processes the same image.
+- **`sync()` is not optional.** `process()` waits on its D3D12 fence but knows
+  nothing about CUDA work you queued against the same memory. A kernel still
+  reading the tensor when the next dispatch lands sees a half-overwritten
+  frame — no error, just wrong numbers.
+- **Release before `model()`.** DXGI cannot acquire the next frame while a
+  reference to the previous surface is outstanding.
 
-Keep the `CudaTensor` for as long as you use the array: it owns the CUDA
-import and the preprocessor that owns the VRAM. On a machine with more than
-one CUDA device, pass `device=N` — the tensor can only be imported by the
-device that owns the adapter which captured the frame.
+Keep the `CudaTensor` alive as long as you use the array: it owns the CUDA
+import and the preprocessor that owns the VRAM. With more than one CUDA device,
+pass `device=N` — the tensor can only be imported by the device owning the
+adapter that captured the frame.
 
-The import is paid once. After that `pre.process(frame)` overwrites the same
-buffer the CuPy array points at, so a capture loop pays nothing per frame to
-keep the view.
+### DirectML / ONNX Runtime
 
-**Where Rapidshot stops.** The output is an `ID3D12Resource` on the DirectML
-device — exactly what ONNX Runtime's DirectML provider consumes. Rapidshot
-deliberately does **not** bind it to a session: that would couple this library
-to ONNX Runtime's ABI and release cadence for the sake of an optional feature.
-Consuming it is a few lines on your side:
+The output is an `ID3D12Resource`, which is what ONNX Runtime's DirectML
+provider consumes. RapidShot deliberately does not bind it to a session — that
+would couple this library to ONNX Runtime's ABI and release cadence for an
+optional feature:
 
 ```cpp
 const OrtDmlApi* dml = nullptr;
@@ -709,223 +406,438 @@ Ort::MemoryInfo info("DML", OrtDeviceAllocator, 0, OrtMemTypeDefault);
 auto tensor = Ort::Value::CreateTensor(
     info, allocation, byte_size,
     shape.data(), shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
-
 // bind with Ort::IoBinding, run, then:
 dml->FreeGPUAllocation(allocation);
 ```
 
-> **Note for Python users:** `OrtDmlApi` has no Python binding — it is reachable
-> only from C/C++. That is a gap in ONNX Runtime, not in Rapidshot. If you need
-> this from Python today you will need a small native shim of your own;
-> `native.probe_onnxruntime()` and `native.onnxruntime_dll_path()` are provided
-> to help locate and validate the runtime.
+> `OrtDmlApi` has no Python binding — it is reachable only from C/C++. That is a
+> gap in ONNX Runtime, not in RapidShot. From Python today you need a small
+> native shim of your own; `native.probe_onnxruntime()` and
+> `native.onnxruntime_dll_path()` help locate and validate the runtime.
 
-### Building the Optional Native Extension
+## Hybrid GPU laptops
 
-Everything above except GPU-tensor interop works with no toolchain.
-`pip install rapidshot` never requires Rust.
+On an Optimus/switchable laptop the discrete GPU usually drives no display, and
+Desktop Duplication cannot run against an adapter that drives no display. Capture
+is therefore bound to the integrated GPU. `device_info()` lists only adapters
+that can capture; `topology_info()` lists every adapter and explains the
+consequence:
+
+```python
+print(rapidshot.topology_info())
+```
+
+```
+Topology: hybrid
+  Adapter[0] (Intel(R) UHD Graphics) (Intel) (128MB VRAM) (1 output)
+  Adapter[1] (NVIDIA GeForce RTX 4060 Laptop GPU) (NVIDIA) (7956MB VRAM) (0 outputs)
+  ...
+```
+
+`grab()` is unaffected. A GPU-resident frame is: it lives on the capture
+adapter, so feeding it to a model on the *other* adapter needs a cross-adapter
+copy.
+
+```python
+from rapidshot import native
+
+with camera.grab_frame() as frame:
+    transfer = native.cross_adapter_transfer(frame)   # build once, reuse
+
+with camera.grab_frame() as frame:
+    transfer.transfer(frame)
+    print(transfer.source, "->", transfer.destination)
+    # bind transfer.destination_resource_address on the other adapter
+```
+
+The shared heap lives in **system memory**, not either adapter's VRAM. This is
+not peer-to-peer VRAM-to-VRAM DMA; the win is that a GPU copy engine moves the
+bytes instead of CPU cores.
+
+### Asynchronous transfer
+
+`transfer()` blocks until the copy completes, which on a hybrid laptop is most
+of its cost. `transfer_async()` returns the calling thread instead:
+
+```python
+value = transfer.transfer_async(frame)
+transfer.wait_shared_fence(value)          # CPU wait, or...
+handle = transfer.shared_fence_handle      # ...import into CUDA, wait GPU-side
+```
+
+**Prefer the GPU-side wait.** Measured against a CuPy consumer, Intel iGPU to
+RTX 4060 at 2560×1600, the CPU-side async wait buys nothing — the calling
+thread was never the constraint. Importing `shared_fence_handle` with
+`cuImportExternalSemaphore` and waiting on it in a stream is worth **7–14%**.
+Quote the range rather than a point estimate: two runs disagreed by a factor of
+two on the margin.
+
+`transfer()` remains the default and still holds the GIL for its copy.
+`wait_shared_fence()` releases it.
+
+### Waiting for the consumer
+
+Every transfer writes the **same destination buffer**, and the shared fence only
+reports that the *copy* finished. A consumer still reading frame N can be
+overwritten by the copy for frame N+1. Hand the producer a fence the consumer
+signals when it has finished reading:
+
+```python
+transfer.set_consumer_fence(consumer_fence_handle)   # once
+transfer.wait_for_consumer(value)                    # queued before the next copy
+```
+
+The wait is enqueued on the source queue, so it orders ahead of the next copy
+without blocking the caller.
+
+**This is not theoretical.** Over a 60-frame loop whose consumer ran slower than
+the producer: **28 of 60 frames wrong without the handshake, 0 with it.** With a
+consumer that keeps up, the same loop is clean either way over 100 frames —
+which is why the hazard stays invisible until a real workload arrives.
+
+`shared_fence_submitted` and `shared_fence_completed` expose what was queued
+versus what the GPU has reached, if you need to watch the handshake work.
+
+## Headless machines
+
+With no monitor attached there is no desktop to duplicate, and
+`rapidshot.create()` raises `HeadlessError` explaining that a virtual display
+driver (IDD) is needed. `topology_info()` still works — it probes DXGI directly
+rather than going through capture.
+
+> A virtual display's advertised refresh rate does **not** raise capture rate.
+> Desktop Duplication is driven by presents, not refresh: a 500 Hz virtual
+> display does not make an application render 500 fps.
+
+## The optional native extension
+
+Everything above except the GPU tensor and cross-adapter transfer works without
+it. `pip install rapidshot` never requires Rust.
+
+**Install the prebuilt wheel:**
+
+```bash
+pip install rapidshot-native
+```
+
+Windows x86-64, built as an `abi3` wheel so one binary serves Python 3.9 and
+every later version — including ones released after the build. AVX2 is detected
+at runtime with scalar fallbacks, so it runs on pre-AVX2 hardware too.
+
+Nothing else changes: RapidShot finds it automatically and
+`rapidshot.native.is_available()` starts returning `True`.
+
+**Or build it from source**, which needs [Rust](https://rustup.rs) 1.88+ and the
+MSVC C++ build tools:
 
 ```bash
 cd native && cargo build --release
-```
-
-```bash
 python native/install_dev.py
 ```
 
-Requires [Rust](https://rustup.rs) and the MSVC C++ build tools. Check
-availability at runtime with `rapidshot.native.is_available()`.
+A build made this way **takes precedence** over an installed wheel, so
+rebuilding does what you expect when both are present. `native.build_info()`
+reports which one is loaded under `source`.
 
-### Benchmarking Your Changes
+`rapidshot-native` is versioned independently of `rapidshot`, because the Rust
+changes on its own schedule. `rapidshot` declares the minimum it needs, so pip
+resolves a working pair; if you pin, pin both.
 
-```bash
-python benchmarks/perf_suite.py --out baseline.json
-python benchmarks/perf_suite.py --out after.json --compare baseline.json
-```
+## Measurements
 
-The suite compares minimum samples, calibrates against a control benchmark to
-divide out machine drift, and pools samples across rounds. Run
-`--self-test` to measure your machine's noise floor before trusting a result.
-
-### Resource Management
-
-```python
-# Release resources when done
-screencapture.release()
-
-# Or automatically released when object is deleted
-del screencapture
-
-# Clean up all resources
-rapidshot.clean_up()
-
-# Reset the library completely
-rapidshot.reset()
-```
-
-## Benchmarks and Performance Comparison
-
-RapidShot includes benchmark utilities to compare its performance against other popular screen capture libraries. The benchmark scripts are located in the `benchmarks/` directory and are designed to provide objective performance measurements.
-
-### Benchmark Structure
-
-- **FPS Benchmarks**: Measure the maximum frame rate achievable by each library
-  - `rapidshot_max_fps.py` - Tests RapidShot's maximum FPS
-  - `bettercam_max_fps.py` - Tests BetterCam's maximum FPS
-  - `dxcam_max_fps.py` - Tests DXCam's maximum FPS
-  - `d3dshot_max_fps.py` - Tests D3DShot's maximum FPS
-  - `mss_max_fps.py` - Tests MSS's maximum FPS
-
-- **Capture Benchmarks**: Test the continuous capture performance
-  - `rapidshot_capture.py` - Tests RapidShot's continuous capture
-  - `bettercam_capture.py` - Tests BetterCam's continuous capture
-  - `dxcam_capture.py` - Tests DXCam's continuous capture
-
-### Running Benchmarks
-
-To run a benchmark comparison:
+Every figure below comes from a committed recording, named so you can check it.
+Reproduce with:
 
 ```bash
-# Run RapidShot benchmark
-python benchmarks/rapidshot_max_fps.py
-
-# Run with GPU acceleration
-python benchmarks/rapidshot_max_fps.py --gpu
-
-# Test with different color formats
-python benchmarks/rapidshot_max_fps.py --color BGRA
+python benchmarks/perf_suite.py --rounds 5 --reps 25 --compare auto
 ```
 
-### Benchmark Results
+`--compare auto` selects the baseline recorded on *your* machine and fails if
+there is none, rather than comparing you against someone else's hardware.
+Run `--self-test` first to see your machine's noise floor.
 
-**Run them yourself.** This README used to carry a table of cross-library FPS
-figures with no hardware, method or date attached, claiming 240+ for RapidShot
-and 300+ with GPU acceleration. Both were unsupportable, though not for the
-reason first given here: Desktop Duplication reports compositor *presents*, so
-the ceiling is the rate at which the desktop is redrawn — which can exceed the
-panel's refresh rate, and did in our own measurements (117 fps of distinct
-frames on a 100 Hz display). The figures were unsupportable because no hardware
-or method was attached to them, and because CuPy acceleration changes the
-*conversion* cost rather than the rate at which frames arrive.
+### RapidShot's own paths
 
-Published FPS claims in this space contradict each other badly — DXcam's README
-reports DXcam at 239 fps, BetterCam's reports the same library at 39 — because
-they come from different hardware with no shared harness. A number measured on
-someone else's machine tells you nothing about yours.
+Synthetic, deterministic, 1920×1080. These move when the library changes and
+not otherwise, which is why they are the badge figures.
 
-What is measured, reproducibly, is the per-frame cost of RapidShot's own paths
-(1920×1080, Intel iGPU, from `benchmarks/baseline.json`):
+From [`benchmarks/baseline.json`](benchmarks/baseline.json) — Intel iGPU,
+**with** the native extension — against
+[`benchmarks/baseline-nonative.json`](benchmarks/baseline-nonative.json), the
+same machine **without** it:
 
-| Path | Per frame | Notes |
+| | with extension | without |
 | --- | --- | --- |
-| Colour conversion, BGRA→RGB | **0.31 ms** | 1.9 ms without the native extension |
-| Colour conversion, BGRA→GRAY | **0.26 ms** | 9.4 ms without it |
-| `shot()` → your buffer | **0.32 ms** | staging read plus conversion |
-| `grab()` — end to end | 1.7–4.5 ms | **depends on screen activity, see below** |
-| `grab_frame()` — texture stays on the GPU | 0.17–0.83 ms | same caveat |
+| BGRA→RGB | **0.30 ms** | 1.93 ms |
+| BGRA→GRAY | **0.26 ms** | 6.88 ms |
+| `shot()` → your buffer | **0.31 ms** | 1.96 ms |
 
-The first three are synthetic and deterministic: they move when the library
-changes and not otherwise, which is why they are the ones on the badges above.
+From [`benchmarks/baseline-rtx4060-hybrid.json`](benchmarks/baseline-rtx4060-hybrid.json)
+— a second machine, Intel iGPU capture with an RTX 4060 present, recorded at
+2.4.0:
 
-**Second machine, NVIDIA RTX 4060 Laptop** (`benchmarks/baseline-rtx4060.json`,
-P-core-pinned, 1920×1080 synthetic source, minimums):
-
-| Path | Per frame |
+| | per frame |
 | --- | --- |
-| Colour conversion, BGRA→RGB | 0.198 ms |
-| Colour conversion, BGRA→GRAY | 0.252 ms |
-| CPU resize + normalise + NCHW | 3.09 ms |
-| **GPU dispatch → NCHW tensor, D3D12** | **0.070 ms** (2560×1600 source) |
-| GPU dispatch + forced readback | 2.20 ms |
-| `grab_frame()` — texture stays on the GPU | 0.099–0.156 ms |
+| BGRA→RGB | 0.22 ms |
+| BGRA→GRAY | 0.25 ms |
+| CPU resize + normalise + NCHW | 3.12 ms |
+| GPU dispatch (submission cost only) | 0.001 ms |
+| GPU dispatch + forced readback | 2.56 ms |
 
-Cross-machine comparison is not valid — different CPU, GPU, panel and, on two
-rows, different code. Both recordings are kept so each answers for its own
-machine.
+**The dispatch row is submission cost, not GPU execution.** The calling thread
+returns in a microsecond because the GPU works asynchronously; the readback row
+is the honest worst case, and it is *slower* than the CPU arm. That is the
+point — the GPU path wins only when the tensor is consumed on the GPU. Pulling
+it back to the CPU gives up the entire advantage.
+
+The two machines are not comparable to each other: different CPU, GPU and panel.
+Each answers for itself, which is why both recordings are kept.
+
+### End-to-end capture is not a stable number
+
+`grab()` converts only the regions that changed, so its cost tracks what is
+happening on screen. Across seven recordings of unchanged code, `grab_frame()`
+alone spanned **0.17–0.83 ms** and `grab()` **1.65–4.53 ms**. These are reported
+for shape, not precision, and are deliberately not badged.
+
+Neither is a capture rate. They are what the *calling thread* pays per frame;
+frames still arrive only as fast as the compositor presents them.
 
 Sustained-load check: 211,726 frames of `grab_frame()` → GPU tensor in 12
 minutes, zero errors, VRAM flat, no throughput decay.
 
-**The last two are not stable measurements and should not be quoted as single
-numbers.** `grab()` converts only the parts of the frame that changed, so its
-cost tracks what is happening on screen; across seven recordings on unchanged
-code `grab_frame()` alone spanned 0.17–0.83 ms. They are reported for shape, not
-precision.
+## Against other libraries
 
-Neither figure is a capture rate. They are what the *calling thread* pays per
-frame; frames still arrive only as fast as the compositor presents them. What
-they mean is that capture stops being your bottleneck.
+Two independent recordings on different machines. **They are not comparable to
+each other** — different panels, different resolutions, different RapidShot
+versions — and neither predicts your hardware.
 
-For how these compare against DXcam, BetterCam and mss — including the two
-measurements where RapidShot loses — see the table at the top of this file, and
-run `python benchmarks/compare_libraries.py --motion --with-motion` to reproduce
-it on your own hardware. See `ROADMAP.md` section 3 for the full per-stage
-breakdown and how each figure is measured.
+Reproduce with:
 
-## System Requirements
+```bash
+python benchmarks/compare_libraries.py --motion --with-motion
+```
 
-- **Operating System:** Windows 10 or newer. Windows only — Desktop Duplication
-  has no cross-platform equivalent.
-- **Python:** 3.9 through 3.14 (`pip` will refuse to install on anything older)
-- **GPU:** Any GPU that drives a display. A CUDA-capable NVIDIA GPU is needed
-  only for the optional CuPy acceleration.
-- **RAM:** 8 GB+ (depending on the resolution and number of screencapture instances used)
+Every library runs in its own process: all three DXGI libraries declare the same
+COM interfaces, and whichever imports first breaks the others.
+
+### Machine A — 1080p, 100 Hz, RapidShot 2.1.0
+
+[`benchmarks/library-comparison.json`](benchmarks/library-comparison.json),
+recorded 2026-08-06. Fullscreen BGRA, median of three runs:
+
+| | frames/s | CPU | memory |
+| --- | --- | --- | --- |
+| RapidShot | 99.9 | **13.6%** | 124.4 MB |
+| RapidShot (`timeout_ms=0`) | 100.1 | 95.9% | 125.2 MB |
+| DXcam | 100.5 | 79.7% | **87.1 MB** |
+| BetterCam | 100.5 | 74.4% | **80.0 MB** |
+| mss | 48.1 | 35.0% | **60.4 MB** |
+
+**Nobody beats the compositor.** Every DXGI library lands at ~100 fps here
+because that is where the ceiling is. A frame-rate win in this space is almost
+always measuring something else — most often a still desktop returning stale
+buffers instantly.
+
+### Machine B — 2560×1600, RapidShot 2.4.0
+
+[`benchmarks/library-comparison-machineB.json`](benchmarks/library-comparison-machineB.json),
+recorded 2026-08-22 with `cv2 5.0.0` (32 threads) and `cupy 14.2.0`. Fullscreen.
+
+**Medians pooled across independent full-matrix runs**, each of which is itself
+the median of 3–5 repeats, so most cells rest on 9–15 measurements. The `n`
+column says how many runs each row pools; the per-run minimum and maximum are in
+the JSON. Pooling mattered — on a single run the AVX2 and NumPy builds looked
+identical, and across four they do not.
+
+Each library is configured for its **best** available path rather than its
+default. DXcam ships a NumPy processor beside its cv2 one, BetterCam has a CuPy
+path, and RapidShot has a CuPy path, an unpooled mode, and the toolchain-free
+NumPy build that a plain `pip install` actually produces:
+
+| | n | BGRA fps / CPU | RGB fps / CPU | memory |
+| --- | --- | --- | --- | --- |
+| RapidShot (AVX2) | 5 | 153.2 / **35.5%** | 124.4 / **65.2%** | 238 MB |
+| RapidShot (NumPy, no extension) | 3 | 153.7 / 33.3% | 113.0 / 70.0% | 238 MB |
+| RapidShot (CuPy) | 2 | — | 124.2 / 66.8% | 260 MB |
+| RapidShot (`pool_output=False`) | 2 | — | 102.5 / 73.3% | **189 MB** |
+| RapidShot (`timeout_ms=0`) | 4 | 151.8 / 53.5% | 122.4 / 73.2% | 234 MB |
+| DXcam (cv2) | 4 | 129.1 / 60.0% | **146.8** / 450.8% | **102 MB** |
+| DXcam (NumPy) | 3 | 136.4 / 61.2% | **150.5** / 2692.2% | **91 MB** |
+| BetterCam (cv2) | 4 | 154.6 / 53.5% | **142.6** / 458.6% | **98 MB** |
+| mss | 4 | 32.9 / 42.2% | 21.9 / 49.8% | **83 MB** |
+
+**RapidShot loses the RGB frame-rate column.** DXcam and BetterCam return
+142–151 frames per second against RapidShot's 124. It also uses roughly 2.4x
+their memory. Both are real, and neither is argued away here.
+
+**What it wins is CPU time.** Isolating conversion by subtracting each library's
+BGRA cost from its RGB cost:
+
+| | CPU cost of BGRA→RGB |
+| --- | --- |
+| **RapidShot (AVX2)** | **+29.7 points** |
+| **RapidShot (NumPy)** | **+36.7 points** |
+| BetterCam (cv2) | +405.1 points |
+| DXcam (cv2) | +390.8 points |
+| DXcam (NumPy) | +2631.0 points |
+
+**Read that carefully, because the obvious reading is wrong.** Those are
+CPU-*time* percentages summed across cores, not wall-clock. OpenCV 5.0 defaults
+to one thread per logical core — 32 on this machine — so `cvtColor` spends many
+cores to finish quickly. Measured directly here, BGRA→RGB at 2560×1600 costs
+2.22 ms multithreaded and 4.36 ms pinned to a single thread. DXcam still
+returned *more* frames per second than RapidShot while doing it. The defensible
+claim is "the same work for far less total CPU", not "faster", and the exact
+multiple will move with your core count and OpenCV version. A machine with 8
+logical cores will not reproduce these ratios.
+
+### What the extension is actually worth
+
+The AVX2 kernels are **6.4x** the NumPy path on the synthetic conversion
+benchmark (1.93 ms against 0.30 ms, both from Machine A), and **1.10x**
+end-to-end here — 124.4 against 113.0 fps, and +29.7 against +36.7 points of
+conversion CPU. Both numbers are honest and they measure different things: at
+2560×1600 the staging read dominates `grab()`, so making conversion six times
+cheaper moves the total by about a tenth.
+
+Since `pip install rapidshot[native]` costs nothing but a download, this is no
+longer much of a decision — but it is worth knowing what you are getting. The
+extension earns its keep through the GPU tensor and cross-adapter transfer,
+which have no alternative at all. `grab()` gets a modest gain, not a
+transformation, and the `rapidshot-numpy` row above is what you fall back to
+without it.
+
+### What buffer pooling is worth
+
+`pool_output=False` returns plain `ndarray`s and costs **1.21x** on fullscreen
+RGB — 124.4 against 102.5 fps — while saving about **50 MB**. At region size
+both sit at the compositor ceiling (~165 fps) and the difference disappears
+entirely.
+
+This is the first live-capture measurement of that trade; the 1.3–2.1x quoted
+elsewhere for pooling came from a synthetic benchmark and is not reproduced in a
+capture loop. If memory matters more to you than fullscreen frame rate,
+`pool_output=False` is a reasonable trade rather than a downgrade.
+
+### Caveats
+
+This table is noisier than it looks, and the harness says so itself.
+
+- Several cells disagreed by more than 10% across their runs; the spreads are
+  recorded per row in the JSON.
+- `bettercam-gpu` fails on RGB with `Expected Ptr<cv::UMat>` — its CuPy path
+  hands a device array to OpenCV 5, which rejects it. A BetterCam/OpenCV-5
+  incompatibility, recorded rather than hidden.
+- The GPU rows pool only runs taken *after* CuPy had its CUDA headers. Without
+  them CuPy fails at its first JIT and those rows record no frames at all —
+  which is a packaging trap, not a capture result. See
+  [Troubleshooting](#troubleshooting).
+- The two machines are **not** comparable to each other. Machine A ran a 1080p
+  100 Hz panel at 2.1.0; this one is 2560×1600. Most of the frame-rate
+  difference between the tables is the panel.
+
+**Published FPS claims in this space contradict each other badly** — DXcam's
+README reports DXcam at 239 fps, BetterCam's reports the same library at 39 —
+because they come from different hardware with no shared harness. A number
+measured on someone else's machine tells you nothing about yours, this page
+included.
+
+### What neither table shows
+
+They measure `grab()`, the CPU round trip. The paths RapidShot is built around
+have no column because the other libraries have no equivalent: `grab_frame()`
+handing back a GPU-resident frame, the NCHW tensor produced by one dispatch,
+cross-adapter transfer, and dirty-rect metadata.
+
+## System requirements
+
+- **OS:** Windows 10 or newer. Windows only — Desktop Duplication has no
+  cross-platform equivalent.
+- **Python:** 3.9+. Tested through 3.14.
+- **GPU:** any GPU that drives a display. A CUDA-capable NVIDIA GPU is needed
+  only for the CuPy path.
+- **RAM:** 8 GB+, depending on resolution and how many instances you create.
 
 ### Tested configurations
 
-Nothing in RapidShot branches on GPU vendor. This is what has actually been
-run, which is not the same claim:
+Nothing in RapidShot branches on GPU vendor. This is what has actually been run,
+which is a different claim:
 
 | Configuration | State |
 | --- | --- |
 | Intel iGPU, single adapter | Verified |
 | NVIDIA dGPU, single adapter, native extension built | Verified |
 | NVIDIA dGPU, single adapter, no extension | Verified |
+| Hybrid Intel iGPU + NVIDIA dGPU (Optimus) | **Verified** — 2026-08-22 |
+| Cross-adapter transfer, Intel iGPU → RTX 4060 | **Verified** byte-exact |
 | Any AMD GPU | **Not tested** |
-| Hybrid / switchable graphics (Optimus, AMD) | **Not tested** |
+| Hybrid with an AMD adapter | **Not tested** |
 | Headless with a virtual display | **Not tested** |
 
-CuPy is the only NVIDIA-bound feature, because CUDA is; `nvidia_gpu=True` falls
-back to the CPU processor when CuPy is unavailable. AMD and Intel consumers
-reach the same GPU tensor through DirectML via `output_resource_address`.
+The Optimus row is verified by `examples/verify_cross_adapter.py`, which moved
+5 captured frames from an Intel iGPU to an RTX 4060 — 16,384,000 bytes each at
+2560×1600 — every one byte-exact against a source-side readback.
 
-### Troubleshooting
+The AMD rows are genuinely untested. The BGRA swizzle rule is verified on Intel
+and NVIDIA drivers and follows from the DXGI format rather than driver
+discretion, so the risk is low — but it is the one rule a silent mismatch would
+corrupt rather than crash. AMD's cross-adapter capability flags are unknown; the
+buffer path was chosen so nothing depends on them.
 
-- **ImportError with CuPy:** Ensure you have compatible CUDA drivers installed.
-  `pip install cupy-cuda13x[ctk]` installs no headers against `cuda-toolkit`
-  13.3.x and CuPy then fails at its first JIT; use
-  `pip install "cuda-toolkit[cudart,nvrtc]==13.2.*"` instead.
-- **"Desktop duplication was denied":** the message names the cause. A
+## Troubleshooting
+
+- **CuPy fails at its first JIT** with `Failed to find CUDA headers`. The wheel
+  is not enough — `pip install cupy-cuda13x[ctk]` installs no headers against
+  `cuda-toolkit` 13.3.x, because that version dropped the extras it requests and
+  pip only warns. Pin it instead:
+
+  ```bash
+  pip install "cuda-toolkit[cudart,nvrtc]==13.2.*"
+  ```
+
+  Until this is fixed, `nvidia_gpu=True` returns no frames — CuPy imports, so
+  the CPU fallback does not trigger.
+
+- **"Desktop duplication was denied."** The message names the cause. A
   non-input desktop, a locked workstation, an open UAC prompt and a Session 0
-  service cannot capture the user's screen; protected (HDCP/DRM) content is a
+  service cannot capture the user's screen. Protected (HDCP/DRM) content is a
   separate case and is reported as such.
-- **Black screens when capturing:** protected content is blanked by the OS —
-  check `frame.protected_content`. Exclusive fullscreen is handled: capture
-  detects the transition, rebuilds, and continues.
-- **Low performance:** Experiment with different backends (NUMPY vs. CUPY) to optimize performance.
-- **Unstable benchmark numbers:** on a hybrid P-core/E-core CPU, pin the
-  process to the performance cores. `benchmarks/perf_suite.py` does this
-  itself; unpinned it reported false regressions up to 2.57× against
-  unchanged code.
+
+- **Black frames.** Protected content is blanked by the OS — check
+  `frame.protected_content`. Exclusive fullscreen is handled: capture detects
+  the transition, rebuilds and continues.
+
+- **`grab()` keeps returning `None`.** Usually nothing is changing on screen.
+  Desktop Duplication reports presents, not refreshes, so a still desktop
+  produces no frames. This is the single most common cause of a benchmark
+  reading zero.
+
+- **On a hybrid laptop, every adapter refuses `DuplicateOutput`.** Set NVIDIA
+  Control Panel → Manage 3D Settings → Preferred graphics processor →
+  Integrated graphics. Without it the NVIDIA driver can claim the display while
+  the firmware reports Optimus, and every adapter — including WARP — returns
+  `DXGI_ERROR_UNSUPPORTED`.
+
+- **Unstable benchmark numbers.** On a hybrid P-core/E-core CPU, pin to the
+  performance cores. `benchmarks/perf_suite.py` does this itself; unpinned it
+  reported false regressions up to 2.57x against unchanged code.
 
 ## Contributing
 
-Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). It is mostly
-a list of the things that will waste your time otherwise: live capture tests
-need something moving on screen, CI cannot verify them at all, and a naive
-benchmark comparison here once produced eleven false regressions on identical
-code.
-
+See [CONTRIBUTING.md](CONTRIBUTING.md). It is mostly a list of things that will
+waste your time otherwise: live capture tests need something moving on screen,
+CI cannot verify them at all, and a naive benchmark comparison here once
+produced eleven false regressions on identical code.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+MIT — see [LICENSE](LICENSE).
 
 ## Acknowledgments
 
-RapidShot is a merged version of the following projects:
+A merge of, and successor to:
 
 - Original DXcam by ra1nty
-- dxcampil - PIL-based version
-- DXcam-AI-M-BOT - Cursor support version
-- BetterCam - GPU acceleration version
+- dxcampil — PIL-based version
+- DXcam-AI-M-BOT — cursor support version

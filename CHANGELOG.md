@@ -98,6 +98,93 @@ each release can be traced back to the plan it implements.
   resolved by directory order would make a verdict depend on `glob()`, which is
   the kind of invisible coupling this suite exists to remove.
 
+### Documentation
+
+- **`ROADMAP.md` section 7 rewritten as a staged 2.5 → 3.0 plan.** It was a flat
+  bullet list of "later stages" with no ordering rationale, which is how a
+  roadmap turns into a wish list.
+
+  The plan now leads with **section 7.0: build the AI-ingestion benchmark before
+  any of the features below it.** The only cross-library benchmark this project
+  has measures `grab()` — OS pixels to a CPU array — which is the path where
+  RapidShot's advantage is smallest and where it loses the frame-rate column
+  outright. Nothing measures *present → model-ready CUDA tensor*, which is what
+  the GPU work exists for. Until that number exists, ordering `GpuConverter`,
+  Torch interop, FP16, multi-ROI and DLPack against each other is guesswork.
+
+  Also recorded: measure pixel *age* rather than call duration, via a controlled
+  visual latency source that encodes a frame ID into the pixels so every library
+  can be timed against one clock — `Frame.timestamp_qpc` gives RapidShot an
+  advantage the others cannot match, which makes it useless for a fair
+  comparison without one.
+
+  Several proposals were corrected rather than adopted as written: the hardware
+  encoder cannot branch off `GpuPreprocessor12` (it emits an NCHW float32 ML
+  tensor, not an encoder input); ROI scheduling does not reduce DXGI capture
+  work, only downstream processing; dirty rects carry no window identity, so
+  they cannot track windows; multi-monitor "synchronisation" is alignment within
+  a tolerance, since monitors present independently; a Windows `HANDLE` cannot
+  be sent over a socket; and QPC is a sub-microsecond interval timer, not a
+  nanosecond-accurate synchronised clock.
+
+  The native C ABI is recorded as a **reversal with its reason stated**: section
+  8 rejected a native core on the measurement that the Python/COM binding costs
+  0.003 ms/frame. That measurement stands. The new argument is embedding, not
+  speed — a C/C++ host such as OBS cannot put Python in its capture path at any
+  speed. Section 8 gained explicit rejections for a YAML/DSL pipeline layer, A/V
+  production features, Game Capture-style API injection, and adaptive
+  backpressure.
+
+- **`README.md` rewritten.** It carried numbers that were never in the files it
+  cited, and claims nothing measured supported.
+
+  The worst was the compatibility table: it listed **hybrid / switchable
+  graphics as "Not tested"**, disclaiming the configuration 2.4.0 exists to
+  serve, six days after `verify_cross_adapter.py` moved five frames Intel to
+  RTX 4060 byte-exact on exactly that hardware.
+
+  The "Second machine, RTX 4060" table attributed four of its six figures to
+  `baseline-rtx4060.json`, which never contained them at any point in its
+  history -- BGRA to RGB quoted 0.198 ms against a recorded 0.235, and the GPU
+  dispatch row quoted 0.070 ms for a benchmark that measures *submission* cost
+  and recorded 0.001. Elsewhere: "6 recordings, 0.17-0.77 ms" in one paragraph
+  and "seven recordings, 0.17-0.83 ms" in another; "9.4 ms" for a no-extension
+  GRAY conversion the file records as 6.878; conversion described as "pure
+  NumPy" two sections after the AVX2 kernels it actually uses; a cursor example
+  that could not run, referencing undefined constants and returning a variable
+  it never assigns; and benchmarking instructions still teaching
+  `--compare baseline.json`, the pattern that stopped the release gate gating.
+
+  Cut: "built for feeding models, not for saving screenshots", "comprehensive
+  cursor capture capabilities", "designed to provide objective performance
+  measurements", "colour conversion is essentially free" (it is 0.30 ms), and
+  the inherited fork boilerplate that advertised "NVIDIA GPU acceleration" two
+  bullets below the entry explaining what that actually is.
+
+  Every figure now names the committed file it came from.
+
+
+- **`ROADMAP.md` still said 2.3.0 was the tagged release** and listed the
+  asynchronous shared fence as the piece of section 6.1 still outstanding,
+  which 2.4.0 shipped. It also described Machine B as being in discrete-only
+  mode, which stopped being true on 2026-08-22 when the MUX was switched to
+  Optimus -- the change the section 6.1 verification depended on. Release
+  status, the per-release table, section 6.1's state and the machine
+  description are now current, and 2.4.0 is recorded as confirmed live rather
+  than as unverifiable from the tree.
+
+- **`README.md` documented `transfer()` and nothing after it.** The async path,
+  the GPU-side wait through `shared_fence_handle`, and the consumer handshake
+  were all shipped and none appeared, so the front page described a blocking
+  copy as the whole story. Added, with the measurements attached: 7-14% for the
+  GPU-side wait, and 28 of 60 frames wrong without the handshake.
+
+- **Recorded the one thing not to do next.** Section 6.1 now says that another
+  round of D3D12 synchronisation work needs a measurement or a user report
+  first, and names prebuilt native wheels as the larger return -- every figure
+  in section 3 that makes this library worth choosing sits behind an extension
+  a `pip install` cannot currently reach.
+
 ### Benchmarks
 
 - **Each library now competes in its best configuration, not its default.**

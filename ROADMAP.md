@@ -12,7 +12,9 @@ This document is written to be read cold. It states where the project actually i
 
 ### Release status
 
-**2.3.0 is tagged** (`v2.3.0` at `b3a01f2`, 21 August 2026), following **2.2.0** (`403849e`, 6 August), **2.1.0** (5 August) and **2.0.0** (4 August). PyPI Trusted Publishing and the `pypi` GitHub environment are configured and restricted to `v*` tags, so a pushed tag is what cuts a release; the full procedure is in `RELEASING.md`.
+**2.4.0 is tagged and published** (`v2.4.0` at `9d40b70`, 22 August 2026), following **2.3.0** (`v2.3.0` at `b3a01f2`, 21 August), **2.2.0** (`403849e`, 6 August), **2.1.0** (5 August) and **2.0.0** (4 August). PyPI Trusted Publishing and the `pypi` GitHub environment are configured and restricted to `v*` tags, so a pushed tag is what cuts a release; the full procedure is in `RELEASING.md`.
+
+**2.4.0 is confirmed live**, which earlier releases in this list never were from inside the repository: PyPI serves 2.4.0 as the current version with both the wheel and the sdist, and the GitHub Release carries wheel, sdist and SBOM. The release ran from the tag with no manual step.
 
 Note that `CHANGELOG.md` dates 2.3.0 as 2026-08-06, which is when the Machine B work below was done, not when it shipped — the tag is two weeks later. Every measurement in this document dated 2026-08-06 belongs to that session and is correct as written.
 
@@ -24,14 +26,27 @@ What each release delivered, in one line each — `CHANGELOG.md` has the detail:
 | **2.1.0** | Native AVX2 conversion kernels for all five colour modes; conversion finished as an optimisation target |
 | **2.2.0** | `to_nchw()`, public `timeout_ms` and `pool_size_frames` (−60 MB/camera), the cross-library comparison, and the `cpu_to_nchw` strawman correction |
 | **2.3.0** | First release verified on NVIDIA hardware. CUDA interop for the GPU tensor; two shipped bugs fixed — `nvidia_gpu=True` returning wrong pixels for every mode but BGRA, and every `E_ACCESSDENIED` misreported as protected content; five "untestable" paths given real tests |
+| **2.4.0** | The hybrid path end to end: capture on the iGPU, cross-adapter to the dGPU, CUDA consumer, no CPU in the pixels or the synchronisation. `transfer_async()` with a GPU-side shared fence, and `set_consumer_fence()` / `wait_for_consumer()` closing the buffer-reuse race — **28 of 60 frames wrong without the handshake, 0 with it** |
 
-**Whether 2.1.0, 2.2.0 and 2.3.0 actually published cannot be verified from the repository** — that is the release workflow's outcome, not a file in the tree. Confirm in the GitHub UI that all three Releases exist with their assets and that PyPI serves 2.3.0.
+**Whether 2.1.0, 2.2.0 and 2.3.0 actually published cannot be verified from the repository** — that is the release workflow's outcome, not a file in the tree. Confirm in the GitHub UI that all three Releases exist with their assets. 2.4.0 needs no such check: PyPI serves it and the Release carries its assets, both confirmed on 2026-08-22.
 
 **1.1.0 is yanked**, reason *Newer Version*. It was the only thing on PyPI from April 2025 to now and it did not work: it failed to import on Python 3.11+ (`cursor: Cursor = Cursor()` trips the dataclass mutable-default check broadened in 3.11), and patching that one line only got it to return all-black frames, because the processor was handed a texture where it expected a mapped staging surface. Yanking is not deletion — an existing `rapidshot==1.1.0` pin still resolves, which is the intent; only new unpinned installs are steered away.
 
 Two further items cannot be verified from the repository either and should be confirmed in the same pass: **Settings → Security → private vulnerability reporting** must be enabled (or the link in `SECURITY.md` 404s), and branch protection needs *Require review from Code Owners* (or `CODEOWNERS` is only a routing hint).
 
-**Next feature task:** § 6.3 — finish Stage 3 (Frame metadata). It is smaller than it was: of the three pieces listed there, **timestamps are done** (`Frame.timestamp_qpc` and `Frame.timestamp`), **cursor is half done** (`Frame.cursor_visible` exists; position and shape are captured in `core/duplicator.py` and never surfaced), and **`Protocol`-typed interfaces are not started** — there is no `Protocol` anywhere in the package. § 6.1 is complete: hybrid and headless systems are reported clearly, a captured frame crosses to a second adapter at **0.70–0.98 ms per 1080p frame** verified byte-exact, and the convert-first-or-transfer-first question has been measured and settled in favour of transferring the frame. **§ 6.1's validation on real hybrid hardware is now done** (2026-08-22, Intel→NVIDIA, byte-exact — see above); the asynchronous shared fence is the one piece still outstanding there.
+**Next feature task:** § 6.3 — finish Stage 3 (Frame metadata). It is smaller than it was: of the three pieces listed there, **timestamps are done** (`Frame.timestamp_qpc` and `Frame.timestamp`), **cursor is half done** (`Frame.cursor_visible` exists; position and shape are captured in `core/duplicator.py` and never surfaced), and **`Protocol`-typed interfaces are not started** — there is no `Protocol` anywhere in the package. § 6.1 is complete: hybrid and headless systems are reported clearly, a captured frame crosses to a second adapter at **0.70–0.98 ms per 1080p frame** verified byte-exact, and the convert-first-or-transfer-first question has been measured and settled in favour of transferring the frame. **§ 6.1's validation on real hybrid hardware is now done** (2026-08-22, Intel→NVIDIA, byte-exact — see above), **and the asynchronous shared fence shipped in 2.4.0**, which was the last piece outstanding there. § 6.1 is closed in both directions: `transfer_async()` submits without blocking, `shared_fence_handle` lets a CUDA consumer wait on the GPU, and `set_consumer_fence()` / `wait_for_consumer()` close the reverse hazard where the producer overwrites a buffer the consumer is still reading.
+
+**Do not start another round of D3D12 synchronisation work without a measurement or a user report asking for it.** That seam has been through feature work, hardware validation, adversarial review, four rounds of fixes, targeted regression tests and a clean final pass. The next thing to do here is nothing; the returns are elsewhere.
+
+**The next task is § 7.0 — build the AI-ingestion benchmark — and it comes before § 6.3.** § 6.3 (finish `Frame` metadata) is still worth doing and is now folded into § 7.1, but it is no longer the front of the queue. § 7 explains why: every remaining proposal is a performance claim, and the only benchmark this project has measures `grab()` — the path where RapidShot's advantage is smallest and where it loses the frame-rate column outright. Until *present → model-ready tensor* is measured, feature ordering is guesswork, and § 11 has been right about that twice already.
+
+**The largest of those returns was distribution, and it is now built.** § 6.1's cross-adapter transfer, § 6.6's CUDA interop, the AVX2 kernels of § 3 and 2.4.0's synchronisation all sat behind an extension the consumer had to build, costing a Rust toolchain, MSVC build tools and `native/install_dev.py`. Every measurement in § 3 that makes this library worth choosing was one a `pip install` could not reach.
+
+`rapidshot-native` closes that: `pip install rapidshot[native]` and the extension is present, no toolchain. One **abi3** wheel covers Python 3.9 and every later version, which is what makes this a single artefact rather than a matrix that grows with each CPython release — the crate already carried `pyo3/abi3-py39`, so the work was packaging rather than porting.
+
+It is a **separate distribution on a separate tag**, published by `release-native.yml`. `rapidshot` stays `py3-none-any`, so the guard that fails the main release if a compiled artefact appears in it (§ 10) is preserved rather than negotiated with. The two version independently: the Rust moves on its own schedule, and lockstep would republish an identical binary under a new number on every RapidShot release.
+
+**Nothing has been published yet.** The wheel builds, installs into a clean environment outside the repository, is found by `rapidshot.native`, and passes both CI and a local end-to-end check — but no `native-v*` tag has been pushed. Until one is, `pip install rapidshot[native]` resolves to nothing. `RELEASING.md` records the ordering, including why `rapidshot-native` is deliberately absent from the `all` extra until the first wheel is live.
 
 **Hardware changed on 2026-08-06, and with it the state of the project.** A second development machine with an **NVIDIA RTX 4060** joined, and things this document called untestable are now tested. The headline: **RapidShot has a real GPU consumer for the first time** — capture → GPU tensor → `cupy.ndarray`, no CPU round-trip, verified byte-exact (§ 6.6).
 
@@ -138,7 +153,7 @@ If those are the other way round — dGPU holding the output, iGPU at zero — t
 
 **The unknowns on AMD, stated precisely.** The BGRA swizzle rule (§ 4) is verified on Intel and NVIDIA drivers and unverified on a third — low risk, since it follows from the DXGI format rather than driver discretion, but it is the one rule a silent mismatch would corrupt rather than crash. And AMD's cross-adapter capability flags are unknown; the buffer path was chosen precisely so nothing depends on them, a choice NVIDIA has already vindicated by not supporting cross-adapter row-major textures at all (§ 6.1).
 
-**Machine B is an Acer Predator PHN16-72 with a MUX switch, currently set to discrete-only, so the Intel iGPU is disabled at firmware level and absent from Device Manager entirely.** That makes it a *single-adapter NVIDIA* system, not the hybrid one § 6.1 needs — `topology_info()` correctly reports `single`. Switching PredatorSense to Hybrid and rebooting restores the iGPU and produces the genuine Optimus topology. The two modes are separately useful: discrete-only puts capture and CUDA on one adapter with no cross-adapter step in the path, which is the cleaner place to prove an end-to-end GPU consumer; hybrid is the only place § 6.1 can be validated.
+**Machine B is an Acer Predator PHN16-72 with a MUX switch, set to Optimus since 2026-08-22**, so the Intel iGPU drives the display and the RTX 4060 owns no output — the genuine hybrid topology § 6.1 needs, and `topology_info()` reports `hybrid`. It spent the preceding fortnight in **discrete-only**, where the iGPU is disabled at firmware level and absent from Device Manager entirely, making it a *single-adapter NVIDIA* system that reported `single`. Switching between the two is a PredatorSense setting plus a reboot. Measurements dated before 2026-08-22 were taken in discrete-only; benchmark recordings keep the two apart by the `gpu` they record, which is why `baseline-rtx4060.json` and `baseline-rtx4060-hybrid.json` refuse to gate against each other. The two modes are separately useful: discrete-only puts capture and CUDA on one adapter with no cross-adapter step in the path, which is the cleaner place to prove an end-to-end GPU consumer; hybrid is the only place § 6.1 can be validated.
 
 **Two toolchain traps cost time on Machine B, both worth not rediscovering:**
 
@@ -738,20 +753,206 @@ Note the honest framing for the headline: **0.075 ms per frame for a model-ready
 
 ---
 
-## 7. Later stages
+## 7. The 2.5 → 3.0 plan
 
-- **6c — GPU-side change detection.** Lower value than it appears: DDA *already* reports only changed content and provides dirty rects computed by the compositor. Real residual value is deduplicating presents that are reported as changed but visually identical, and sub-dirty-rect granularity. **Do § 6.3's dirty rects first and measure** before building this.
-- **5 — Backend auto-selection.** Needs ≥2 backends, so it follows § 6.5.
-- **7 — Hardware encode.** NVENC / AMF / QSV behind one API. *NVFBC caveat:* deprecated for general use on Windows 10+ (frozen at Capture SDK 7.1); treat it as a Linux-only path.
-- **8 — `rapidshot.stream` network streaming.** WebRTC transport, DataChannel input, browser viewer. This is what changes the product category from "screenshot library" to "capture-and-stream infrastructure."
+**Positioning.** RapidShot is a **Windows GPU capture runtime: capture → transform → handoff.** Not "the fastest screenshot library" — § 3 and the README both show it losing the frame-rate column — and not an ML framework. It moves pixels from the compositor to whatever consumes them (NumPy, PyTorch, an encoder, another process) with the fewest copies and the least synchronisation overhead. AI is the flagship consumer, not the definition.
+
+That phrasing matters for scope. It keeps PyTorch interop central without making the library ML-only, and leaves room for encoders, recorders and native consumers without inviting scene graphs and audio mixers (§ 8).
+
+### 7.0 — Build the benchmark first <- **do this before any feature below**
+
+Every item in this section is a performance claim, and § 11 says measure before ordering. There is currently no benchmark measuring the thing RapidShot is actually for.
+
+`benchmarks/compare_libraries.py` measures `grab()` — OS pixels to a CPU array. That is one of three categories, and the one where RapidShot's advantage is smallest:
+
+| Category | Measures | State |
+| --- | --- | --- |
+| **Capture** | OS pixels → application frame | ✅ `compare_libraries.py` |
+| **AI ingestion** | OS pixels → model-ready CUDA tensor | ❌ **missing, and it is the important one** |
+| **Agent** | OS pixels → API-ready compressed screenshot | ❌ missing |
+
+**`benchmarks/ai_ingestion.py`** should measure one number: **time from a new desktop frame appearing to a `1x3x640x640` FP16 RGB normalised tensor being ready on CUDA:0.** Every path must produce a bit-identical tensor, or the comparison measures different work:
+
+| Path | Pipeline |
+| --- | --- |
+| mss | capture → NumPy → resize → RGB → float → NCHW → CUDA |
+| DXcam (DXGI) | capture → NumPy → same → CUDA |
+| DXcam (WGC) | WGC → NumPy → same → CUDA |
+| RapidShot CPU | `grab()` → same → CUDA |
+| **RapidShot GPU** | `grab_frame()` → D3D12 preprocess → CUDA tensor |
+
+Report **p50 / p95 / p99 present-to-model-ready**, unique frames/s, CPU %, **CPU->GPU bytes per frame** (the one that exposes hidden copies), GPU preprocess time, fence wait, dropped frames, RAM, VRAM, jitter. Not mean FPS.
+
+**Measure pixel age, not call duration.** Timing `t0 = perf_counter(); frame = capture(); t1` says how long the *call* took, not how old the *pixels* are. RapidShot has an advantage here — `Frame.timestamp_qpc` exposes the compositor's `LastPresentTime` — but the other libraries expose no equivalent, so a shared clock is needed.
+
+Build a **controlled visual latency source**: a D3D window that encodes an incrementing frame ID as a small binary pattern and records `frame_id → QPC` at every `Present()`. Each capture path decodes the pattern out of the captured pixels and recovers the ID. Then
+
+```text
+latency = model_ready_qpc - source_present_qpc[decoded_id]
+```
+
+and mss, DXcam, WGC and RapidShot are all measured against one clock. `benchmarks/motion_source.py` is the obvious thing to grow this from.
+
+**A caveat that belongs in the harness rather than being discovered later:** QPC is *not* nanosecond-accurate and is not synchronised to an external clock. Microsoft specifies a sub-microsecond interval timer whose real resolution comes from `QueryPerformanceFrequency`. Read it once and record it, the way `perf_suite.py` records its machine block.
+
+**Then a second benchmark, present → inference complete**, with one small fixed model (YOLO11n, or a pinned ONNX/TensorRT graph) across 1080p / 1440p / 4K, 60-240 Hz, and three workloads: static UI, scrolling, high motion. If RapidShot wins that, the defensible claim becomes *"fastest Windows desktop-to-model pipeline"* — far stronger and far more checkable than *"fastest screenshot library"*.
+
+**Why this is 7.0 and not 7.5:** `GpuConverter`, Torch interop, FP16, multi-ROI, DLPack and more fence work all *sound* architecturally attractive. The benchmark is what says which of them moves the number that matters. Building it first is the difference between a roadmap and a wish list.
+
+### 7.1 — 2.5: reliability and adoption
+
+Before more GPU surface area, make the library boringly dependable and easy to adopt. This is what makes RapidShot the best *capture* library rather than only the best ML bridge.
+
+**Capture Recovery Manager — rank 1 overall.** Less exciting than Torch interop and more important. Survive, without the application writing recovery code: `DXGI_ERROR_ACCESS_LOST`, monitor unplug/replug, resolution change, refresh-rate change, rotation, SDR<->HDR switch, sleep/wake, lock/unlock and secure-desktop switches, GPU reset, driver restart, exclusive-fullscreen transitions, window resize/destruction, adapter topology change. Expose `frame.generation`, `camera.recovery_count`, `camera.last_recovery_reason` so a consumer can *tell* that recovery happened. Parts exist already (§ 5 lists the access-loss rebuild and exclusive-fullscreen handling); the work is making it systematic and observable rather than incidental.
+
+**DXcam compatibility layer.** Technically dull, plausibly the highest adoption return in this document: a shim letting `dxcam.create(...)` code run unchanged, so existing projects switch by changing an import.
+
+**Finish `Frame`, do not redesign it.** Most of it exists — `timestamp_qpc`, `accumulated_frames`, `dirty_rects`, `protected_content`, `cursor_visible`, `region`, `rotation_angle`. Add `frame.sequence`, `frame.changed_fraction`, `frame.age_ms`, and surface the cursor position/shape/hotspot that `core/duplicator.py` already collects and discards (§ 6.3).
+
+**`rapidshot.capabilities()` and `rapidshot diagnose`.** Consolidate the probes that already exist (`topology_info`, `probe_cross_adapter`, `probe_onnxruntime`, `native.build_info`) into one stable report: backend, adapter, D3D12 support, cross-adapter, CUDA interop, WGC, HDR formats, encoder codecs. A support-load feature — most "it does not work" reports are answerable from that output alone.
+
+**A structured profiler.** `profile.report()` / `.json()` / `.summary()`, not printed text. This project argues from measurements constantly; make the instrument a first-class object.
+
+### 7.2 — 2.6: GPU transform and framework interop
+
+**`GpuConverter` — rank 2, and build it before the encoder.** A reusable colourspace/format layer: `BGRA8 / RGBA8 / R10G10B10A2 / RGBA16F → NV12 / P010 / RGB`. Capture already handles HDR formats through `DuplicateOutput1`. Built once as infrastructure it serves ML, encoding, streaming and recording; buried inside a Stage 7 encoder it serves one of them.
+
+**`GpuTensor` → Torch / CuPy / DLPack — rank 3.** `examples/gpu_tensor_to_cupy.py` proves the path but costs the caller ~60 lines of `ctypes`. Collapse that to `tensor.to_torch()` / `.to_cupy()` / `.to_dlpack()` while keeping GPU residency.
+
+**Do not put DLPack on `Frame`.** A `Frame` is a captured surface, not a tensor. Keep the boundary at the transform output:
+
+```python
+with camera.grab_frame() as frame:
+    tensor = pipeline.process(frame)
+torch_tensor = tensor.to_torch()
+```
+
+with a convenience layer on top:
+
+```python
+stream = rapidshot.TensorStream(camera, size=(640, 640),
+                                dtype="float16", layout="NCHW")
+for tensor in stream:
+    model(tensor.to_torch())
+```
+
+**Multi-ROI batch preprocessing.** `pre.process(frame, regions=[...]) → (N, 3, H, W)` in one dispatch. Directly useful for OCR, UI agents and multi-window inference.
+
+**A narrow pipeline graph, if it fuses.** `.crop().resize().convert().normalize().layout()` is worth building **only** if RapidShot compiles the chain into fused dispatches. It must end at the consumer boundary — never `capture → run YOLO → POST → database`. See § 8.
+
+### 7.3 — 2.7: WGC, window capture, hardware encode
+
+**WGC backend and true HWND capture — rank 5.** Partly catch-up: DXcam already exposes a `backend` parameter defaulting to `dxgi`, so WGC is table stakes rather than differentiation. The genuine wins are per-window capture and capturing without the process running on the display's adapter (§ 6.1). WGC is also naturally frame-pool/event oriented, which is worth stating against § 4's rejection of event-driven capture — **that rejection is correct for DDA's `AcquireNextFrame` and does not generalise to WGC.**
+
+**Get the API distinction right.** *Source* and *backend* are different axes:
+
+```python
+rapidshot.create(source=rapidshot.Window(hwnd))
+rapidshot.create(source=rapidshot.Monitor(1), backend="auto")
+```
+
+not `backend="desktop"`, which conflates the two.
+
+**Hardware encode — rank 6.** NVENC / AMF / QSV / Media Foundation, with D3D12 video encode on Windows 11. **It cannot branch off `GpuPreprocessor12`:** that produces an NCHW float32 ML tensor (`shape` is `(1, 3, H, W)`), which is not an encoder input. The encoder path runs `Frame.d3d11_texture` → `GpuConverter` → NV12/P010 → encoder. NVFBC stays out: deprecated for general Windows use since Windows 10, frozen at Capture SDK 7.1, Linux-only in practice.
+
+Muxing and audio stay downstream (FFmpeg, PyAV). See § 8.
+
+### 7.4 — 2.8: scheduling and IPC
+
+**Multi-ROI and dirty-aware scheduling — rank 7.** State this correctly: **ROI scheduling does not reduce DXGI capture work.** Desktop Duplication hands over the whole monitor regardless. What it avoids is *downstream* processing:
+
+```text
+monitor capture @ 120 Hz  ->  one GPU texture
+    |- main view    preprocess @ 60 Hz
+    |- health bar   preprocess @ 10 Hz
+    |- chat         only when its rects are dirty
+    `- cursor ROI   preprocess @ 120 Hz
+```
+
+Dirty rects decide whether a scheduled ROI needs work at all — the two features are worth more combined than separately.
+
+**Finish backpressure (§ 6.4) rather than redesigning it.** Ship `latest` / `all` / `block` / `drop_oldest`. **Postpone `adaptive`**: automatic resolution and rate changes make systems unpredictable, and there is no usage data to tune against yet.
+
+**`SharedFrameBus` — rank 8.** A real N-slot shared GPU ring: producer sequence number → producer fence → N consumers → per-consumer completion. The shared D3D12 resource and fence primitives already exist (§ 6.1, 2.4.0), so this is evolution rather than new ground.
+
+**IPC is harder than it looks.** A Windows `HANDLE` cannot be put on a socket and used elsewhere — it needs `DuplicateHandle` or a named shared handle, plus cross-process fence ordering and resource lifetime management. Budget accordingly.
+
+**`FrameBundle`, not a fused texture.** For multi-monitor, keep each frame's zero-copy texture and expose `FrameBundle(frames, target_qpc, max_skew_us, missing_sources)`, composing only when `.compose()` is called. And do not call it synchronisation: monitors present independently, so this is *alignment within a tolerance* using each frame's `LastPresentTime`, with `skew_us` exposed.
+
+### 7.5 — 3.0: replay, and the native core
+
+**`.rsrec` record/replay — rank 9.** Record frames plus metadata (QPC, dirty rects, accumulated frames, cursor, source ID, HDR format) and replay deterministically. This makes RapidShot's own test suite dramatically stronger — most of § 2's testing gotchas exist because live capture is unreproducible — and lets consumers reproduce bugs without the original desktop.
+
+**`rapidshot-core` + a stable C ABI — rank 10, and a reversal worth naming.** § 8 says *"Stage 2 — native capture core: do not build"*, on the measurement that the Python/COM binding costs 0.003 ms/frame. **That measurement stands and is not what changed.** The new argument is not performance, it is embedding: a native application cannot host Python in its capture path. OBS is C/C++ and calls D3D11/WinRT directly; it will not take a `Python → PyO3 → Rust` dependency at any speed.
+
+So the C ABI is justified by *who can consume the library*, not by how fast it runs:
+
+```text
+rapidshot-core (Rust)
+      `- stable C ABI
+            |- Python bindings
+            |- C / C++ consumers
+            `- Rust consumers
+```
+
+Do not start it before 7.0's benchmarks and 7.1's reliability work. An ABI frozen around an unproven design is worse than no ABI.
+
+### Priority order
+
+1. Capture reliability and automatic recovery (7.1)
+2. `GpuConverter` (7.2)
+3. `GpuTensor` → Torch / CuPy / DLPack (7.2)
+4. Diagnostics and the formal benchmarks (7.0, 7.1)
+5. WGC / true HWND capture (7.3)
+6. Hardware encoder (7.3)
+7. Multi-ROI + dirty-aware scheduling (7.4)
+8. `SharedFrameBus` (7.4)
+9. `.rsrec` replay (7.5)
+10. Native C ABI (7.5)
+11. Multi-monitor temporal alignment (7.4)
+
+**DXcam compatibility sits outside this ranking**: unexciting engineering, possibly the highest return in the document, and cheap.
+
+### On OBS, honestly
+
+A recurring question, worth settling on the distinction it actually turns on. OBS has three Windows capture paths: DXGI Desktop Duplication, WGC, and **Game Capture**, which injects a graphics hook and captures inside the application's render pipeline.
+
+**RapidShot can plausibly beat OBS's DXGI/WGC display capture. It cannot beat Game Capture**, which sits upstream of the compositor entirely:
+
+```text
+GAME
+ |- render ---> OBS Game Capture   (before composition)
+ v
+DWM compositor
+ `- RapidShot / OBS Display Capture
+```
+
+Competing there means API injection, process hooks and anti-cheat compatibility — a different project. Do not start it.
+
+The realistic path to adoption is: win the § 7.0 benchmarks → get used by AI/CV projects → stabilise the C ABI → a plugin becomes possible. The likely outcome is that OBS adopts *techniques* rather than the library, and that is still a win.
+
+### What still belongs from the old § 7
+
+- **6c — GPU-side change detection.** Still lower value than it looks: DDA already reports only changed content with compositor-computed dirty rects. The residual value is deduplicating presents reported as changed but visually identical, plus sub-rect granularity. Do § 6.3's dirty rects first and measure.
+- **5 — Backend auto-selection.** Needs >=2 backends; follows 7.3.
+- **8 — `rapidshot.stream` network streaming.** WebRTC transport, DataChannel input, browser viewer. This is what moves the category from "screenshot library" to "capture-and-stream infrastructure".
 - **9 — Remote-support primitives.** `WDA_EXCLUDEFROMCAPTURE`, adaptive bitrate hook.
-- **10 — AI inference layer.** `frame.to_ort(session)`, a `ScreenDetector` convenience API, multi-source synchronised capture.
-- **11 — Ecosystem.** OpenCV `VideoCapture` wrapper, PyTorch `IterableDataset`, LangChain tool, OBS source plugin; propose an open Python screen-capture specification.
-- **Stage 0 remainder.** Done for the 2.0.0 release: `py.typed` (with the public API annotated, so the marker is not a lie — a package that ships it while `create()` returns `Any` is worse than one that ships nothing), `SECURITY.md` routed through GitHub private reporting, `.github/CODEOWNERS`, `release.yml` doing PyPI Trusted Publishing with Sigstore attestations and a CycloneDX SBOM, and `RELEASING.md`. CodeQL runs through GitHub's **default setup**, enabled in the repository — do not add a `codeql.yml`: an advanced configuration and the default setup cannot coexist, and the advanced one fails at the SARIF upload with "CodeQL analyses from advanced configurations cannot be processed when the default setup is enabled". **Still outstanding:** `GOVERNANCE.md` (needs a decision, not a file), OpenSSF Scorecard, and hosted docs.
+- **11 — Ecosystem.** OpenCV `VideoCapture` wrapper, PyTorch `IterableDataset`, OBS source plugin (after the C ABI), an open Python screen-capture specification.
+- **Stage 0 remainder.** Done for 2.0.0: `py.typed` with the public API annotated, `SECURITY.md` via GitHub private reporting, `.github/CODEOWNERS`, `release.yml` with Trusted Publishing, Sigstore attestations and a CycloneDX SBOM, `RELEASING.md`. CodeQL runs through GitHub's **default setup** — do not add a `codeql.yml`; an advanced configuration cannot coexist with it and fails at SARIF upload. **Still outstanding:** `GOVERNANCE.md` (a decision, not a file), OpenSSF Scorecard, hosted docs.
 
 ---
 
 ## 8. Deferred and out of scope
+
+**A declarative YAML/DSL pipeline: do not build.** Proposed as a config-driven `capture → transform → consumer` description. It buys no performance, adds a large API surface, and pulls the library toward being a workflow framework — the same boundary § 11 defends when it declines to own consumers' bindings. The fluent GPU graph in § 7.2 is worth having *only* because it can be fused into dispatches; a YAML layer on top of it cannot.
+
+**Audio, scenes, transitions, webcam composition, an audio mixer: not ours.** That is OBS's product, not a capture runtime's. RapidShot already demonstrates ordinary recording through OpenCV. The meaningful direction is § 7.3's `Frame → GpuConverter → NV12 → hardware encoder`, with muxing left to FFmpeg or PyAV. A thin optional container module is acceptable; an A/V production stack is not.
+
+**Game Capture-style API injection: not ours.** OBS hooks D3D/Vulkan/OpenGL inside the application and captures before composition, which is why it beats every compositor-based approach on games. Matching it means process injection, hook maintenance across graphics APIs, and anti-cheat compatibility — a separate project with a separate risk profile. § 7 states the boundary; this is the entry that says do not cross it.
+
+**`policy="adaptive"` backpressure: postponed, not rejected.** Automatic resolution and frame-rate adjustment sounds attractive and produces systems whose behaviour cannot be reasoned about. Ship the deterministic policies in § 7.4, collect usage data, then revisit.
+
+**Tracking windows by dirty rects: technically wrong, not merely inadvisable.** Dirty rectangles report *which pixels changed*, with no notion of window identity — a rect can span two windows, or a window can move without its contents changing. Semantic per-window capture is HWND tracking or, better, § 7.3's WGC backend, which addresses windows directly.
 
 **Stage 2 — native capture core: do not build.** Measurement says 0.003 ms/frame on a hardware-bounded path, and `windows-capture` already ships it. Revisit only if § 9 (cross-platform) is committed to, or if a profile on a real workload contradicts § 3.
 
