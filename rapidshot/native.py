@@ -678,6 +678,89 @@ class CrossAdapterTransfer:
                   quarantine_on_failure=True)
         return value
 
+    def transfer_async_with_reference(self, frame) -> int:
+        """Submit an async transfer that also snapshots the source. Diagnostic.
+
+        The async counterpart of :meth:`transfer_with_reference`. Both copies
+        come from one frozen snapshot taken in a single command list, so they
+        describe the same pixels even though the duplicated surface is live.
+
+        Unlike the blocking form this returns the **fence value**, not the
+        bytes -- the copies have not happened yet when it returns. Wait, then
+        read both sides::
+
+            value = transfer.transfer_async_with_reference(frame)
+            transfer.wait_shared_fence(value)
+            assert transfer.read_back_source() == transfer.read_back_destination()
+
+        Verification only, and expensive: it adds a source-side readback that
+        the normal path does not perform. Do not use it in a capture loop.
+        """
+        try:
+            value = int(self._inner.transfer_async_with_reference(
+                _texture_address(frame), _source_id(frame)))
+        except Exception as exc:
+            if self.submission_quarantined:
+                quarantine = getattr(frame, "_quarantine_release", None)
+                if quarantine is not None:
+                    quarantine(str(exc))
+            raise
+        # Same reasoning as `transfer_async`: the duplicated surface stays valid
+        # only until ReleaseFrame, and this returns while the GPU is still
+        # reading it. Without deferring, `with camera.grab_frame()` hands the
+        # surface back mid-copy and both readbacks describe a blend of frames.
+        defer = getattr(frame, "defer_release_until", None)
+        if defer is not None:
+            defer(lambda: self.wait_shared_fence(value),
+                  quarantine_on_failure=True)
+        return value
+
+    def read_back_source(self) -> bytes:
+        """Source-side bytes captured by :meth:`transfer_async_with_reference`.
+
+        Empty until that method has run and its fence has been waited on. Rows
+        are :attr:`row_pitch` bytes apart, exactly as for
+        :meth:`read_back_destination`, so the two are comparable directly.
+        """
+        return bytes(self._inner.read_back_source())
+
+    def probe_transfer_phases(self, frame, iterations: int = 200,
+                              use_cache: bool = True) -> dict:
+        """Split one transfer into phases, in microseconds.
+
+        Returns ``{phase: {"min": us, "median": us}}`` for ``open``, ``record``,
+        ``submit``, ``signal``, ``wait`` and ``close``.
+
+        **Read ``wait`` as the median, not the minimum.** It is bimodal: near
+        zero whenever the GPU has already finished, and the full copy time when
+        it has not, so a minimum reports the lucky case as if it were typical.
+
+        ``use_cache`` toggles the shared-handle cache, so the two can be
+        compared inside one harness rather than across two runs whose machine
+        state differs.
+        """
+        return dict(self._inner.probe_transfer_phases(
+            _texture_address(frame), int(iterations), bool(use_cache),
+            _source_id(frame)))
+
+    @property
+    def submission_quarantined(self) -> bool:
+        """True when a submission could not be proven complete or failed.
+
+        The catastrophic post-submit case: `ExecuteCommandLists` has no return
+        value, so a later `Signal` failure can leave real GPU work with no
+        completion marker while the device still reports itself alive. Real GPU
+        work may still be reading the source surface, so releasing the DXGI
+        frame would hand a live buffer back to the compositor.
+
+        Capture keeps the frame unreleased when this is set. Exposed because a
+        caller holding its own resources needs the same signal.
+        """
+        try:
+            return bool(self._inner.submission_quarantined)
+        except Exception:
+            return False
+
     def wait_shared_fence(self, value: int) -> None:
         """Block until the shared fence reaches ``value``. 0 returns at once."""
         self._inner.wait_shared_fence(int(value))

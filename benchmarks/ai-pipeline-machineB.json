@@ -1,0 +1,73 @@
+{
+  "model": {
+    "generated": true,
+    "gflops": 6.28,
+    "widths": [
+      40,
+      80,
+      160,
+      328,
+      656
+    ],
+    "output": "r5",
+    "path": "benchmarks/_flop_calibrated.onnx"
+  },
+  "machine": "Machine B: Intel UHD capture -> RTX 4060, 2560x1600",
+  "method": "Medians across 3 passes, 8s per path. Tensor fed to ONNX Runtime CUDAExecutionProvider via io_binding on the CuPy device pointer, so the tensor never leaves the GPU. Device synchronised before each half's clock stops. The model is a FLOP-calibrated conv stack, NOT a trained detector: it matches YOLO11n's arithmetic volume but not its layer structure, and real YOLO11n is expected to be slower. See the sensitivity note.",
+  "results": [
+    {
+      "path": "mss",
+      "runs_pooled": 3,
+      "fps_median": 25.5,
+      "tensor_p50_median": 35.46,
+      "infer_p50_median": 1.56,
+      "total_p50_median": 37.1,
+      "capture_pct_median": 95.6
+    },
+    {
+      "path": "dxcam",
+      "runs_pooled": 3,
+      "fps_median": 76.6,
+      "tensor_p50_median": 10.69,
+      "infer_p50_median": 1.57,
+      "total_p50_median": 12.54,
+      "capture_pct_median": 84.9
+    },
+    {
+      "path": "rapidshot-cpu",
+      "runs_pooled": 3,
+      "fps_median": 105.0,
+      "tensor_p50_median": 7.57,
+      "infer_p50_median": 1.57,
+      "total_p50_median": 9.31,
+      "capture_pct_median": 79.7
+    },
+    {
+      "path": "rapidshot-cupy",
+      "runs_pooled": 3,
+      "fps_median": 101.9,
+      "tensor_p50_median": 8.23,
+      "infer_p50_median": 1.39,
+      "total_p50_median": 9.65,
+      "capture_pct_median": 85.4
+    },
+    {
+      "path": "rapidshot-xadapter",
+      "runs_pooled": 3,
+      "fps_median": 88.0,
+      "tensor_p50_median": 9.85,
+      "infer_p50_median": 1.41,
+      "total_p50_median": 11.3,
+      "capture_pct_median": 87.4
+    },
+    {
+      "path": "rapidshot-xadapter-async",
+      "runs_pooled": 3,
+      "fps_median": 86.6,
+      "tensor_p50_median": 10.08,
+      "infer_p50_median": 1.46,
+      "total_p50_median": 11.54,
+      "capture_pct_median": 87.3
+    }
+  ]
+}

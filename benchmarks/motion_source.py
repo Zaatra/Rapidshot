@@ -1,82 +1,119 @@
-"""On-screen motion for the capture benchmarks, fast enough not to be the limit.
-
-Run this alongside `compare_libraries.py`. Desktop Duplication only reports
-frames whose *content changed*, so with a still desktop every library returns
-stale buffers instantly and reports meaningless four-figure FPS -- and with a
-motion source that is merely slow, every library reports the motion source.
-
-That second failure is the subtle one, and it happened here. An earlier
-generator ticked on `root.after(33, ...)`: about 30 changes a second. Every
-library measured 40-50 fps and the obvious conclusion -- "they are all at the
-display's refresh ceiling, throughput is a tie" -- was wrong. The panel runs at
-100 Hz; the benchmark was measuring tkinter's timer. With this generator the
-same libraries reach 114-169 fps and separate clearly. **A benchmark's motion
-source is part of the measurement apparatus and has to be calibrated like one.**
-
-So this drives `update()` in a tight loop with no scheduled delay, repaints a
-large multi-bar area that DWM cannot coalesce away, and **reports its own
-achieved rate**. Check that number before trusting any capture figure: if the
-source is not comfortably above the display's refresh rate, the capture results
-describe this script.
+"""Animated input for capture benchmarks; importing this module opens no window.
 
     python benchmarks/motion_source.py 60
-    python benchmarks/motion_source.py 60 --display2
+    python benchmarks/motion_source.py 60 --display2 --fps 120
 
-Achieved ~610 updates/s on the dev machine, against a 100 Hz panel.
+The default remains uncapped for comparison with historical runs. --fps is an
+optional diagnostic limit, not a crash fix. Inspect the achieved rate: a source
+slower than the display can become the benchmark's limiting factor.
+The AI harness uses --parent-controlled and keeps stdin open for the run's
+lifetime. Closing that pipe (including parent exit) stops the animation.
 """
+
+import argparse
+import json
+import math
+import os
 import sys
+import threading
 import time
-import tkinter as tk
 
-DURATION = float(sys.argv[1]) if len(sys.argv) > 1 else 30.0
-# DISPLAY1 (100 Hz) is at x=0; DISPLAY2 (60 Hz) starts at x=1920.
-ORIGIN_X = 1920 if "--display2" in sys.argv else 0
 
-W, H = 900, 700
-root = tk.Tk()
-root.title("motion")
-root.overrideredirect(True)                    # no title bar to repaint around
-root.geometry(f"{W}x{H}+{ORIGIN_X + 200}+120")
-root.attributes("-topmost", True)
-canvas = tk.Canvas(root, width=W, height=H, highlightthickness=0, bg="#101018")
-canvas.pack()
+def emit(event, **fields):
+    print(json.dumps({"event": event, "pid": os.getpid(), **fields}), flush=True)
+    try:
+        os.fsync(sys.stdout.fileno())
+    except (OSError, ValueError):
+        pass  # Pipes and consoles need not support fsync.
 
-# A grid of bars, all of which change every frame: a large, unambiguous delta
-# that the compositor has to carry through rather than optimise away.
-BARS = 28
-bars = [canvas.create_rectangle(0, 0, 0, 0, outline="") for _ in range(BARS)]
 
-frames = 0
-start = time.perf_counter()
-last_report = start
-phase = 0.0
+def watch_parent(stream, stopped):
+    try:
+        stream.readline()  # STOP, EOF, or a broken pipe end ownership.
+    finally:
+        stopped.set()
 
-try:
-    while True:
-        now = time.perf_counter()
-        if now - start >= DURATION:
-            break
-        phase += 0.15
-        for i, bar in enumerate(bars):
-            x = (i * (W / BARS) + (phase * 40) % W) % W
-            h = 60 + (i * 37 + int(phase * 60)) % (H - 120)
-            canvas.coords(bar, x, (H - h) / 2, x + W / BARS - 6, (H + h) / 2)
-            shade = (i * 9 + int(phase * 30)) % 256
-            canvas.itemconfig(bar, fill=f"#{shade:02x}{(255 - shade):02x}c0")
-        root.update_idletasks()
-        root.update()
-        frames += 1
-        if now - last_report >= 2.0:
-            print(f"  motion source: {frames / (now - start):.1f} updates/s",
-                  flush=True)
-            last_report = now
-except tk.TclError:
-    pass
 
-elapsed = time.perf_counter() - start
-print(f"MOTION SOURCE ACHIEVED {frames / elapsed:.1f} updates/s "
-      f"over {elapsed:.1f}s ({frames} updates)", flush=True)
-try:
-    root.destroy()
-except Exception:
-    pass
+def frame_delay(started, fps, now):
+    return max(0.0, started + 1.0 / fps - now) if fps else 0.0
+
+
+def animate(duration, fps=0.0, display2=False, stopped=None):
+    emit("starting", fps_limit=fps)
+    import tkinter as tk
+
+    stopped = stopped if stopped is not None else threading.Event()
+    root = None
+    try:
+        root = tk.Tk()
+        root.title("motion")
+        root.overrideredirect(True)
+        root.geometry(f"900x700+{2120 if display2 else 200}+120")
+        root.attributes("-topmost", True)
+        root.protocol("WM_DELETE_WINDOW", stopped.set)
+        canvas = tk.Canvas(root, width=900, height=700, highlightthickness=0, bg="#101018")
+        canvas.pack()
+        bars = [canvas.create_rectangle(0, 0, 0, 0, outline="") for _ in range(28)]
+        frames = interval_frames = 0
+        start = last_report = time.perf_counter()
+        while not stopped.is_set():
+            now = time.perf_counter()
+            if duration is not None and now - start >= duration:
+                break
+            phase = (frames + 1) * 0.15
+            for i, bar in enumerate(bars):
+                x = (i * (900 / 28) + (phase * 40) % 900) % 900
+                height = 60 + (i * 37 + int(phase * 60)) % 580
+                canvas.coords(bar, x, (700 - height) / 2, x + 900 / 28 - 6,
+                              (700 + height) / 2)
+                shade = (i * 9 + int(phase * 30)) % 256
+                canvas.itemconfig(bar, fill=f"#{shade:02x}{255 - shade:02x}c0")
+            root.update_idletasks()
+            root.update()
+            frames += 1
+            interval_frames += 1
+            finished = time.perf_counter()
+            if frames == 1:
+                emit("ready", fps_limit=fps)
+            if finished - last_report >= 2.0:
+                emit("rate", updates_per_second=interval_frames / (finished - last_report),
+                     frames=frames)
+                last_report, interval_frames = finished, 0
+            delay = frame_delay(now, fps, finished)
+            if delay:
+                stopped.wait(delay)
+        elapsed = time.perf_counter() - start
+        emit("stopped", frames=frames, elapsed_seconds=elapsed,
+             updates_per_second=frames / elapsed if elapsed else 0.0)
+    finally:
+        if root is not None:
+            root.destroy()
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("seconds", nargs="?", type=float, default=30.0)
+    parser.add_argument("--display2", action="store_true")
+    parser.add_argument("--fps", type=float, default=0.0, help="0 is uncapped")
+    parser.add_argument("--parent-controlled", action="store_true")
+    args = parser.parse_args(argv)
+    if not math.isfinite(args.seconds) or args.seconds <= 0:
+        parser.error("seconds must be finite and positive")
+    if not math.isfinite(args.fps) or args.fps < 0:
+        parser.error("fps must be finite and nonnegative")
+    stopped = threading.Event()
+    if args.parent_controlled:
+        threading.Thread(target=watch_parent, args=(sys.stdin, stopped), daemon=True).start()
+    try:
+        animate(None if args.parent_controlled else args.seconds, args.fps,
+                args.display2, stopped)
+        return 0
+    except KeyboardInterrupt:
+        return 130
+    except Exception as exc:
+        emit("error", error=f"{type(exc).__name__}: {exc}")
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -150,7 +150,8 @@ class CudaTensor:
         self._device = device
 
         desc = ExternalMemoryHandleDesc()
-        desc.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE
+        desc.type = getattr(preprocessor, "cuda_handle_type",
+                            CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE)
         desc.handle.win32.handle = ctypes.c_void_p(
             preprocessor.shared_output_handle)
         desc.handle.win32.name = None
@@ -158,7 +159,8 @@ class CudaTensor:
         # A committed D3D12 resource is a dedicated allocation, and CUDA rejects
         # the import without this flag — with a bare INVALID_VALUE that names no
         # field, so it is an expensive one to omit.
-        desc.flags = CUDA_EXTERNAL_MEMORY_DEDICATED
+        desc.flags = (CUDA_EXTERNAL_MEMORY_DEDICATED
+                      if getattr(preprocessor, "cuda_dedicated", True) else 0)
 
         self._check(
             self._cuda.cuImportExternalMemory(
@@ -275,10 +277,7 @@ class CudaTensor:
         """
         # Order matters: free the mapping, then destroy the object that owns it.
         # Never unmap while CUDA work is still queued against the pointer.
-        try:
-            self.sync()
-        except Exception:
-            pass
+        self.sync()  # On failure retain the mapping; freeing in-flight memory is unsafe.
         if self._device_ptr is not None:
             self._cuda.cuMemFree(ctypes.c_ulonglong(self._device_ptr))
             self._device_ptr = None

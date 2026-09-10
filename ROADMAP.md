@@ -799,6 +799,254 @@ and mss, DXcam, WGC and RapidShot are all measured against one clock. `benchmark
 
 **Why this is 7.0 and not 7.5:** `GpuConverter`, Torch interop, FP16, multi-ROI, DLPack and more fence work all *sound* architecturally attractive. The benchmark is what says which of them moves the number that matters. Building it first is the difference between a roadmap and a wish list.
 
+### 7.0 results — measured 2026-09-10 ✅
+
+`benchmarks/ai_ingestion.py` exists and has run. Machine B, Intel UHD capture →
+RTX 4060, 2560×1600 → `(1, 3, 640, 640)` FP32 RGB on CUDA. Medians across **3
+independent passes**, 8 s per path, CUDA synchronised before every sample so
+these are completion times rather than submission times. Every path resizes the
+full image with half-pixel bilinear sampling and is verified against an
+independent float64 NumPy reference taken from the same frame — **max error
+0.5/255 on all six**, so the paths are genuinely producing the same picture.
+Data in `benchmarks/ai-ingestion-machineB.json`.
+
+| path | fps | p50 ms | p95 | p99 | CPU % | **CPU ms/frame** | H2D/frame |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| mss | 30.7 | 31.26 | 37.49 | 39.05 | 51.9 | 16.91 | 1.23 MB |
+| dxcam | 98.2 | 9.97 | 12.16 | 13.45 | 96.2 | 9.80 | 1.23 MB |
+| **rapidshot-cpu** | **138.4** | **6.87** | **9.91** | **10.85** | 97.8 | 7.07 | 1.23 MB |
+| rapidshot-cupy | 116.1 | 8.62 | 10.49 | 11.32 | 56.2 | 4.84 | n/a |
+| rapidshot-xadapter | 99.7 | 9.60 | 12.60 | 13.79 | 43.9 | 4.40 | **0** |
+| rapidshot-xadapter-async | 96.9 | 9.84 | 12.89 | 13.84 | 41.4 | **4.27** | **0** |
+
+**Read CPU ms/frame, not CPU %.** A path running at 138 fps does more work per
+second than one at 97, so the percentages are not comparable directly. Cost per
+frame is.
+
+**RapidShot wins this workload, having lost the capture-only one.** Against
+DXcam: 31% lower p50 (6.87 vs 9.97 ms), 41% more frames, and 0.72× the CPU per
+frame. `compare_libraries.py` has RapidShot *losing* the RGB frame-rate column to
+DXcam; here it wins all three axes. The tensor tail is byte-identical between the
+two, so the difference is capture itself — waiting on `timeout_ms` beats
+polling.
+
+**The GPU paths trade latency for cost, and the trade is steep.** Cross-adapter
+costs **0.45× DXcam's CPU per frame** and moves **zero bytes host-to-device**,
+but is 2.7 ms slower per frame than the CPU path. The copy through the
+system-memory shared heap is what that buys.
+
+**So the defensible claim is about cost, not speed.** Not "the fastest
+desktop-to-model pipeline" — `rapidshot-cpu` is fastest and is also the most
+CPU-hungry of the three RapidShot paths. What holds up is: *a model-ready tensor
+for under half DXcam's CPU per frame, with no host-to-device transfer at all.*
+For an agent doing inference on the same machine, that is the number that
+decides whether capture starves the model.
+
+Which to reach for:
+
+| If you are | Use | Because |
+| --- | --- | --- |
+| latency-bound, cores to spare | `grab()` + CPU tensor | 6.87 ms p50 |
+| running inference on the same box | cross-adapter | 4.40 CPU ms/frame, no upload |
+| in between | `nvidia_gpu=True` | 8.62 ms at 4.84 CPU ms/frame |
+
+**mss is not in this race**: 3.1× DXcam's latency and 1.7× its CPU per frame. It
+is GDI-based, not DXGI.
+
+#### The async transfer does not help, and that is the predicted result
+
+`transfer_async()` was expected to hide the ~2.7 ms cross-adapter copy. Measured,
+it does not: **96.9 fps / 9.84 ms against the blocking path's 99.7 / 9.60** —
+marginally worse on both, inside run-to-run noise, with a slight CPU saving
+(4.27 vs 4.40 ms/frame).
+
+That is exactly what § 6.1 already recorded: *"The CPU-side async wait buys
+nothing against a GPU consumer"* — the calling thread was never the constraint.
+This benchmark now confirms it end to end rather than on a synthetic consumer.
+
+**The variant that should help is still unmeasured by this benchmark**, though
+not for the reason first written here.
+
+**Correction.** An earlier revision of this section claimed no
+`cuImportExternalSemaphore` glue existed and made building it the top follow-up.
+That was wrong twice over: `tests/test_cross_adapter.py` already contains
+working producer *and* consumer semaphore implementations (import, wait, signal,
+destroy), and § 6.1 above already records the GPU-side wait verified on
+2026-08-22 at **6/6 frames byte-exact**, fence created on the Intel device and
+imported by CUDA on the NVIDIA one. The capability was measured a fortnight
+before this benchmark was written. What was missing was only its use *here* —
+`benchmarks/cuda_semaphore.py` now factors the test-suite implementation out for
+reuse. Treat this as a reminder that § 5 and § 6 are the record of what already
+works, and are worth reading before declaring something absent.
+
+The remaining gap is narrower:
+
+1. **`transfer_async_with_reference` is unreachable from Python.** The extension
+   exports it; `rapidshot.native`'s `CrossAdapterTransfer` wrapper lists its
+   methods explicitly with no `__getattr__` passthrough and never exposes it. So
+   an async transfer's pixels cannot be verified from Python at all — the
+   benchmark verifies with the blocking `transfer_with_reference` instead, which
+   is sound only because verification runs outside the timing loop. A one-line
+   wrapper addition fixes it.
+
+#### Call duration through inference — measured 2026-09-10 ⚠ mislabelled once
+
+**These are call durations, not present-to-inference latency.** The heading here
+first read "present → inference complete", which this benchmark does not
+measure: it times from *asking* for a frame to the forward pass completing, and
+says nothing about how old the pixels were when they arrived. § 7.0 asks
+specifically for pixel age against a shared clock, and that is still outstanding
+— see the controlled visual latency source below. Read every figure in this
+table as a lower bound on true present-to-inference latency.
+
+`benchmarks/ai_pipeline.py` feeds each path's tensor straight into ONNX Runtime's
+CUDA provider through `io_binding` on the CuPy device pointer, so the tensor
+never leaves the GPU and the GPU paths are not charged for a round trip they
+exist to avoid. Medians across 3 passes, 8 s per path. Data in
+`benchmarks/ai-pipeline-machineB.json`.
+
+| path | fps | tensor ms | infer ms | total ms | **capture %** |
+| --- | --- | --- | --- | --- | --- |
+| mss | 25.5 | 35.46 | 1.56 | 37.10 | 95.6% |
+| dxcam | 76.6 | 10.69 | 1.57 | 12.54 | 84.9% |
+| **rapidshot-cpu** | **105.0** | **7.57** | 1.57 | **9.31** | **79.7%** |
+| rapidshot-cupy | 101.9 | 8.23 | 1.39 | 9.65 | 85.4% |
+| rapidshot-xadapter | 88.0 | 9.85 | 1.41 | 11.30 | 87.4% |
+| rapidshot-xadapter-async | 86.6 | 10.08 | 1.46 | 11.54 | 87.3% |
+
+**Capture is 80–96% of the end-to-end budget.** That is the answer § 7.0 was
+built to get, and it settles the ordering question: optimising the capture path
+is worth real time, because there is very little else in the frame budget.
+RapidShot's best path completes a forward pass in **9.31 ms against DXcam's
+12.54** — 26% faster end to end, not merely at the tensor boundary. *Forward
+pass*, not "a detection": the graph used here is untrained and has no detection
+head, so it produces an output tensor of the right shape and no detections at
+all. Nothing in this table justifies a claim about detection latency.
+
+**The model is a stand-in and this conclusion survives it anyway.** With no
+`--model`, the harness generates a conv stack scaled to **6.28 GFLOPs**, matching
+YOLO11n's arithmetic volume at 640×640 but not its layer structure — no concats,
+no upsampling, no detection-head semantics, no trained weights. Real YOLO11n has
+many small memory-bound layers and is expected to run **slower** than the 1.4–1.6
+ms measured here. The conclusion is robust to that:
+
+| if real inference costs | rapidshot-cpu total | capture share |
+| --- | --- | --- |
+| 1.5 ms (measured stand-in) | 9.3 ms | 80% |
+| 5 ms (plausible YOLO11n) | 12.6 ms | 60% |
+| 15 ms (a much larger model) | 22.6 ms | 33% |
+
+Capture stays the majority of the budget until inference costs roughly 3× what
+this stand-in does, and stays material well past that. **Re-run with
+`--model yolo11n.onnx` before quoting any specific figure** — exporting one needs
+`ultralytics` and torch, which is why it is not the default.
+
+**What this says about § 7.2's ordering.** `GpuConverter`, DLPack and multi-ROI
+are all justified by removing copies and conversions from the capture path — and
+the capture path is where 80% of the time is. That supports the ranking as
+written. It also says the cross-adapter path's 2.3 ms deficit against the CPU
+path is worth ~20% of a frame budget, so closing it (the GPU-side semaphore wait,
+above) is a real win rather than a micro-optimisation.
+
+#### What is still not measured
+
+#### Pixel age, measured against a shared clock — 2026-09-10 ✅
+
+The measurement § 7.0 actually asked for. `native/src/bin/latency_source.rs` is a
+D3D11 source that encodes an incrementing frame ID into the image and records
+`frame_id → QPC` at every `Present()`; each path decodes the ID out of the
+captured pixels, so latency is **how old the pixels were**, not how long the call
+took, and every library is measured against one clock.
+
+Machine B, 2560×1600 at 165 Hz, source achieving 164.6 presents/s, 5 s per path.
+`benchmarks/section7-ingestion-machineB.json`.
+
+| path | unique fps | age p50 | p95 | p99 | CPU ms/frame | source frames dropped |
+| --- | --- | --- | --- | --- | --- | --- |
+| mss | 23.8 | 61.87 | 72.91 | 78.11 | 30.07 | 561 |
+| dxcam (DXGI) | 76.3 | 41.08 | 46.30 | 48.13 | 15.58 | 444 |
+| dxcam (WGC) | 68.0 | 46.46 | 55.94 | 58.96 | 17.83 | 482 |
+| **rapidshot-cpu** | **100.4** | 37.55 | 42.85 | 45.07 | 12.02 | **323** |
+| rapidshot-cupy | 93.3 | 38.28 | 43.93 | 46.26 | 7.83 | 358 |
+| rapidshot-xadapter | 81.0 | 35.05 | 39.03 | 41.87 | **6.12** | 424 |
+| rapidshot-xadapter-async | 79.5 | 35.29 | 40.34 | 43.47 | 6.44 | 429 |
+| **rapidshot-xadapter-semaphore** | 82.0 | **33.95** | **37.63** | 41.15 | 9.53 | 417 |
+| rapidshot-direct | — | unavailable: `CrossAdapterRequired` on hybrid hardware |
+
+**RapidShot leads on every axis that separates the paths.** 100.4 unique frames
+per second against DXcam's 76.3 (+32%) and WGC's 68.0; the lowest pixel age
+(33.95 ms, the GPU-side semaphore path); and the lowest CPU per frame (6.12 ms
+cross-adapter, 2.5× cheaper than DXcam's 15.58). mss is not in the same class.
+
+**The GPU-side semaphore wait is the best latency path**, marginally ahead of
+blocking (33.95 vs 35.05 ms p50) — the first end-to-end confirmation of § 6.1's
+mechanism inside a capture benchmark rather than a synthetic consumer.
+
+**Everything drops source frames**, 323–561 of roughly 820 presented, because the
+source runs at 165/s and no path sustains that. The drop column is therefore a
+real differentiator here rather than a rounding error, and RapidShot's CPU path
+drops the fewest.
+
+#### Two apparatus bugs found while getting there, both worth recording
+
+**The source default made every path report a tie.** `--motion-fps` defaulted to
+60 on a 165 Hz panel, so every path returned almost exactly 60 unique frames a
+second and the run looked like a throughput tie. An earlier attempt capped at 120
+achieved 64 and produced the same artefact at 82–86 fps. It now defaults to the
+display's physical refresh, and the achieved rate is printed so it can be
+checked. This is the third distinct time this failure has appeared in this
+project; `benchmarks/motion_source.py` was written to warn about it and its
+warning was deleted in a rewrite.
+
+**The shared tensor contract was a strawman CPU arm.** To make every path emit a
+bit-identical tensor, both CPU and GPU ran `canonical_rgb`, an exact rational
+bilinear resize. On CuPy it costs 1.16 ms; on NumPy its int64 gathers cost
+76–86 ms, against **0.72 ms** for the `cv2` call any real caller writes. That
+charged mss, DXcam and rapidshot-cpu roughly seventy times their true conversion
+cost — and all three are competitors to the GPU paths being judged, so the bias
+ran in RapidShot's favour. Bit-exactness was chasing the letter of "must produce
+a bit-identical tensor" past its purpose, which is to stop a path doing *less*
+work and looking fast.
+
+Measured now with `pipeline_rgb`: idiomatic per backend, **max deviation 1/255**
+against the exact contract, which remains the reference every path is verified
+against. § 10 records the same correction being needed once before.
+
+**Still open in § 7.0**, in rough order of value:
+
+- **A real model.** The inference table above uses a FLOP-calibrated stand-in.
+  `benchmarks/prepare_model.py` exports pinned YOLO11n weights with a recorded
+  SHA-256, and `ai_pipeline.py` now *requires* `--model` and `--model-sha256`
+  rather than silently substituting one — but the export has not been run, so no
+  inference figure here rests on a trained model yet.
+- **Re-running inference and agent categories against pixel age.** Only the
+  ingestion category has been measured with the controlled source; the inference
+  and agent numbers above are still call durations.
+- **The GPU-side semaphore wait** through this benchmark. The glue exists
+  (`tests/test_cross_adapter.py`, factored into `benchmarks/cuda_semaphore.py`)
+  and § 6.1 verified the mechanism itself; what is missing is a benchmark path
+  that uses it.
+- **Per-stage breakdown**: GPU preprocess time and fence wait are named in the
+  spec and are not reported separately; only the totals are.
+- **QPC frequency is not recorded** in the output, though the spec asks for it.
+- **Resolution and refresh sweeps**: only 2560×1600 at one refresh rate. The
+  spec asks for 1080p / 1440p / 4K and 60–240 Hz.
+- **Workload sweep**: only the synthetic motion source. The spec asks for static
+  UI, scrolling and high motion, which produce very different dirty fractions.
+- **DXcam's WGC backend** is listed as a path and has not been measured; only
+  its DXGI backend has.
+- **The third category is entirely unbuilt**: the agent benchmark, OS pixels →
+  API-ready compressed screenshot, for cloud computer-use pipelines.
+
+**Caveats that travel with the table.** One machine, hybrid Intel→NVIDIA. On a
+single-adapter NVIDIA box the direct `GpuPreprocessor12 → CUDA` path is
+available and would likely beat all six — it raises `CrossAdapterRequired` here,
+because CUDA cannot import a resource owned by the capture adapter. Frame rate
+is bounded by compositor presents, not by the pipeline. The motion source ran
+uncapped at ≥498 updates/s and is not the limiter; **a capped source made every
+path report 82–86 fps and looked like a tie**, which is the failure
+`benchmarks/motion_source.py` was written to warn about.
+
 ### 7.1 — 2.5: reliability and adoption
 
 Before more GPU surface area, make the library boringly dependable and easy to adopt. This is what makes RapidShot the best *capture* library rather than only the best ML bridge.
