@@ -4,7 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rapidshot"
-version = "2.4.0"
+# Read from rapidshot/_version.py, which is the only place the number is
+# written. Three copies used to be kept in step by hand; the release workflow
+# checked each against the git tag but never against each other, so two could
+# agree while the third drifted.
+dynamic = ["version"]
 description = "A high-performance screencapture library for Windows using Desktop Duplication API"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -86,6 +90,12 @@ docs = [
 "Bug Reports" = "https://github.com/Zaatra/Rapidshot/issues"
 "Source" = "https://github.com/Zaatra/Rapidshot"
 "Documentation" = "https://github.com/Zaatra/Rapidshot"
+
+[tool.setuptools.dynamic]
+# `attr` on a module with no imports: setuptools reads the literal out of the
+# AST instead of importing rapidshot, which would need Windows COM present on
+# the build machine.
+version = { attr = "rapidshot._version.__version__" }
 
 [tool.setuptools.packages.find]
 # Must be discovery, not an explicit list. `packages = ["rapidshot"]` names only

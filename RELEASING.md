@@ -29,11 +29,18 @@ secret, or on anyone's laptop. Nothing to leak, nothing to rotate.
 
 ## Cutting a release
 
-1. Update the version in **three** places — they are checked against the git tag
-   at build time, but not against each other:
-   - `pyproject.toml`
-   - `setup.py`
-   - `rapidshot/__init__.py` (`__version__`)
+1. Update the version in **one** place — `rapidshot/_version.py`:
+
+   ```python
+   __version__ = "2.4.0"
+   ```
+
+   `pyproject.toml` reads it through `[tool.setuptools.dynamic]`, `setup.py`
+   parses it, and `rapidshot.__version__` re-exports it. It used to be written
+   out in all three; each was checked against the git tag at build time but
+   never against the others, so two could agree while the third drifted and
+   nothing failed until a release was being cut. `tests/test_version.py` fails
+   if a second declaration reappears.
 2. Move `CHANGELOG.md`'s `[Unreleased]` content under a new
    `## [x.y.z] - YYYY-MM-DD` heading.
 3. If `benchmarks/baseline.json` was re-recorded, regenerate the README badges

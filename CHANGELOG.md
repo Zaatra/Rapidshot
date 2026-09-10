@@ -29,6 +29,20 @@ each release can be traced back to the plan it implements.
 
 ### Added
 
+- **The version number is declared once**, in `rapidshot/_version.py`.
+  `pyproject.toml` reads it through `[tool.setuptools.dynamic]`, `setup.py`
+  parses it out of the AST, and `rapidshot.__version__` re-exports it. It was
+  previously written out in all three; the release workflow checked each
+  against the git tag but never against each other, so two could agree while
+  the third drifted, and nothing failed until a release was being cut.
+
+  `_version.py` is deliberately import-free, so the build backend can read the
+  literal without importing `rapidshot` -- which needs Windows COM, and would
+  turn a version read into a release-day failure with no local reproduction.
+  `tests/test_version.py` fails if a second declaration appears anywhere in the
+  package, if `pyproject.toml` or `setup.py` goes back to repeating it, or if
+  `_version.py` grows an import.
+
 - **`native_extension` in the recorded machine block.** `baseline.json` is
   recorded with the optional native extension and `baseline-nonative.json`
   without it, and comparing across that line reports every conversion row

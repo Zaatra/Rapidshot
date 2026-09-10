@@ -7,7 +7,8 @@ name: Release
 #   owner: Zaatra   repo: Rapidshot   workflow: release.yml   environment: pypi
 #
 # Cutting a release:
-#   1. version bumped in pyproject.toml, setup.py and rapidshot/__init__.py
+#   1. version bumped in rapidshot/_version.py, which is the only declaration --
+#      pyproject.toml, setup.py and rapidshot.__version__ all derive from it
 #   2. CHANGELOG.md has a section for it
 #   3. tag v<version> and push
 #

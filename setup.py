@@ -1,11 +1,33 @@
+import ast
+import pathlib
+
 from setuptools import find_packages, setup
 
 with open("README.md", "r", encoding='utf-8') as f:
     long_description = f.read()
 
+
+def _version() -> str:
+    """Read the version out of rapidshot/_version.py without importing it.
+
+    Importing the package here would pull in Windows COM, which is not
+    available on every machine that can legitimately run this file. Parsed
+    rather than copied so this cannot drift from pyproject.toml -- which is
+    what actually builds the wheel, and reads the same file.
+    """
+    source = pathlib.Path(__file__).parent / "rapidshot" / "_version.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "__version__"
+                for t in node.targets):
+            return ast.literal_eval(node.value)
+    raise RuntimeError(f"no __version__ assignment in {source}")
+
+
 setup(
     name="rapidshot",
-    version="2.4.0",
+    version=_version(),
     description="A high-performance screencapture library for Windows using Desktop Duplication API",
     packages=find_packages(),
     long_description=long_description,
