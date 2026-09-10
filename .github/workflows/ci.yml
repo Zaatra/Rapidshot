@@ -112,6 +112,36 @@ jobs:
         # correctness is genuinely checked even on a GPU-less runner.
         run: python -m pytest tests/ -v --tb=short
 
+      # The distributable wheel is built here as well as in release-native.yml,
+      # because a packaging break that only surfaces when a tag is pushed is
+      # found at the worst possible moment. This is the cheap half of that
+      # workflow: build it, and confirm a clean environment outside the
+      # repository can install and import it.
+      - name: Build the distributable wheel
+        run: |
+          pip install "maturin>=1.9,<2.0"
+          maturin build --release -m native/Cargo.toml --out dist-native
+
+      - name: The wheel must install and import outside the repository
+        shell: pwsh
+        run: |
+          python -m venv "$env:RUNNER_TEMP\nativecheck"
+          & "$env:RUNNER_TEMP\nativecheck\Scripts\python.exe" -m pip install --quiet (Get-ChildItem dist-native\*.whl)[0].FullName
+          Push-Location $env:RUNNER_TEMP
+          & "$env:RUNNER_TEMP\nativecheck\Scripts\python.exe" -c "import rapidshot_native; print('ok', rapidshot_native.__version__, rapidshot_native.extension_path())"
+          Pop-Location
+
+      - name: The wheel must be abi3
+        # Losing abi3 silently produces a wheel that works on exactly the Python
+        # it was built for. Nothing else in the build fails when that happens.
+        shell: python
+        run: |
+          import glob, os, sys
+          wheel = os.path.basename(glob.glob("dist-native/*.whl")[0])
+          if "-abi3-" not in wheel:
+              sys.exit(f"{wheel} is not abi3")
+          print(f"{wheel} is abi3")
+
   # Performance numbers, published so a regression is visible rather than argued
   # about. Synthetic benchmarks only: the live ones need a desktop session.
   benchmarks:

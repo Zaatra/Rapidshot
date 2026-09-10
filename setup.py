@@ -62,6 +62,7 @@ setup(
         "gpu_cuda12": ["cupy-cuda12x>=12.0.0"],
         "gpu_cuda13": ["cupy-cuda13x>=14.0.0"],
         "pil": ["pillow>=8.0.0"],
+        "native": ["rapidshot-native>=0.1.0; platform_system == 'Windows'"],
         "all": [
             "numpy>=1.19.0",
             "comtypes>=1.1.0",

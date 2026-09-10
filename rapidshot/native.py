@@ -28,18 +28,46 @@ logger = logging.getLogger(__name__)
 _ext: Optional[Any] = None
 _import_error: Optional[BaseException] = None
 
+_ext_source: Optional[str] = None
+
+# Two places, in this order, and the order matters.
+#
+# 1. Inside the package, where `native/install_dev.py` puts it. A developer who
+#    just rebuilt the extension expects to be testing *that* build, not a wheel
+#    that happens to be installed alongside it. Silently preferring the wheel
+#    would make a rebuild appear to do nothing.
+# 2. The `rapidshot-native` wheel, which is how anyone who has not installed a
+#    Rust toolchain gets it.
+#
+# Both provide the same module; only the path differs.
 try:  # pragma: no cover - depends on whether the extension was built
     from rapidshot import _rapidshot_native as _ext  # type: ignore[attr-defined]
+    _ext_source = "development build (rapidshot/_rapidshot_native)"
 except ImportError as exc:  # pragma: no cover
     _import_error = exc
-    logger.debug(f"Native GPU interop shim not present: {exc}")
+    try:
+        from rapidshot_native import _rapidshot_native as _ext  # type: ignore[import-not-found]
+        _ext_source = "rapidshot-native wheel"
+        _import_error = None
+    except ImportError as wheel_exc:
+        # Report the in-package failure, not this one: "no module named
+        # rapidshot_native" sends someone looking for the wrong thing when the
+        # real answer is that no extension is installed by either route.
+        logger.debug(
+            f"Native GPU interop shim not present: {exc} "
+            f"(rapidshot-native also absent: {wheel_exc})"
+        )
 
 
 BUILD_HINT = (
-    "The native GPU interop extension is not built. Everything except "
-    "GPU-tensor interop works without it.\n"
-    "To build it you need Rust (https://rustup.rs) and the MSVC C++ build "
-    "tools, then:\n"
+    "The native GPU interop extension is not installed. Everything except "
+    "GPU-tensor interop and cross-adapter transfer works without it.\n"
+    "\n"
+    "Install the prebuilt wheel -- no toolchain needed:\n"
+    "    pip install rapidshot-native\n"
+    "\n"
+    "Or build it from source, which needs Rust (https://rustup.rs) and the "
+    "MSVC C++ build tools:\n"
     "    cd native && cargo build --release\n"
     "    python native/install_dev.py"
 )
@@ -63,10 +91,23 @@ def require() -> Any:
 
 
 def build_info() -> Optional[Dict[str, Any]]:
-    """Version/stage of the loaded extension, or None if absent."""
+    """Version/stage of the loaded extension, or None if absent.
+
+    Includes `source`, naming which of the two installation routes provided it.
+    A developer with both a local build and the wheel installed otherwise has no
+    way to tell which one is answering, and the two can differ.
+    """
     if _ext is None:
         return None
-    return dict(_ext.build_info())
+    info = dict(_ext.build_info())
+    info["source"] = _ext_source
+    if _ext_source == "rapidshot-native wheel":
+        try:
+            import rapidshot_native  # type: ignore[import-not-found]
+            info["wheel_version"] = rapidshot_native.__version__
+        except Exception:  # pragma: no cover - the import above already worked
+            pass
+    return info
 
 
 def _addressable(src, dst, channels) -> bool:

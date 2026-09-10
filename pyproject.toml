@@ -63,9 +63,25 @@ gpu = ["cupy-cuda11x>=11.0.0"]
 gpu_cuda12 = ["cupy-cuda12x>=12.0.0"]
 gpu_cuda13 = ["cupy-cuda13x>=14.0.0"]
 pil = ["pillow>=8.0.0"]
+# The prebuilt native extension: the GPU tensor, cross-adapter transfer and the
+# AVX2 conversion kernels without a Rust toolchain. Windows x86-64 only, which
+# is the only platform Desktop Duplication runs on anyway.
+#
+# A lower bound rather than a pin: `rapidshot-native` versions independently,
+# because the Rust changes on its own schedule and lockstep would republish an
+# identical binary under a new number on every RapidShot release. Raise this
+# floor when the Python side starts calling something the older wheel does not
+# export.
+native = ["rapidshot-native>=0.1.0; platform_system == 'Windows'"]
 # Everything that is not CUDA-version-specific. The cupy-cudaNNx wheels are
 # mutually exclusive, so none of them belongs in a catch-all extra -- pick
 # `gpu`, `gpu_cuda12` or `gpu_cuda13` explicitly.
+#
+# `rapidshot-native` is deliberately NOT here until it has been published:
+# naming an unpublished distribution in `all` would break `pip install
+# rapidshot[all]` for everyone, immediately, to advertise a wheel that does not
+# exist yet. Add it once the first native-v* tag has shipped -- RELEASING.md
+# records the ordering.
 all = [
     "opencv-python>=4.5.0",
     "pillow>=8.0.0",

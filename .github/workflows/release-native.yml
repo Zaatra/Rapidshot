@@ -1,0 +1,183 @@
+# Publishes `rapidshot-native`, the prebuilt native extension.
+#
+# Separate from release.yml because the two distributions version
+# independently: the Rust changes on its own schedule, and forcing a native
+# release for every RapidShot release would republish an identical binary under
+# a new number. They are tagged separately for the same reason.
+#
+# Cutting a native release:
+#   1. version bumped in native/Cargo.toml, which is the only declaration --
+#      maturin stamps the wheel from it and rapidshot_native.__version__ reads
+#      it back out of installed metadata
+#   2. CHANGELOG.md has a section for it
+#   3. tag native-v<version> and push
+#
+# One-time setup, in addition to release.yml's:
+#   PyPI -> rapidshot-native -> publishing -> add a GitHub publisher with
+#   owner: Zaatra   repo: Rapidshot   workflow: release-native.yml
+#   environment: pypi-native
+#
+# There is deliberately no matrix over Python versions. The crate is built with
+# pyo3's abi3-py39 feature, so one wheel serves every version from 3.9 onward --
+# including versions of CPython that do not exist yet. A matrix here would
+# produce six identical-but-for-the-tag wheels and a maintenance burden that
+# grows with every CPython release.
+
+name: Release native
+
+on:
+  push:
+    tags:
+      - "native-v*"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish to PyPI (otherwise build and verify only)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build the abi3 wheel
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+
+      - name: Lint the crate
+        working-directory: native
+        run: |
+          cargo fmt --check
+          cargo clippy --release -- -D warnings
+
+      - name: Build the wheel
+        # `-m` takes the *Cargo* manifest; maturin picks up native/pyproject.toml
+        # from the same directory. Pointing it at the pyproject.toml instead
+        # fails with "the manifest-path must be a path to a Cargo.toml file".
+        run: pip install "maturin>=1.9,<2.0" && maturin build --release -m native/Cargo.toml --out dist
+
+      # The whole promise of this package is "no toolchain needed", and the only
+      # way to test that promise is to install the wheel somewhere that has
+      # neither the repository nor a compiler on the path. Importing from the
+      # source tree would pass whether or not the wheel contains anything.
+      - name: Install the wheel into a clean environment, outside the repository
+        shell: pwsh
+        run: |
+          python -m venv "$env:RUNNER_TEMP\relcheck"
+          & "$env:RUNNER_TEMP\relcheck\Scripts\python.exe" -m pip install --quiet --upgrade pip
+          & "$env:RUNNER_TEMP\relcheck\Scripts\python.exe" -m pip install --quiet (Get-ChildItem dist\*.whl)[0].FullName
+          Push-Location $env:RUNNER_TEMP
+          & "$env:RUNNER_TEMP\relcheck\Scripts\python.exe" -c "import rapidshot_native; print('import ok', rapidshot_native.__version__); print(rapidshot_native.extension_path())"
+          Pop-Location
+
+      # `rapidshot` is what actually consumes this, and it looks in two places.
+      # A wheel that imports on its own but that rapidshot cannot find is a
+      # wheel that does nothing for anyone.
+      - name: RapidShot must actually pick it up
+        shell: pwsh
+        run: |
+          & "$env:RUNNER_TEMP\relcheck\Scripts\python.exe" -m pip install --quiet rapidshot
+          Push-Location $env:RUNNER_TEMP
+          & "$env:RUNNER_TEMP\relcheck\Scripts\python.exe" -c @"
+          from rapidshot import native
+          assert native.is_available(), 'rapidshot did not find the installed wheel'
+          info = native.build_info()
+          assert info['source'] == 'rapidshot-native wheel', info
+          print('rapidshot found it:', info)
+          "@
+          Pop-Location
+
+      - name: The wheel must be abi3, not version-locked
+        # A wheel tagged cp313-cp313 instead of cp39-abi3 still installs and
+        # still works -- on exactly one Python version, silently, until someone
+        # upgrades. The failure is invisible at publish time and total
+        # afterwards, so it is checked rather than assumed.
+        shell: python
+        run: |
+          import glob, os, sys
+          wheel = os.path.basename(glob.glob("dist/*.whl")[0])
+          if "-abi3-" not in wheel:
+              sys.exit(f"{wheel} is not an abi3 wheel; one wheel per Python version is not the intent")
+          if not wheel.endswith("win_amd64.whl"):
+              sys.exit(f"{wheel} is not tagged win_amd64")
+          print(f"{wheel} is abi3 and platform-tagged")
+
+      - name: Check the tag matches the packaged version
+        if: startsWith(github.ref, 'refs/tags/native-v')
+        shell: python
+        run: |
+          import glob, os, sys
+          tag = os.environ["GITHUB_REF_NAME"].removeprefix("native-v")
+          wheel = os.path.basename(glob.glob("dist/*.whl")[0])
+          packaged = wheel.split("-")[1]
+          if tag != packaged:
+              sys.exit(f"tag native-v{tag} does not match packaged version {packaged}")
+          print(f"tag and package agree on {packaged}")
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-native
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/native-v') || inputs.publish
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi-native
+      url: https://pypi.org/p/rapidshot-native
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist-native
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          attestations: true
+
+  github-release:
+    name: Create the GitHub Release
+    needs: publish
+    if: startsWith(github.ref, 'refs/tags/native-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist-native
+          path: dist/
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Runs only after the PyPI upload succeeded, so a release is never
+        # announced for a version that failed to publish. Marked as not-latest:
+        # the main `rapidshot` release is what a visitor should land on, and a
+        # companion binary taking that slot would be actively confusing.
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "rapidshot-native ${GITHUB_REF_NAME#native-v}" \
+            --latest=false \
+            --notes "Prebuilt native extension for RapidShot. Install with \`pip install rapidshot-native\`.
+
+          One abi3 wheel covers Python 3.9 and later. See CHANGELOG.md for what changed." \
+            dist/*.whl

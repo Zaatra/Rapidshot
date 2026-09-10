@@ -29,6 +29,48 @@ each release can be traced back to the plan it implements.
 
 ### Added
 
+- **`rapidshot-native`, the prebuilt extension.** `pip install
+  rapidshot[native]` and the GPU tensor, cross-adapter transfer and AVX2
+  kernels are present, with no Rust toolchain and no MSVC build tools.
+
+  This was the largest gap between what the library can do and what a `pip
+  install` could reach: every headline measurement sat behind a build step most
+  users will not perform, so the features they justify went unused.
+
+  **One wheel, not a matrix.** The crate already carried `pyo3/abi3-py39`, so a
+  single `cp39-abi3-win_amd64` wheel serves Python 3.9 and every later version
+  -- including CPython releases that do not exist yet. A per-version matrix
+  would have produced six near-identical wheels and a maintenance burden that
+  grows with each Python release; CI fails the build if the abi3 tag is ever
+  lost, because a version-locked wheel installs happily and breaks silently on
+  the next interpreter.
+
+  **A separate distribution on a separate tag** (`native-v*`, published by
+  `release-native.yml`). `rapidshot` stays `py3-none-any`, so the guard that
+  fails the main release if a compiled artefact appears inside it is preserved
+  rather than argued with -- that guard exists because a `*.pyd` glob once
+  swept a locally built extension into a platform-neutral wheel. The two
+  version independently: the Rust changes on its own schedule, and lockstep
+  would republish an identical binary under a new number every release.
+
+  **A local build takes precedence over an installed wheel.** Both present is
+  the normal state for a contributor who installed the wheel first and later
+  built from source; if the wheel won, every `cargo build` would appear to do
+  nothing. `native.build_info()` reports which is loaded under `source`.
+
+  `BUILD_HINT` now leads with the wheel. It previously offered only "install
+  Rust and the MSVC build tools", which is part of why the extension went
+  unused -- the easy route was not mentioned because it did not exist.
+
+  Verified by installing both wheels into a clean environment **outside the
+  repository**: `rapidshot.native.is_available()` returns True, the AVX2
+  swizzle is byte-exact against NumPy, and `probe_cross_adapter()` reports
+  `representative: true` from the Intel iGPU to the RTX 4060. Not yet
+  published -- no `native-v*` tag has been pushed, so the `native` extra
+  resolves to nothing until one is, and it is deliberately kept out of `all`
+  until then so `pip install rapidshot[all]` does not start failing.
+
+
 - **The version number is declared once**, in `rapidshot/_version.py`.
   `pyproject.toml` reads it through `[tool.setuptools.dynamic]`, `setup.py`
   parses it out of the AST, and `rapidshot.__version__` re-exports it. It was

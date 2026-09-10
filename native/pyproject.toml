@@ -1,0 +1,67 @@
+# Build configuration for `rapidshot-native`, the prebuilt companion wheel.
+#
+# This is a *separate distribution* from `rapidshot` on purpose. The main wheel
+# is `py3-none-any` and the release workflow fails if a compiled artifact ever
+# appears inside it -- a guard that exists because a `*.pyd` package-data glob
+# once swept a locally built extension into a platform-neutral wheel, shipping a
+# Windows binary to every platform. Keeping the binary in its own wheel with its
+# own platform tag preserves that guard rather than negotiating with it.
+#
+# Build locally with, from the repository root:
+#     maturin build --release -m native/Cargo.toml --out dist
+#
+# `-m` takes the Cargo manifest, not this file; maturin finds this one beside
+# it. Passing this path instead fails with "the manifest-path must be a path to
+# a Cargo.toml file".
+
+[build-system]
+requires = ["maturin>=1.9,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "rapidshot-native"
+description = "Prebuilt native GPU-interop extension for RapidShot"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+    { name = "RapidShot Contributors", email = "imzaatra@gmail.com" }
+]
+maintainers = [
+    { name = "Zaatra", email = "imzaatra@gmail.com" }
+]
+keywords = ["screencapture", "desktop-duplication", "direct3d", "cuda", "directml"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: Microsoft :: Windows :: Windows 10",
+    "Operating System :: Microsoft :: Windows :: Windows 11",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Multimedia :: Graphics :: Capture :: Screen Capture",
+]
+# maturin takes the version from Cargo.toml, which is therefore the single
+# declaration for this distribution. `rapidshot_native.__version__` reads it
+# back out of installed metadata rather than repeating it.
+dynamic = ["version"]
+
+[project.urls]
+"Homepage" = "https://github.com/Zaatra/Rapidshot"
+"Source" = "https://github.com/Zaatra/Rapidshot/tree/main/native"
+"Bug Reports" = "https://github.com/Zaatra/Rapidshot/issues"
+
+[tool.maturin]
+# The compiled module keeps its name -- PyO3 exports `PyInit__rapidshot_native`,
+# so the final component cannot change -- but lives inside a package rather than
+# at the top level, where a bare `_rapidshot_native` would be an odd thing to
+# find on sys.path.
+module-name = "rapidshot_native._rapidshot_native"
+python-source = "python"
+manifest-path = "Cargo.toml"
+# abi3 is declared in Cargo.toml (pyo3 = { features = ["abi3-py39"] }), which is
+# what makes one wheel serve every supported Python. Without it this would need
+# a wheel per minor version, and a new one every time CPython releases.
+strip = true
