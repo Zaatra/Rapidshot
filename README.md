@@ -41,6 +41,7 @@ per-call latency, DXcam and BetterCam are good and you should use them.
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Frame buffers](#frame-buffers)
+- [Coming from DXcam](#coming-from-dxcam)
 - [Trading CPU for frames](#trading-cpu-for-frames)
 - [Only process what changed](#only-process-what-changed)
 - [Colour formats](#colour-formats)
@@ -48,11 +49,14 @@ per-call latency, DXcam and BetterCam are good and you should use them.
 - [GPU-resident capture](#gpu-resident-capture)
 - [The GPU tensor](#the-gpu-tensor)
 - [Hybrid GPU laptops](#hybrid-gpu-laptops)
+- [Surviving display changes](#surviving-display-changes)
 - [Headless machines](#headless-machines)
 - [The optional native extension](#the-optional-native-extension)
+- [Profiling your own loop](#profiling-your-own-loop)
 - [Measurements](#measurements)
 - [Against other libraries](#against-other-libraries)
 - [System requirements](#system-requirements)
+- [Diagnostics](#diagnostics)
 - [Troubleshooting](#troubleshooting)
 
 ## Installation
@@ -74,6 +78,16 @@ pip install rapidshot[native]
 One `abi3` wheel covers Python 3.9 onward, Windows x86-64. See
 [the native extension](#the-optional-native-extension) for what it adds and how
 to build it yourself instead.
+
+To see what you ended up with — whether the extension loaded, which adapters
+can capture, which optional dependencies are importable:
+
+```python
+import rapidshot
+print(rapidshot.diagnose())
+```
+
+See [Diagnostics](#diagnostics).
 
 ```bash
 pip install rapidshot[cv2]         # OpenCV, for your own downstream use
@@ -162,21 +176,33 @@ so there is no `release()` to call and `pool_size_frames` does not apply.
 
 ### Cursor
 
+Frames from [`grab_frame()`](#gpu-resident-capture) carry a snapshot of the
+cursor as of that frame:
+
 ```python
-cursor = camera.grab_cursor()
-if cursor.PointerPositionInfo.Visible:
-    x = cursor.PointerPositionInfo.Position.x
-    y = cursor.PointerPositionInfo.Position.y
-    if cursor.Shape is not None:
-        w = cursor.PointerShapeInfo.Width
-        h = cursor.PointerShapeInfo.Height
+frame = camera.grab_frame()
+if frame is not None:
+    with frame:
+        cursor = frame.cursor             # a copy -- still valid after release
+    if cursor.visible:
+        x, y = cursor.position            # desktop coordinates
+        hx, hy = cursor.hotspot           # click point within the shape
+        if cursor.shape is not None:
+            w, h = cursor.shape_size
 ```
 
-Position, visibility and the raw shape buffer are exposed as Desktop
-Duplication reports them. Compositing the cursor onto a frame is left to the
-caller: doing it correctly means handling the monochrome, colour and
-masked-colour shape types separately, and the right blend depends on what you
-are compositing onto.
+`cursor.shape` is the raw pointer image as DXGI sent it, `cursor.shape_pitch`
+bytes per row, in the encoding `cursor.shape_type` names: `1` monochrome (an AND
+mask stacked above an XOR mask, so it is twice the cursor's height), `2` colour
+BGRA, `4` masked colour. `shape` is `None` until DXGI has sent one.
+
+Compositing the cursor onto a frame is left to the caller: doing it correctly
+means handling those three encodings separately, and the right blend depends on
+what you are compositing onto.
+
+`camera.grab_cursor()` still returns the raw DXGI structures
+(`PointerPositionInfo`, `PointerShapeInfo`, `Shape`) for code that already
+uses them.
 
 ## Frame buffers
 
@@ -199,7 +225,12 @@ if frame is not None:
 **Release when done.** The buffer returns to the pool and is handed to the next
 capture, so anything still holding it would see the wrong frame. Reading it
 after release raises `BufferReleasedError` rather than returning stale pixels.
-To keep the data, `frame.copy()`.
+To keep the data, `frame.copy()` or `np.array(frame, copy=True)`.
+
+> Before 2.5.0, `np.array(frame, copy=True)` returned a **view** under NumPy 2 —
+> the buffer accepted NumPy's `copy` argument and ignored it — so the "copy"
+> was overwritten by the next capture, with nothing raising. `frame.copy()` and
+> `np.asarray(frame).copy()` were always correct.
 
 Forgetting is not fatal: the pool runs dry and capture falls back to allocating,
 which is slower but always correct. It will never hand you a buffer another
@@ -214,6 +245,41 @@ camera = rapidshot.create(pool_output=False)   # plain ndarrays, as before
 
 BGRA already worked this way before 2.0 — it does no conversion, so its staging
 buffer was always returned pooled.
+
+## Coming from DXcam
+
+Change one import:
+
+```python
+import rapidshot.dxcam_compat as dxcam     # was: import dxcam
+
+camera = dxcam.create(output_color="BGR")
+frame = camera.grab()                      # a plain numpy.ndarray, as before
+```
+
+The shim provides `create()`, `device_info()`, `output_info()`, `reset()` and
+`clean_up()`, and a camera with `grab()`, `shot()`, `start()` /
+`get_latest_frame()` / `stop()`, `release()`, `grab_view()` /
+`get_latest_frame_view()`, and the attributes DXcam code reads — `width`,
+`height`, `channel_size`, `region`, `is_capturing`, `latest_frame_time`.
+Keywords `create()` does not recognise are passed through to
+`rapidshot.create()`, so `nvidia_gpu=True` keeps working.
+
+**It costs one copy per frame, on purpose.** DXcam code never releases a frame,
+and RapidShot's buffers [must be released](#frame-buffers), so the shim copies
+each frame out and releases it at once. That copy is the price of not touching
+your code.
+
+`grab_view()` is the exception. DXcam's "valid until the next grab" contract is
+exactly a pooled buffer's lifetime, so it is genuinely zero-copy — and reading a
+retired view raises `BufferReleasedError` rather than quietly showing the next
+frame's pixels, which is stricter than DXcam.
+
+Migrate a call site at a time: `camera.rapidshot_camera` is the RapidShot camera
+underneath, and any attribute the shim does not define is forwarded to it. Once
+nothing uses the shim, `import rapidshot` and add `release()` to drop the copy.
+Code that reaches into DXcam internals such as `camera._duplicator` is not
+portable, and the shim does not pretend otherwise.
 
 ## Trading CPU for frames
 
@@ -247,16 +313,23 @@ They are extra temporal samples for a model, and redundant for a recorder.
 Frames from `grab_frame()` carry the compositor's dirty-rect metadata:
 
 ```python
-with camera.grab_frame() as frame:
-    if frame.dirty_rects is None or not frame.dirty_rects:
-        process_everything(frame)
-    else:
-        for left, top, right, bottom in frame.dirty_rects:
-            process_region(frame, left, top, right, bottom)
+frame = camera.grab_frame()               # None when nothing changed
+if frame is not None:
+    with frame:
+        if not frame.dirty_rects or frame.changed_fraction > 0.5:
+            process_everything(frame)
+        else:
+            for left, top, right, bottom in frame.dirty_rects:
+                process_region(frame, left, top, right, bottom)
 ```
 
 Coordinates are relative to the frame, so they index straight into the captured
 image even when `region=` is in use.
+
+`changed_fraction` is the share of the frame the rects cover, from 0.0 to 1.0,
+with overlaps counted once — drivers do report overlapping rects, and summing
+their areas can exceed the frame. It follows the rules below: `None` when the
+metadata could not be read, `1.0` when the list is empty.
 
 Two things to get right. An **empty list does not mean nothing changed** — it
 means no rects were reported, which a mode change or a coalescing driver can
@@ -309,9 +382,11 @@ you are handing pixels to a GPU consumer, `grab_frame()` skips that and gives
 you the Direct3D texture:
 
 ```python
-with camera.grab_frame() as frame:
-    texture = frame.d3d11_texture        # ID3D11Texture2D, valid inside the block
-    print(frame.timestamp, frame.accumulated_frames)
+frame = camera.grab_frame()              # None when nothing changed
+if frame is not None:
+    with frame:
+        texture = frame.d3d11_texture    # ID3D11Texture2D, valid inside the block
+        print(frame.timestamp, frame.accumulated_frames)
 ```
 
 > **The `with` block is not optional.** Direct3D cannot capture the next frame
@@ -319,11 +394,22 @@ with camera.grab_frame() as frame:
 > stalls capture entirely. Use the context manager or call `frame.release()`,
 > and copy out anything you need before the block ends. `grab()`, `shot()` and
 > `grab_frame()` all raise a clear error if a frame is still outstanding.
+>
+> Check for `None` *before* the `with`: `grab_frame()` returns `None` when
+> nothing changed, and `with None` raises `TypeError`.
 
 Metadata stays readable after release: `timestamp` / `timestamp_qpc` (when the
 compositor presented the frame), `accumulated_frames` (greater than 1 means the
 OS coalesced presents because your loop fell behind), `protected_content`,
-`cursor_visible`, `region`, `width`, `height`, `rotation_angle`.
+`cursor_visible`, `region`, `width`, `height`, `rotation_angle`, and:
+
+| | |
+| --- | --- |
+| `sequence` | This frame's index within the camera, from 1. Continues across recoveries, so it identifies one frame in a log. |
+| `generation` | How many times capture had rebuilt itself when the frame was taken. See [Surviving display changes](#surviving-display-changes). |
+| `age_ms` | How old the pixels are *now*, measured from the present timestamp — not how long a call took. It grows while you hold the frame, so read it just before handing off. `0.0` means no present time was reported. |
+| `changed_fraction` | Share of the frame covered by dirty rects. See [Only process what changed](#only-process-what-changed). |
+| `cursor` | Cursor position, hotspot and shape. See [Cursor](#cursor). |
 
 ## The GPU tensor
 
@@ -362,9 +448,10 @@ your project:
 with CudaTensor(pre, (1, 3, 640, 640)) as view:
     tensor = view.array                            # a cupy.ndarray in VRAM
     while capturing:
-        with camera.grab_frame() as frame:         # a *new* frame each pass
-            if frame is None:
-                continue
+        frame = camera.grab_frame()                # a *new* frame each pass
+        if frame is None:
+            continue
+        with frame:
             view.sync()                            # queued CUDA work must finish
             pre.process(frame)                     # overwrites the tensor buffer
         model(tensor)
@@ -498,6 +585,44 @@ which is why the hazard stays invisible until a real workload arrives.
 `shared_fence_submitted` and `shared_fence_completed` expose what was queued
 versus what the GPU has reached, if you need to watch the handshake work.
 
+## Surviving display changes
+
+A mode change, a monitor arriving or leaving, exclusive fullscreen or a device
+reset invalidates Desktop Duplication. RapidShot rebuilds and carries on, with
+bounded retries and backoff. It also tells you it did:
+
+```python
+camera.generation            # 0 until the first rebuild, +1 per successful one
+camera.recovery_count        # the same count, read as a health counter
+camera.last_recovery_reason  # e.g. "DXGI device error during update_frame", or None
+```
+
+Every frame from `grab_frame()` is stamped with the generation it came from.
+That matters for anything built from one frame and reused: a rebuilt duplicator
+may differ in size, rotation or format, so a `GpuPreprocessor12` or a
+cross-adapter transfer made before the rebuild describes a surface that is gone.
+Rebuild it when the generation moves:
+
+```python
+pre, built_for = None, None
+
+frame = camera.grab_frame()
+if frame is not None:
+    with frame:
+        if frame.generation != built_for:
+            pre = native.GpuPreprocessor12(frame, 640, 640)
+            built_for = frame.generation
+        pre.process(frame)
+```
+
+`grab()` returns pixels without this metadata; compare `camera.generation`
+between calls instead.
+
+The generation moves only on a *successful* rebuild, so a failed attempt that is
+about to be retried does not make you throw a cache away for nothing. A
+`recovery_count` that keeps climbing on an otherwise idle machine means capture
+is being torn down and rebuilt repeatedly, and is worth investigating.
+
 ## Headless machines
 
 With no monitor attached there is no desktop to duplicate, and
@@ -542,6 +667,46 @@ reports which one is loaded under `source`.
 `rapidshot-native` is versioned independently of `rapidshot`, because the Rust
 changes on its own schedule. `rapidshot` declares the minimum it needs, so pip
 resolves a working pair; if you pin, pin both.
+
+## Profiling your own loop
+
+The figures below describe this project's machines. For yours:
+
+```python
+from rapidshot.profiling import Profiler
+
+profiler = Profiler("inference loop")
+with profiler:
+    for _ in range(1000):
+        with profiler.time("grab"):
+            frame = camera.grab_frame()
+        profiler.observe(frame)                # None is counted, not skipped
+        if frame is None:
+            continue
+        with frame:
+            with profiler.time("process"):
+                process(frame)
+
+print(profiler.report())    # a table, for a human
+profiler.summary()          # a dict, for asserting on
+profiler.json()             # a string, for storing beside a baseline
+```
+
+It reports the minimum and percentiles, **never a mean**. Background load can
+only make a sample slower, so the minimum is the least contaminated estimate and
+the tail is what a real-time consumer feels; a mean hides both. Any stage with
+fewer than 30 samples is flagged `low_confidence` — a p99 over a dozen samples
+is just the largest of them.
+
+`observe()` records what wall clock cannot show. `coalesced_updates_missed`
+counts display updates the OS folded together because the loop fell behind, so
+a loop that looks fast while dropping most of what it should capture says so.
+If capture rebuilt mid-run, `recoveries_during_run` says that too: timings
+either side of a recovery describe different duplicators and should not be
+pooled.
+
+Stages nest, and a sample is recorded even when its block raises. One profiler
+per thread — it is deliberately not thread-safe.
 
 ## Measurements
 
@@ -785,7 +950,32 @@ discretion, so the risk is low — but it is the one rule a silent mismatch woul
 corrupt rather than crash. AMD's cross-adapter capability flags are unknown; the
 buffer path was chosen so nothing depends on them.
 
+## Diagnostics
+
+```python
+import rapidshot
+print(rapidshot.diagnose())
+```
+
+One report: the RapidShot version, whether the native extension loaded and from
+where (a local build and the wheel can both be installed, and differ), the
+adapter topology and whether it is hybrid, and which optional dependencies —
+NumPy, comtypes, CuPy, OpenCV, PIL, ONNX Runtime — are importable, with versions.
+Most "it does not work" reports are answerable from this alone, so paste it into
+any issue you open.
+
+It never raises. Each section is independent, and one that fails reports its
+error while the rest still print — the machine where this matters most is the
+one where something is already broken.
+
+`rapidshot.capabilities()` returns the same report as a dict, for code to branch
+on. Pass `probe_gpu=True` to either to add the cross-adapter probe; it is off by
+default because it creates D3D devices and allocates a shared heap, and a
+diagnostic should not be able to destabilise the thing it is diagnosing.
+
 ## Troubleshooting
+
+Run [`rapidshot.diagnose()`](#diagnostics) first; it answers most of these.
 
 - **CuPy fails at its first JIT** with `Failed to find CUDA headers`. The wheel
   is not enough — `pip install cupy-cuda13x[ctk]` installs no headers against
