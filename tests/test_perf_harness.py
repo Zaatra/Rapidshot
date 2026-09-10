@@ -24,6 +24,7 @@ Timings are driven by a fake clock rather than real sleeps, so the tests are
 fast and not flaky.
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -465,3 +466,93 @@ class TestCaveatsApplyBothWays:
         result.median_ms = 8.0
         assert perf_suite.print_comparison([result], path) == 1
         capsys.readouterr()
+
+
+class TestAutoBaselineSelection:
+    """`--compare auto` picks the baseline recorded on the current host.
+
+    The release gate named one file, which is one machine. Anywhere else the
+    comparison correctly declined to gate, so the step printed a table where
+    every verdict was indicative and nothing could fail -- and a gate that
+    always passes still gets quoted as evidence that it passed.
+
+    Selection is therefore load-bearing, and its refusals more so than its
+    matches: picking the wrong baseline is worse than picking none.
+    """
+
+    HOST = {
+        "processor": "TestCPU",
+        "platform": "Windows-11",
+        "gpu": "TestGPU",
+        "native_extension": True,
+    }
+
+    def _write(self, directory, name, **overrides):
+        machine = dict(self.HOST, rapidshot="2.4.0", timestamp="2026-01-01T00:00:00")
+        machine.update(overrides)
+        (directory / name).write_text(json.dumps({"machine": machine, "results": []}))
+
+    def test_matching_host_is_selected(self, tmp_path):
+        self._write(tmp_path, "baseline-mine.json")
+        self._write(tmp_path, "baseline-other.json", processor="SomeoneElse")
+        assert perf_suite.resolve_auto_baseline(
+            self.HOST, tmp_path).name == "baseline-mine.json"
+
+    def test_no_match_refuses_rather_than_falling_back(self, tmp_path):
+        # The whole failure being fixed: reaching for another machine's file
+        # produces a table of indicative verdicts that gates nothing.
+        self._write(tmp_path, "baseline-other.json", gpu="SomeoneElsesGPU")
+        with pytest.raises(SystemExit) as excinfo:
+            perf_suite.resolve_auto_baseline(self.HOST, tmp_path)
+        assert "no baseline recorded on this machine" in str(excinfo.value)
+        assert "differs on gpu" in str(excinfo.value)
+
+    def test_native_mismatch_disqualifies(self, tmp_path):
+        # baseline.json is recorded with the extension and
+        # baseline-nonative.json without; pairing them reports every
+        # conversion row 6-20x slower on every run, and every row moves
+        # together so it reads as hardware rather than as a mistake.
+        self._write(tmp_path, "baseline-nonative.json", native_extension=False)
+        with pytest.raises(SystemExit) as excinfo:
+            perf_suite.resolve_auto_baseline(self.HOST, tmp_path)
+        assert "differs on native_extension" in str(excinfo.value)
+
+    def test_absent_native_flag_is_unknown_not_mismatch(self, tmp_path):
+        """Older recordings predate the field and must stay selectable.
+
+        Treating absence as a mismatch would disqualify every baseline
+        recorded before it existed -- which is all of them but one.
+        """
+        machine = dict(self.HOST, rapidshot="2.3.0", timestamp="2026-01-01T00:00:00")
+        del machine["native_extension"]
+        (tmp_path / "baseline-old.json").write_text(
+            json.dumps({"machine": machine, "results": []}))
+        assert perf_suite.resolve_auto_baseline(
+            self.HOST, tmp_path).name == "baseline-old.json"
+
+    def test_newer_recording_wins(self, tmp_path):
+        # An older one is likelier to predate a redefinition and suppress rows.
+        self._write(tmp_path, "baseline-old.json", rapidshot="2.3.0")
+        self._write(tmp_path, "baseline-new.json", rapidshot="2.4.0")
+        assert perf_suite.resolve_auto_baseline(
+            self.HOST, tmp_path).name == "baseline-new.json"
+
+    def test_exact_tie_refuses_rather_than_guessing(self, tmp_path):
+        """Two equally valid baselines must not be resolved by glob() order.
+
+        Silently taking the first would make the verdict depend on a filename,
+        which is the invisible coupling this suite exists to remove.
+        """
+        self._write(tmp_path, "baseline-a.json")
+        self._write(tmp_path, "baseline-b.json")
+        with pytest.raises(SystemExit) as excinfo:
+            perf_suite.resolve_auto_baseline(self.HOST, tmp_path)
+        assert "cannot choose between them" in str(excinfo.value)
+
+    def test_unreadable_baseline_is_reported_not_skipped(self, tmp_path):
+        # Dropping it silently would hand the comparison to another machine's
+        # file and look like a clean match.
+        (tmp_path / "baseline-corrupt.json").write_text("{ not json")
+        with pytest.raises(SystemExit) as excinfo:
+            perf_suite.resolve_auto_baseline(self.HOST, tmp_path)
+        assert "unreadable" in str(excinfo.value)
