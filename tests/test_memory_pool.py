@@ -257,3 +257,53 @@ def test_cupy_pool_double_checkin():
     with pytest.raises(ValueError, match="Buffer is not 'IN_USE'"):
         pool.checkin(buf)
     pool.destroy_pool()
+
+
+class TestArrayCopyIsHonoured:
+    """`np.array(frame, copy=True)` must not hand back a pooled view.
+
+    NumPy 2 forwards `copy` to `__array__` and trusts the result. An
+    implementation that accepts the argument and ignores it turns an explicit
+    copy request into a view of a buffer the pool is about to reuse -- the
+    caller holds what looks like its own array, the next capture overwrites it,
+    and nothing raises.
+
+    Found via the DXcam compatibility layer, whose entire safety story is
+    copying the frame out before releasing it.
+    """
+
+    def _pooled(self):
+        import numpy as np
+
+        from rapidshot.memory_pool import NumpyMemoryPool
+
+        pool = NumpyMemoryPool((2, 2, 3), np.uint8, 2)
+        return pool, pool.checkout()
+
+    def test_copy_true_returns_an_independent_array(self):
+        import numpy as np
+
+        pool, buffer = self._pooled()
+        buffer.array[:] = 3
+        taken = np.array(buffer, copy=True)
+        buffer.array[:] = 99
+        assert taken.tolist() == np.full((2, 2, 3), 3, dtype=np.uint8).tolist()
+
+    def test_default_stays_a_zero_copy_view(self):
+        """Pooling exists so `np.asarray(frame)` is free; that must not change."""
+        import numpy as np
+
+        pool, buffer = self._pooled()
+        view = np.asarray(buffer)
+        buffer.array[0, 0, 0] = 42
+        assert view[0, 0, 0] == 42
+
+    def test_dtype_conversion_still_copies(self):
+        import numpy as np
+
+        pool, buffer = self._pooled()
+        buffer.array[:] = 1
+        converted = np.asarray(buffer, dtype=np.float32)
+        buffer.array[:] = 7
+        assert float(converted[0, 0, 0]) == 1.0
+

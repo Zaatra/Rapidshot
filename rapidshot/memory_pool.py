@@ -63,7 +63,15 @@ class PooledBuffer:
         """
         array = self._live()
         if dtype is not None and array.dtype != dtype:
-            return array.astype(dtype)
+            return array.astype(dtype)          # astype already copies
+        if copy:
+            # NumPy 2 passes `copy` through and trusts the answer: accepting the
+            # argument and ignoring it makes `np.array(frame, copy=True)` return
+            # a *view* of a pooled buffer. The caller then holds what looks like
+            # its own array, the next capture overwrites it, and the data is
+            # wrong with nothing raising -- which is exactly what pooling is
+            # documented to protect against.
+            return array.copy()
         return array
 
     def __getitem__(self, key):
