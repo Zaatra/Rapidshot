@@ -54,7 +54,9 @@ from typing import Dict, List, Optional
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 
-LIBRARIES = ("rapidshot", "rapidshot-poll", "dxcam", "bettercam", "mss")
+LIBRARIES = ("rapidshot", "rapidshot-poll", "rapidshot-numpy", "rapidshot-gpu",
+             "rapidshot-unpooled", "dxcam", "dxcam-numpy", "bettercam",
+             "bettercam-gpu", "mss")
 SCENARIOS = ("fullscreen", "region")
 COLOURS = ("BGRA", "RGB")
 REGION = (760, 340, 1160, 740)          # 400x400, centred on a 1080p display
@@ -226,6 +228,99 @@ def _adapter_mss(scenario: str, colour: str):
     return grab, sct, {}
 
 
+def _adapter_rapidshot_numpy(scenario: str, colour: str):
+    """RapidShot with the native kernels switched off.
+
+    Not a handicap row -- it is what `pip install rapidshot` does on a machine
+    with no Rust toolchain, which is most of them. Quoting only the AVX2
+    numbers would advertise a build most users will not have.
+
+    Forced by setting the processor's cached lookups to False rather than by
+    hiding the extension: the cache is what the per-frame path actually reads,
+    and each cell runs in its own process, so nothing leaks between rows.
+    """
+    sys.path.insert(0, str(REPO))
+    from rapidshot.processor import numpy_processor as _proc
+    _proc._NATIVE_SWIZZLE = False
+    _proc._NATIVE_GRAY = False
+    grab, cam, extra = _adapter_rapidshot(scenario, colour)
+    return grab, cam, {**extra, "native_extension": False, "forced_numpy": True}
+
+
+def _adapter_rapidshot_gpu(scenario: str, colour: str):
+    """RapidShot converting on the GPU through CuPy.
+
+    Returns a bare `cupy.ndarray` rather than a pooled buffer, so there is no
+    release to pay for -- CuPy's allocator owns it.
+    """
+    sys.path.insert(0, str(REPO))
+    import rapidshot
+    from rapidshot import native
+
+    cam = rapidshot.create(output_color=colour, nvidia_gpu=True)
+    region = REGION if scenario == "region" else None
+
+    def grab():
+        frame = cam.grab(region=region) if region else cam.grab()
+        return None if frame is None else True
+
+    return grab, cam, {"native_extension": native.is_available(),
+                       "nvidia_gpu": True}
+
+
+def _adapter_dxcam_numpy(scenario: str, colour: str):
+    """DXcam with its NumPy processor instead of its cv2 one.
+
+    DXcam ships both. Measuring only the cv2 default would compare RapidShot's
+    best conversion path against one of DXcam's two and call it the library.
+    """
+    import dxcam
+    cam = dxcam.create(output_color=colour, processor_backend="numpy")
+    region = REGION if scenario == "region" else None
+
+    def grab():
+        frame = cam.grab(region=region) if region else cam.grab()
+        return None if frame is None else True
+
+    return grab, cam, {"processor_backend": "numpy"}
+
+
+def _adapter_bettercam_gpu(scenario: str, colour: str):
+    """BetterCam converting on the GPU, which it supports and DXcam does not."""
+    import bettercam
+    cam = bettercam.create(output_color=colour, nvidia_gpu=True)
+    region = REGION if scenario == "region" else None
+
+    def grab():
+        frame = cam.grab(region=region) if region else cam.grab()
+        return None if frame is None else True
+
+    return grab, cam, {"nvidia_gpu": True}
+
+
+def _adapter_rapidshot_unpooled(scenario: str, colour: str):
+    """RapidShot returning plain ndarrays instead of pooled buffers.
+
+    `pool_output=False` is the documented escape hatch for code that needs a
+    true `ndarray`, and it is also the 1.x behaviour. Pooling is claimed to be
+    worth 1.3-2.1x on `grab()`; that claim was measured synthetically and never
+    against a live capture loop, which is what this row is for.
+    """
+    sys.path.insert(0, str(REPO))
+    import rapidshot
+    from rapidshot import native
+
+    cam = rapidshot.create(output_color=colour, pool_output=False)
+    region = REGION if scenario == "region" else None
+
+    def grab():
+        frame = cam.grab(region=region) if region else cam.grab()
+        return None if frame is None else True
+
+    return grab, cam, {"native_extension": native.is_available(),
+                       "pool_output": False}
+
+
 ADAPTERS = {
     "rapidshot": _adapter_rapidshot,
     # The same library polling like DXcam does. Without this row the comparison
@@ -233,8 +328,18 @@ ADAPTERS = {
     # whether it chose to spend a core finding out -- and reads as a throughput
     # deficit when it is mostly a scheduling policy.
     "rapidshot-poll": lambda s, c: _adapter_rapidshot(s, c, timeout_ms=0),
+    # Each library's own alternative conversion path, so the comparison is
+    # between libraries at their best rather than between one library's best
+    # and another's default. DXcam ships a NumPy processor beside its cv2 one;
+    # BetterCam has a CuPy path; RapidShot has both a CuPy path and the
+    # toolchain-free NumPy one most installs actually get.
+    "rapidshot-numpy": _adapter_rapidshot_numpy,
+    "rapidshot-gpu": _adapter_rapidshot_gpu,
+    "rapidshot-unpooled": _adapter_rapidshot_unpooled,
     "dxcam": _adapter_dxcam,
+    "dxcam-numpy": _adapter_dxcam_numpy,
     "bettercam": _adapter_bettercam,
+    "bettercam-gpu": _adapter_bettercam_gpu,
     "mss": _adapter_mss,
 }
 
@@ -339,11 +444,24 @@ def environment(motion: bool) -> dict:
         "motion_on_screen": motion,
         "region": list(REGION),
     }
-    for module in ("numpy", "dxcam", "bettercam", "mss", "psutil", "comtypes"):
+    # cv2 and cupy belong here as much as the capture libraries do. DXcam and
+    # BetterCam convert colour through OpenCV, whose default thread count sets
+    # how much CPU that conversion costs -- OpenCV 5.0 defaults to one thread
+    # per logical core, so the same code reports wildly different CPU on a
+    # 32-thread machine than on an 8-thread one. A run that does not record the
+    # version cannot be compared against one that does, which is exactly the
+    # position the 2026-08-06 recording left us in.
+    for module in ("numpy", "cv2", "cupy", "dxcam", "bettercam", "mss",
+                   "psutil", "comtypes"):
         try:
             info[module] = __import__(module).__version__
         except Exception as exc:
             info[module] = f"unavailable ({type(exc).__name__})"
+    try:
+        import cv2
+        info["cv2_threads"] = cv2.getNumThreads()
+    except Exception as exc:
+        info["cv2_threads"] = f"unavailable ({type(exc).__name__})"
     try:
         sys.path.insert(0, str(REPO))
         import rapidshot

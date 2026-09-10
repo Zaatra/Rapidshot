@@ -100,6 +100,41 @@ each release can be traced back to the plan it implements.
 
 ### Benchmarks
 
+- **Each library now competes in its best configuration, not its default.**
+  `compare_libraries.py` measured RapidShot with its native kernels against
+  DXcam and BetterCam on their cv2 path, which is one library's best against
+  another's default. Added `rapidshot-numpy` (what a toolchain-free
+  `pip install` actually gets), `rapidshot-gpu`, `rapidshot-unpooled`,
+  `dxcam-numpy` (DXcam ships a NumPy processor beside its cv2 one) and
+  `bettercam-gpu`.
+
+- **The environment block records `cv2`, `cupy` and `cv2_threads`.** It did not,
+  and without them a CPU figure is uninterpretable: OpenCV 5.0 defaults to one
+  thread per logical core, so `cvtColor` reports ~450% CPU on this 32-thread
+  machine while finishing *faster* in wall-clock than the single-threaded
+  alternative. The 2026-08-06 recording cannot be reconciled with the current
+  one for exactly this reason -- it never recorded which OpenCV it ran.
+
+- **Recorded `benchmarks/library-comparison-machineB.json`**, Machine B at
+  2560x1600 on 2.4.0, pooled across five independent full-matrix runs. Kept
+  separate from `library-comparison.json` (Machine A, 1080p/100 Hz, 2.1.0)
+  because the panels differ and most of the frame-rate gap between them is the
+  panel, not the code.
+
+  Pooling changed a conclusion, which is the argument for doing it: on one run
+  the AVX2 and NumPy builds were indistinguishable end to end, and across five
+  the extension is consistently worth **1.10x** -- real, and nothing like the
+  **6.4x** it shows on the synthetic conversion benchmark. At 2560x1600 the
+  staging read dominates `grab()`, so making conversion six times cheaper moves
+  the total by a tenth. Quoting the synthetic ratio as a user-facing number was
+  overselling it.
+
+- **Buffer pooling measured against live capture for the first time**, at
+  **1.21x** on fullscreen RGB for about 50 MB -- and nothing at all at region
+  size, where both sit at the compositor ceiling. The 1.3-2.1x quoted elsewhere
+  came from a synthetic benchmark and does not reproduce in a capture loop.
+
+
 - **Re-recorded `benchmarks/baseline-rtx4060-hybrid.json` at 2.4.0.** It was
   recorded at 2.3.0, so the only same-machine baseline this host had was a
   version stale. 2.4.0 measured against the old recording was `~ same` on every
