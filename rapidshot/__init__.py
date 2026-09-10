@@ -45,6 +45,8 @@ logger = get_logger("init")
 
 # Define explicitly what's exposed from this module
 __all__ = [
+    "capabilities",
+    "diagnose",
     "create", "device_info", "output_info", "topology_info",
     "clean_up", "reset", "ScreenCapture",
     "RapidshotError", "HeadlessError", "get_version_info",
@@ -543,6 +545,180 @@ def reset() -> None:
     if __factory is not None:
         __factory.reset()
         __factory = None
+
+def capabilities(probe_gpu: bool = False) -> Dict[str, Any]:
+    """Everything about this machine that decides what RapidShot can do.
+
+    One call, one shape, never raises. Every section is independent and a
+    failure in one is reported inside that section rather than aborting the
+    report -- the machine where this matters most is the one where something is
+    already broken.
+
+    ``probe_gpu`` additionally runs the native cross-adapter probe, which
+    creates D3D devices and allocates a shared heap. That is real GPU work and
+    is off by default so a diagnostic cannot itself destabilise the thing being
+    diagnosed.
+
+    Sections:
+
+    ``rapidshot``
+        Version, and whether the optional native extension is loaded and from
+        where (a local build and the wheel can both be present and differ).
+    ``platform``
+        OS, Python, and the packages whose versions change behaviour.
+    ``capture``
+        Adapter topology: how many adapters, which drive displays, and whether
+        this is a hybrid system where the GPU tensor needs a cross-adapter hop.
+    ``gpu``
+        What the native extension can actually do here, rather than what it was
+        compiled with.
+    ``dependencies``
+        Optional consumers -- CuPy, OpenCV, PIL, ONNX Runtime -- and their
+        versions where importable.
+
+    For a printable version see :func:`diagnose`.
+    """
+    import platform as _platform
+    import sys as _sys
+
+    report: Dict[str, Any] = {}
+
+    report["rapidshot"] = {"version": __version__}
+    try:
+        from rapidshot import native as _native
+        report["rapidshot"]["native_extension"] = _native.is_available()
+        report["rapidshot"]["native_build"] = _native.build_info()
+    except Exception as exc:
+        report["rapidshot"]["native_extension"] = False
+        report["rapidshot"]["error"] = f"{type(exc).__name__}: {exc}"
+
+    report["platform"] = {
+        "os": _platform.platform(),
+        "python": _platform.python_version(),
+        "machine": _platform.machine(),
+        "processor": _platform.processor(),
+    }
+
+    # Topology, as text and as counts. The text is what a user pastes into an
+    # issue; the counts are what code branches on.
+    capture: Dict[str, Any] = {}
+    try:
+        from rapidshot.util.topology import probe_topology
+
+        topology = probe_topology()
+        capture["kind"] = getattr(topology, "kind", None)
+        adapters = getattr(topology, "adapters", []) or []
+        capture["adapter_count"] = len(adapters)
+        capture["display_adapters"] = sum(
+            1 for a in adapters if getattr(a, "output_count", 0))
+        capture["adapters"] = [
+            {"description": getattr(a, "description", None),
+             "vendor": getattr(a, "vendor", None),
+             "outputs": getattr(a, "output_count", None),
+             "dedicated_vram_mb": (getattr(a, "dedicated_video_memory", 0) or 0) // (1024 * 1024),
+             "software": getattr(a, "is_software", None)}
+            for a in adapters
+        ]
+        capture["cross_adapter_required_for_gpu_tensor"] = (
+            getattr(topology, "kind", None) == "hybrid")
+    except Exception as exc:
+        capture["error"] = f"{type(exc).__name__}: {exc}"
+    report["capture"] = capture
+
+    gpu: Dict[str, Any] = {}
+    try:
+        from rapidshot import native as _native
+
+        gpu["available"] = _native.is_available()
+        if _native.is_available():
+            for name, probe in (("shareable_buffers", _native.probe_shareable_buffers),
+                                ("onnxruntime", _native.probe_onnxruntime)):
+                try:
+                    gpu[name] = probe()
+                except Exception as exc:
+                    gpu[name] = {"error": f"{type(exc).__name__}: {exc}"}
+            if probe_gpu:
+                try:
+                    gpu["cross_adapter"] = _native.probe_cross_adapter()
+                except Exception as exc:
+                    gpu["cross_adapter"] = {"error": f"{type(exc).__name__}: {exc}"}
+            else:
+                gpu["cross_adapter"] = "not probed (pass probe_gpu=True)"
+    except Exception as exc:
+        gpu["error"] = f"{type(exc).__name__}: {exc}"
+    report["gpu"] = gpu
+
+    dependencies: Dict[str, Any] = {}
+    for module in ("numpy", "comtypes", "cupy", "cv2", "PIL", "onnxruntime"):
+        try:
+            imported = __import__(module)
+            dependencies[module] = getattr(imported, "__version__", "unknown")
+        except Exception:
+            dependencies[module] = None
+    report["dependencies"] = dependencies
+
+    return report
+
+
+def diagnose(probe_gpu: bool = False) -> str:
+    """:func:`capabilities` rendered for a human, and for an issue report.
+
+    The text is the point: most "it does not work" reports are answerable from
+    this output alone, and asking a user to run one command beats asking them
+    to run six and paste the results in the right order.
+    """
+    report = capabilities(probe_gpu=probe_gpu)
+    lines = ["RapidShot diagnostics", "=" * 21, ""]
+
+    shot = report["rapidshot"]
+    lines.append(f"rapidshot {shot.get('version')}")
+    build = shot.get("native_build") or {}
+    if shot.get("native_extension"):
+        lines.append(f"  native extension : yes ({build.get('source', 'unknown source')})")
+        lines.append(f"  native version   : {build.get('version')} / {build.get('stage')}")
+    else:
+        lines.append("  native extension : NO -- GPU tensor and cross-adapter "
+                     "transfer unavailable")
+        lines.append("                     install with: pip install rapidshot-native")
+
+    plat = report["platform"]
+    lines += ["", f"platform : {plat.get('os')}",
+              f"python   : {plat.get('python')}",
+              f"cpu      : {plat.get('processor')}"]
+
+    capture = report["capture"]
+    lines += ["", "capture"]
+    if "error" in capture:
+        lines.append(f"  topology unavailable: {capture['error']}")
+    else:
+        lines.append(f"  topology  : {capture.get('kind')} "
+                     f"({capture.get('adapter_count')} adapters, "
+                     f"{capture.get('display_adapters')} driving a display)")
+        for adapter in capture.get("adapters", []):
+            outputs = adapter.get("outputs")
+            lines.append(f"    - {adapter.get('description')} "
+                         f"({adapter.get('vendor')}, {outputs} output"
+                         f"{'' if outputs == 1 else 's'})")
+        if capture.get("cross_adapter_required_for_gpu_tensor"):
+            lines.append("  NOTE: hybrid system. Capture runs on the display "
+                         "adapter, so a GPU tensor")
+            lines.append("        must cross adapters before CUDA can import it.")
+
+    deps = report["dependencies"]
+    lines += ["", "optional dependencies"]
+    for name, version in deps.items():
+        lines.append(f"  {name:12} {version if version else '-- not installed'}")
+
+    gpu = report["gpu"]
+    if isinstance(gpu.get("cross_adapter"), str):
+        lines += ["", f"cross-adapter    : {gpu['cross_adapter']}"]
+    elif isinstance(gpu.get("cross_adapter"), dict):
+        probe = gpu["cross_adapter"]
+        lines += ["", f"cross-adapter    : {probe.get('source')} -> "
+                      f"{probe.get('destination')} "
+                      f"(representative={probe.get('representative')})"]
+    return "\n".join(lines)
+
 
 def get_version_info() -> Dict[str, Any]:
     """

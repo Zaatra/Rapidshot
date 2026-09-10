@@ -1047,7 +1047,72 @@ uncapped at ≥498 updates/s and is not the limiter; **a capped source made ever
 path report 82–86 fps and looked like a tie**, which is the failure
 `benchmarks/motion_source.py` was written to warn about.
 
-### 7.1 — 2.5: reliability and adoption
+### 7.1 — 2.5: reliability and adoption ✅ delivered 2026-09-11
+
+All five pieces are built and covered by tests that need no desktop, GPU or
+capture hardware — which matters, because these are precisely the paths CI
+cannot exercise. **445 tests pass**, up from 377.
+
+| Piece | Delivered |
+| --- | --- |
+| Capture Recovery Manager | `camera.generation`, `camera.recovery_count`, `camera.last_recovery_reason`, `frame.generation`; all 7 rebuild triggers record a cause |
+| Finish `Frame` | `sequence`, `generation`, `changed_fraction`, `age_ms`, `cursor` (position / hotspot / shape / encoding) |
+| `capabilities()` / `diagnose()` | One report replacing six scattered probes; never raises |
+| DXcam compatibility | `rapidshot.dxcam_compat`, full API parity including the zero-copy `grab_view` pair |
+| Structured profiler | `rapidshot.profiling.Profiler` with `report()` / `json()` / `summary()` |
+
+**Recovery was already survivable; it was not observable.** The rebuild
+machinery existed — bounded retries, backoff, `_attempt_reinitialization` — but
+nothing told a caller it had happened. A consumer holding a `GpuPreprocessor12`
+or a `CrossAdapterTransfer` built from an earlier frame had no signal that the
+duplicator underneath it had been replaced and might now differ in size,
+rotation or format. `generation` is that signal, stamped per frame, incremented
+only on a *successful* rebuild so a failed attempt that will be retried does not
+invalidate anyone's cache for nothing.
+
+**`changed_fraction` unions its rects rather than summing them.** Drivers do
+report overlapping regions; summing areas can exceed the frame, and a consumer
+thresholding on "more than 90% changed" would then take the full-frame path for
+a frame that barely moved. An empty rect list yields `1.0`, not `0.0` — no rects
+is no information, and the safe reading is that everything changed.
+
+**The DXcam layer's cost is one copy per frame, and that is the point.** DXcam
+callers never release anything; RapidShot's pooled buffer must be released and
+raises if read afterwards. So the shim copies out and releases immediately. Drop
+the shim and add `release()` to get the performance back. `grab_view()` is the
+exception: DXcam's "valid until the next grab" contract is exactly the pooled
+buffer's lifetime, so that path is genuinely zero-copy.
+
+**The profiler reports percentiles and a minimum, never a mean**, and labels any
+stage under 30 samples `low_confidence`. Both rules come from § 2: background
+load can only make a sample slower, so the minimum is the least contaminated
+estimate and the tail is what a real-time consumer feels — a mean hides both.
+It also records `accumulated_frames`, because a loop can look fast while
+dropping most of what it was meant to capture, and wall clock alone cannot tell
+the two apart.
+
+#### A live data-corruption bug, found by the compatibility layer's tests
+
+`PooledBuffer.__array__` accepted NumPy's `copy` argument and ignored it,
+returning a view. NumPy 2 forwards `copy` and **trusts the answer**, so
+
+```python
+frame = camera.grab()
+mine = np.array(frame, copy=True)   # returned a VIEW of the pooled buffer
+```
+
+handed back a view of a buffer the pool was about to reuse. The caller holds
+what looks like its own array, the next capture overwrites it, and nothing
+raises — exactly the failure pooling is documented to prevent. Verified aliasing
+on numpy 2.5.1; fixed, with regression tests covering the copy, the zero-copy
+default and dtype conversion.
+
+This predates the section 7 work entirely and affects anyone who has written
+`np.array(frame, copy=True)` since NumPy 2. It was found only because the DXcam
+layer's whole safety story is copying a frame out before releasing it, which
+made the aliasing observable in a test rather than in someone's data.
+
+### 7.1 — original plan
 
 Before more GPU surface area, make the library boringly dependable and easy to adopt. This is what makes RapidShot the best *capture* library rather than only the best ML bridge.
 

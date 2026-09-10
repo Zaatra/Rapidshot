@@ -170,6 +170,16 @@ class ScreenCapture:
         # Phase 2: Re-initialization state variables
         self._is_initialized = False
         self._needs_reinit = False
+        # Recovery is observable, not just survivable. A consumer caching
+        # anything derived from a frame -- a GPU preprocessor, a cross-adapter
+        # transfer, a resize table -- needs to know the duplicator underneath it
+        # was replaced, because the replacement may differ in size, rotation or
+        # format. `Frame.generation` stamps each frame with the value current
+        # when it was taken.
+        self._generation = 0
+        self._sequence = 0
+        self._recovery_count = 0
+        self._last_recovery_reason = None
         self._reinit_attempts = 0
         self._max_reinit_attempts = 5
         self._reinit_backoff_seconds = [0.5, 1.0, 2.0, 3.0, 5.0] # Or generate dynamically
@@ -421,6 +431,15 @@ class ScreenCapture:
             self._needs_reinit = False # Successfully re-initialized (or initialized)
             if is_reinit: # Only reset attempts if this was a re-initialization
                 self._reinit_attempts = 0
+                # Counted only on success. A failed attempt that will be retried
+                # has not replaced anything, so stamping frames with a new
+                # generation for it would invalidate consumers' caches for no
+                # reason.
+                self._generation += 1
+                self._recovery_count += 1
+                logger.info(
+                    f"Capture recovered (generation {self._generation}, "
+                    f"reason: {self._last_recovery_reason or 'unspecified'})")
             logger.info("Capture resources successfully initialized.")
             return True
 
@@ -684,7 +703,7 @@ class ScreenCapture:
 
         if not self._is_initialized or self._duplicator is None:
             logger.error("grab_frame() called but capture resources are not initialized.")
-            self._needs_reinit = True
+            self._note_recovery_needed("capture resources not initialized")
             return None
 
         try:
@@ -695,7 +714,7 @@ class ScreenCapture:
             return None
         except (RapidShotReinitError, RapidShotDeviceError) as e:
             logger.warning(f"grab_frame(): {e}. Flagging for re-initialization.")
-            self._needs_reinit = True
+            self._note_recovery_needed("device or re-init error during grab_frame")
             return None
         except RapidShotError as e:
             logger.error(f"grab_frame(): {e}")
@@ -720,9 +739,85 @@ class ScreenCapture:
             cursor_visible=duplicator.cursor_visible,
             dirty_rects=duplicator.dirty_rects,
             rects_coalesced=duplicator.rects_coalesced,
+            sequence=self._next_sequence(),
+            generation=self._generation,
+            cursor=self._cursor_info(),
         )
         self._live_frame = frame
         return frame
+
+    def _next_sequence(self) -> int:
+        """Monotonic frame index for this camera, from 1.
+
+        Continues across recoveries: a sequence number identifies one frame for
+        the camera's whole life, which is what makes it useful in a log next to
+        a generation.
+        """
+        self._sequence += 1
+        return self._sequence
+
+    def _cursor_info(self):
+        """Snapshot the duplicator's cursor state into a plain CursorInfo.
+
+        Copied rather than referenced because the duplicator mutates its Cursor
+        in place on the next acquire, so a frame holding the live object would
+        silently start describing a later cursor.
+        """
+        from rapidshot.frame import CursorInfo
+
+        duplicator = self._duplicator
+        cursor = getattr(duplicator, "cursor", None)
+        if cursor is None:
+            return CursorInfo(visible=bool(getattr(duplicator, "cursor_visible", False)))
+        position = getattr(cursor, "PointerPositionInfo", None)
+        shape_info = getattr(cursor, "PointerShapeInfo", None)
+        point = getattr(position, "Position", None) if position is not None else None
+        return CursorInfo(
+            visible=bool(getattr(duplicator, "cursor_visible", False)),
+            position=((int(point.x), int(point.y)) if point is not None else None),
+            hotspot=((int(shape_info.HotSpot.x), int(shape_info.HotSpot.y))
+                     if shape_info is not None and hasattr(shape_info, "HotSpot") else None),
+            shape=getattr(cursor, "Shape", None),
+            shape_type=int(getattr(shape_info, "Type", 0) or 0) if shape_info is not None else 0,
+            shape_size=((int(shape_info.Width), int(shape_info.Height))
+                        if shape_info is not None and hasattr(shape_info, "Width") else None),
+            shape_pitch=int(getattr(shape_info, "Pitch", 0) or 0) if shape_info is not None else 0,
+        )
+
+    @property
+    def generation(self) -> int:
+        """How many times this camera has rebuilt its capture resources.
+
+        0 until the first recovery. Compare against :attr:`Frame.generation` to
+        detect that a held frame predates a rebuild.
+        """
+        return self._generation
+
+    @property
+    def recovery_count(self) -> int:
+        """Successful recoveries so far.
+
+        Equal to :attr:`generation`; kept as a separate name because one reads
+        as an identity for frames and the other as a health counter for the
+        camera. A steadily climbing value on an otherwise idle machine is worth
+        investigating -- capture is being torn down and rebuilt repeatedly.
+        """
+        return self._recovery_count
+
+    @property
+    def last_recovery_reason(self) -> "Optional[str]":
+        """Why the most recent rebuild happened, or None if there has been none.
+
+        A short human-readable cause -- access lost, mode change, device
+        removed. Recorded when the rebuild is *scheduled*, so it survives to be
+        read after the rebuild succeeds.
+        """
+        return self._last_recovery_reason
+
+    def _note_recovery_needed(self, reason: str) -> None:
+        """Record why a rebuild was scheduled. Does not itself rebuild."""
+        self._last_recovery_reason = reason
+        self._needs_reinit = True
 
     def grab_cursor(self):
         """
@@ -1003,7 +1098,7 @@ class ScreenCapture:
 
             if not self._is_initialized or self._duplicator is None:
                 logger.error("Attempted to grab frame but capture resources are not initialized.")
-                self._needs_reinit = True
+                self._note_recovery_needed("capture resources not initialized")
                 return None
 
             pooled_buffer_wrapper = None
@@ -1040,7 +1135,7 @@ class ScreenCapture:
                 self._duplicator.update_frame()
             except RapidShotReinitError as e:
                 logger.warning(f"DXGI Re-init error during update_frame: {e}. Flagging for re-initialization.")
-                self._needs_reinit = True
+                self._note_recovery_needed("DXGI re-init error during update_frame")
                 if self._duplicator._frame_acquired:
                     self._duplicator.release_frame()
                 if pooled_buffer_wrapper:
@@ -1048,7 +1143,7 @@ class ScreenCapture:
                 return None
             except RapidShotDeviceError as e:
                 logger.error(f"DXGI Device error during update_frame: {e}. Flagging for re-initialization.")
-                self._needs_reinit = True
+                self._note_recovery_needed("DXGI device error during update_frame")
                 if self._duplicator._frame_acquired:
                     self._duplicator.release_frame()
                 if pooled_buffer_wrapper:
@@ -1201,7 +1296,7 @@ class ScreenCapture:
                     pooled_buffer_wrapper.release()
                 except Exception as rel_e:
                     logger.error(f"Error releasing buffer during exception handling in _grab: {rel_e}")
-            self._needs_reinit = True
+            self._note_recovery_needed("unhandled error during grab")
             self._last_capture_error_message = f"Unexpected error in _grab: {str(e)}"
             return None
 
@@ -1301,7 +1396,7 @@ class ScreenCapture:
             "attempts following an output change."
         )
         logger.error(self._last_capture_error_message)
-        self._needs_reinit = True
+        self._note_recovery_needed("output change exhausted retries")
         return False
 
     def start(

@@ -54,6 +54,19 @@ def _qpc_freq() -> int:
     return _qpc_frequency
 
 
+def _qpc_now() -> int:
+    """Current QueryPerformanceCounter value, on the same clock as
+    ``LastPresentTime``.
+
+    Used by :attr:`Frame.age_ms`. QPC is a high-resolution interval timer, not a
+    clock synchronised to anything external, so differences against a present
+    time are meaningful while absolute values are not.
+    """
+    value = ctypes.c_longlong()
+    ctypes.windll.kernel32.QueryPerformanceCounter(ctypes.byref(value))
+    return value.value
+
+
 class FrameReleasedError(RapidShotError):
     """
     Raised when a Frame's GPU resources are touched after release.
@@ -65,6 +78,46 @@ class FrameReleasedError(RapidShotError):
 
 class FrameQuarantinedError(RapidShotError):
     """Raised when releasing a frame could invalidate untracked GPU work."""
+
+
+class CursorInfo:
+    """Where the cursor is and what it looks like, as DXGI reported it.
+
+    Desktop Duplication already carried all of this; only :attr:`visible` was
+    ever surfaced, so callers wanting to draw or track a cursor had to reach
+    into `camera.grab_cursor()` and the raw COM structures themselves.
+
+    :attr:`shape` is the raw pointer image exactly as DXGI supplied it, in one
+    of three encodings named by :attr:`shape_type` -- monochrome (a 1-bit AND
+    mask stacked above a 1-bit XOR mask, so its height is twice the cursor's),
+    colour (BGRA), or masked colour. Compositing correctly means handling all
+    three, which is why this exposes the buffer and does not attempt to blend
+    it for you.
+    """
+
+    __slots__ = ("visible", "position", "hotspot", "shape", "shape_type",
+                 "shape_size", "shape_pitch")
+
+    def __init__(self, visible=False, position=None, hotspot=None, shape=None,
+                 shape_type=0, shape_size=None, shape_pitch=0):
+        self.visible = bool(visible)
+        #: ``(x, y)`` in desktop coordinates, or None if not reported.
+        self.position = position
+        #: ``(x, y)`` offset of the click point within the shape.
+        self.hotspot = hotspot
+        #: Raw pointer-shape bytes, or None when no shape has been sent.
+        self.shape = shape
+        #: DXGI_OUTDUPL_POINTER_SHAPE_TYPE: 1 monochrome, 2 colour, 4 masked.
+        self.shape_type = int(shape_type)
+        #: ``(width, height)`` of the shape buffer.
+        self.shape_size = shape_size
+        #: Row stride of :attr:`shape` in bytes.
+        self.shape_pitch = int(shape_pitch)
+
+    def __repr__(self) -> str:
+        kind = {1: "monochrome", 2: "color", 4: "masked"}.get(self.shape_type, "none")
+        return (f"CursorInfo(visible={self.visible}, position={self.position}, "
+                f"hotspot={self.hotspot}, shape={kind}, size={self.shape_size})")
 
 
 class Frame:
@@ -83,7 +136,7 @@ class Frame:
         "_present_time_qpc", "_accumulated_frames", "_protected_content",
         "_cursor_visible", "_width", "_height", "_dirty_rects",
         "_rects_coalesced", "_source_id", "_release_drains",
-        "_release_quarantine",
+        "_release_quarantine", "_sequence", "_generation", "_cursor",
     )
 
     def __init__(
@@ -99,6 +152,9 @@ class Frame:
         dirty_rects: Optional[List[Tuple[int, int, int, int]]] = None,
         rects_coalesced: bool = False,
         source_id: int = 0,
+        sequence: int = 0,
+        generation: int = 0,
+        cursor: "Optional[CursorInfo]" = None,
     ) -> None:
         self._texture = texture
         self._on_release = on_release
@@ -118,6 +174,9 @@ class Frame:
         self._dirty_rects = self._clip_to_region(dirty_rects)
         self._rects_coalesced = rects_coalesced
         self._source_id = source_id
+        self._sequence = sequence
+        self._generation = generation
+        self._cursor = cursor
 
     def _clip_to_region(self, rects):
         """Translate desktop-coordinate rects into this frame's coordinates.
@@ -252,6 +311,117 @@ class Frame:
         See :attr:`rects_coalesced` before using these to skip work.
         """
         return self._dirty_rects
+
+    @property
+    def sequence(self) -> int:
+        """Monotonic index of this frame within its camera, from 1.
+
+        Counts frames this camera *returned*, not frames the display presented,
+        so gaps do not appear here when the compositor outruns the consumer --
+        :attr:`accumulated_frames` is what reports that. Its use is correlating
+        a frame with logs and with :attr:`generation` after a recovery.
+
+        Continues across recoveries rather than restarting, so a sequence number
+        identifies one frame for the life of the camera.
+        """
+        return self._sequence
+
+    @property
+    def generation(self) -> int:
+        """How many times capture had rebuilt itself when this frame was taken.
+
+        Starts at 0 and increments on every successful recovery -- access loss,
+        a mode change, a monitor coming or going, a device reset. Two frames
+        with different generations came from different duplicator instances and
+        may differ in size, rotation or format, so anything cached from a frame
+        (a resize table, a preprocessor, a cross-adapter transfer) must be
+        rebuilt when this changes.
+
+        `camera.recovery_count` and `camera.last_recovery_reason` say how often
+        and why; this pins each frame to one side of that boundary.
+        """
+        return self._generation
+
+    @property
+    def changed_fraction(self) -> Optional[float]:
+        """Fraction of this frame's area covered by dirty rects, 0.0 to 1.0.
+
+        None when :attr:`dirty_rects` is None -- metadata could not be read, so
+        nothing can be inferred. An **empty** rect list gives ``1.0``, not
+        ``0.0``: no rects means no information, and the safe reading is that
+        everything changed (see :attr:`dirty_rects`).
+
+        Overlapping rects are counted once. The driver may still have merged
+        regions before reporting them, in which case this over-estimates --
+        check :attr:`rects_coalesced` before using it to skip work.
+        """
+        if self._dirty_rects is None:
+            return None
+        if not self._dirty_rects:
+            return 1.0
+        total = self._width * self._height
+        if total <= 0:
+            return 0.0
+        # Union by row spans, so overlapping rects are not double counted.
+        events = []
+        for left, top, right, bottom in self._dirty_rects:
+            if right > left and bottom > top:
+                events.append((top, 1, left, right))
+                events.append((bottom, -1, left, right))
+        if not events:
+            return 0.0
+        events.sort()
+        active, area, previous = [], 0, events[0][0]
+        for y, delta, left, right in events:
+            if y > previous and active:
+                spans = sorted(active)
+                covered, end = 0, None
+                start = None
+                for s, e in spans:
+                    if start is None:
+                        start, end = s, e
+                    elif s > end:
+                        covered += end - start
+                        start, end = s, e
+                    else:
+                        end = max(end, e)
+                if start is not None:
+                    covered += end - start
+                area += covered * (y - previous)
+            previous = y
+            if delta > 0:
+                active.append((left, right))
+            else:
+                active.remove((left, right))
+        return min(area / total, 1.0)
+
+    @property
+    def age_ms(self) -> float:
+        """Milliseconds since the compositor presented this frame.
+
+        Measured against :attr:`timestamp_qpc`, so it is how old the *pixels*
+        are right now -- not how long any call took. Read it late (just before
+        handing the frame to a consumer) rather than at capture, since it grows
+        while you hold the frame.
+
+        Returns 0.0 when no present time was reported, which is not the same as
+        a zero-age frame; check :attr:`timestamp_qpc` if the difference matters.
+        """
+        if not self._present_time_qpc:
+            return 0.0
+        return max(0.0, (_qpc_now() - self._present_time_qpc) * 1000.0 / _qpc_freq())
+
+    @property
+    def cursor(self) -> "CursorInfo":
+        """Cursor position, hotspot and shape as of this frame.
+
+        Always present; when capture reported nothing, its :attr:`visible` is
+        False and the rest are None. :attr:`cursor_visible` remains as a
+        shorthand for ``frame.cursor.visible``.
+        """
+        if self._cursor is None:
+            self._cursor = CursorInfo(visible=self._cursor_visible)
+        return self._cursor
 
     @property
     def rects_coalesced(self) -> bool:
