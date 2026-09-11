@@ -603,16 +603,15 @@ class Duplicator:
         Used on access-lost style failures so no further calls are issued
         against an interface DXGI has already invalidated.
         """
-        duplicator, self.duplicator = self.duplicator, None
+        self.duplicator = None
         self._frame_acquired = False
         self.updated = False
         self.texture = None
-        if duplicator is None:
-            return
-        try:
-            duplicator.Release()
-        except Exception as e:
-            logger.debug(f"Ignoring error releasing invalidated duplication: {e}")
+        # Dropping the reference *is* the release: comtypes releases the COM
+        # pointer when the Python object goes away. Calling Release() here as
+        # well decremented the count twice for one reference -- the same fault
+        # this file already fixed on the intermediate IDXGIResource in
+        # update_frame(). See Device.release().
 
 
     def release(self) -> None:
@@ -624,26 +623,14 @@ class Duplicator:
             # surface pinned after the duplication object goes away.
             if self._frame_acquired:
                 self.release_frame()
-            try:
-                self.duplicator.Release()
-                logger.info("Duplicator resources released.")
-            except comtypes.COMError as ce:
-                hresult = ce.args[0] if ce.args else None
-                error_msg = (
-                    f"Failed to release duplicator: {ce} "
-                    f"(HRESULT: {_format_hresult(hresult)})"
-                )
-                logger.warning(error_msg)
-                # Set last_error but don't necessarily raise; this is a cleanup.
-                # If this fails, often the parent (ScreenCapture) will try to release Device too.
-                self.last_error = error_msg 
-            except Exception as e: # Catch non-COM errors
-                error_msg = f"Unexpected Python error releasing duplicator: {e}"
-                logger.warning(error_msg)
-                self.last_error = error_msg
-            finally: # Ensure self.duplicator is set to None even if Release() fails somehow
-                self.duplicator = None
-                self._frame_acquired = False
+            # Dropping the reference is the release; comtypes issues the COM
+            # Release when the Python object goes away, and doing it by hand
+            # here as well decremented the count twice for one reference. See
+            # Device.release(). There is nothing left to fail, so the error
+            # handling that used to wrap this call has gone with it.
+            self.duplicator = None
+            self._frame_acquired = False
+            logger.info("Duplicator resources released.")
 
     def get_frame_dirty_rects(self, frame_info) -> Optional[List[Tuple[int, int, int, int]]]:
         """

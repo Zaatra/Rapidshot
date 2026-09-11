@@ -34,11 +34,15 @@ class StageSurface:
     def release(self):
         """
         Release resources.
+
+        Dropping the reference is the release: comtypes releases the COM
+        pointer when the Python object goes away, so calling ``Release()``
+        here as well decremented the count twice for one reference. See
+        :meth:`Device.release`.
         """
         if self.texture is not None:
             self.width = 0
             self.height = 0
-            self.texture.Release()
             self.texture = None
             self.interface = None
 

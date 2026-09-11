@@ -10,6 +10,9 @@ item from Stage 0 of ROADMAP.md, minus the parts that need real hardware
 transitions.
 """
 
+import gc
+import weakref
+
 import pytest
 
 comtypes = pytest.importorskip("comtypes", reason="COM is Windows-only")
@@ -40,13 +43,18 @@ def com_error(hresult, message="injected failure"):
 
 
 class FakeDuplication:
-    """Stands in for IDXGIOutputDuplication, failing on demand."""
+    """Stands in for IDXGIOutputDuplication, failing on demand.
 
-    def __init__(self, acquire_error=None):
+    `log` outlives the fake, so a test can still read what happened to it after
+    the library has dropped its last reference.
+    """
+
+    def __init__(self, acquire_error=None, log=None):
         self.acquire_error = acquire_error
         self.acquire_calls = 0
         self.release_frame_calls = 0
-        self.released = False
+        self.log = {"release_calls": 0} if log is None else log
+        self.log.setdefault("release_calls", 0)
 
     def AcquireNextFrame(self, timeout, info_ref, res_ref):
         self.acquire_calls += 1
@@ -58,13 +66,16 @@ class FakeDuplication:
         self.release_frame_calls += 1
 
     def Release(self):
-        self.released = True
+        # A real comtypes pointer has this, and the library must no longer call
+        # it: comtypes issues Release itself when the pointer is dropped, so an
+        # explicit call decrements the COM refcount twice for one reference.
+        self.log["release_calls"] += 1
 
 
-def make_duplicator(acquire_error=None):
+def make_duplicator(acquire_error=None, log=None):
     """A Duplicator wired to a fake duplication object, no GPU required."""
     dup = Duplicator.__new__(Duplicator)
-    dup.duplicator = FakeDuplication(acquire_error)
+    dup.duplicator = FakeDuplication(acquire_error, log=log)
     dup.texture = None
     dup.updated = False
     dup.cursor = None
@@ -141,15 +152,27 @@ def test_access_loss_releases_the_invalidated_duplication(hresult):
     """
     After access loss the duplication object is dead. It must be dropped so no
     further calls are issued against it.
+
+    "Dropped" is the whole contract: for a comtypes pointer, letting go of the
+    last reference *is* the COM release, and calling Release() as well
+    decrements the refcount twice. So this checks that nothing still holds the
+    interface -- which the old assertion could not, since it only proved a
+    method had been called.
     """
-    dup = make_duplicator(acquire_error=hresult)
-    fake = dup.duplicator
+    log = {}
+    dup = make_duplicator(acquire_error=hresult, log=log)
+    fake = weakref.ref(dup.duplicator)
 
     with pytest.raises(RapidShotReinitError):
         dup.update_frame()
 
-    assert fake.released is True
     assert dup.duplicator is None
+    gc.collect()
+    assert fake() is None, (
+        "something still holds the invalidated duplication, so its COM "
+        "reference was never released")
+    assert log["release_calls"] == 0, (
+        "an explicit Release() on top of dropping the pointer over-releases it")
     assert dup._frame_acquired is False
     assert dup.texture is None
 
@@ -165,12 +188,15 @@ def test_update_frame_on_released_duplicator_is_safe():
 
 
 def test_device_error_also_releases_duplication():
-    dup = make_duplicator(acquire_error=DXGI_ERROR_DEVICE_REMOVED)
-    fake = dup.duplicator
+    log = {}
+    dup = make_duplicator(acquire_error=DXGI_ERROR_DEVICE_REMOVED, log=log)
+    fake = weakref.ref(dup.duplicator)
     with pytest.raises(RapidShotDeviceError):
         dup.update_frame()
-    assert fake.released is True
     assert dup.duplicator is None
+    gc.collect()
+    assert fake() is None
+    assert log["release_calls"] == 0
 
 
 # --------------------------------------------------------------------------

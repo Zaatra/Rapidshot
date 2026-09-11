@@ -306,19 +306,21 @@ class Device:
     def release(self):
         """
         Release DirectX resources.
+
+        Dropping the reference is the release. Each of these is a comtypes COM
+        pointer, and comtypes calls ``Release`` itself when the Python object
+        goes away -- so calling it here as well decremented the refcount twice
+        for one reference. Measured on this machine: an explicit ``Release()``
+        followed by dropping the pointer took the count down by two, dropping
+        it alone by one.
+
+        Over-releasing a COM object frees it while other holders still have
+        valid pointers; what happens next depends on who touches it first,
+        which is why this survived as long as it did. The duplicator had the
+        same bug on the intermediate ``IDXGIResource`` in ``update_frame()``,
+        where it corrupted the desktop surface's refcount outright.
         """
-        if self.im_context:
-            self.im_context.Release()
-            self.im_context = None
-            
-        if self.context:
-            self.context.Release()
-            self.context = None
-            
-        if self.device:
-            self.device.Release()
-            self.device = None
-            
-        if self.adapter:
-            self.adapter.Release()
-            self.adapter = None
+        self.im_context = None
+        self.context = None
+        self.device = None
+        self.adapter = None
