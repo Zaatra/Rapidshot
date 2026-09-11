@@ -223,6 +223,40 @@ class POINT(ctypes.Structure):
     _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
 
 
+class DXGI_RATIONAL(ctypes.Structure):
+    """A refresh rate, as DXGI reports it: numerator over denominator."""
+    _fields_ = [
+        ("Numerator", wintypes.UINT),
+        ("Denominator", wintypes.UINT),
+    ]
+
+
+class DXGI_MODE_DESC(ctypes.Structure):
+    """A display mode. Part of DXGI_OUTDUPL_DESC."""
+    _fields_ = [
+        ("Width", wintypes.UINT),
+        ("Height", wintypes.UINT),
+        ("RefreshRate", DXGI_RATIONAL),
+        ("Format", wintypes.UINT),
+        ("ScanlineOrdering", wintypes.UINT),
+        ("Scaling", wintypes.UINT),
+    ]
+
+
+class DXGI_OUTDUPL_DESC(ctypes.Structure):
+    """What IDXGIOutputDuplication::GetDesc fills in.
+
+    ``DesktopImageInSystemMemory`` is the interesting field: when it is set,
+    the desktop image can be mapped directly with ``MapDesktopSurface``,
+    skipping the staging-texture copy entirely.
+    """
+    _fields_ = [
+        ("ModeDesc", DXGI_MODE_DESC),
+        ("Rotation", wintypes.UINT),
+        ("DesktopImageInSystemMemory", wintypes.BOOL),
+    ]
+
+
 class DXGI_OUTDUPL_MOVE_RECT(ctypes.Structure):
     """A region the compositor moved rather than redrew.
 
@@ -298,7 +332,15 @@ class IDXGIOutputDuplication(IDXGIObject):
     """
     _iid_ = comtypes.GUID("{191cfac3-a341-470d-b26e-a864f428319c}")
     _methods_ = [
-        comtypes.STDMETHOD(None, "GetDesc"),
+        # Declared without its parameter, this was callable and wrong: comtypes
+        # would have passed nothing where DXGI writes a DXGI_OUTDUPL_DESC,
+        # leaving the callee to write through whatever the argument register
+        # happened to hold. The vtable slot was the right size either way, so
+        # nothing else was affected -- and nothing calls it yet, which is the
+        # only reason this never fired.
+        comtypes.STDMETHOD(
+            None, "GetDesc", [ctypes.POINTER(DXGI_OUTDUPL_DESC)]
+        ),
         comtypes.STDMETHOD(
             comtypes.HRESULT,
             "AcquireNextFrame",
