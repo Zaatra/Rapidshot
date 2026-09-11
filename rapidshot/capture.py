@@ -155,6 +155,11 @@ class ScreenCapture:
         # For continuous mode buffer using PooledBuffer wrappers
         self._pooled_frames_deque: Optional[collections.deque] = None 
         self.max_buffer_len = max_buffer_len 
+        # The newest queued frame, which video_mode duplicates while the screen
+        # is idle. Shared rather than local to the capture thread because
+        # get_latest_frame_buffer() hands frames out, and the producer must not
+        # copy from one it no longer owns. Guarded by _capture_lock.
+        self._last_dup_source = None
 
         self._timer_handle = None 
         self._frame_count = 0 
@@ -1521,6 +1526,7 @@ class ScreenCapture:
         
         # Phase 4: Initialize deque for continuous mode
         self._pooled_frames_deque = collections.deque(maxlen=self.max_buffer_len)
+        self._last_dup_source = None
         self._frame_available_event.clear() # Clear before starting
         self._stop_capture_event.clear()
 
@@ -1570,50 +1576,97 @@ class ScreenCapture:
                 # happen outside it so a slow pool cannot block the producer.
                 temp_deque_copy = list(self._pooled_frames_deque)
                 self._pooled_frames_deque.clear()
+                self._last_dup_source = None
             for buffer_wrapper in temp_deque_copy:
                 self._discard_frame(buffer_wrapper)
             self._pooled_frames_deque = None
         
     def get_latest_frame(self, as_numpy: bool = True):
         """
-        Get the latest captured frame.
-        
+        Get the latest captured frame, as an array that is the caller's to keep.
+
         Args:
-            as_numpy: If True, always return NumPy array even when using GPU acceleration.
-                     If False and using GPU acceleration, return CuPy array for better performance.
-        
+            as_numpy: If True, always return a NumPy array even when using GPU
+                acceleration. If False and using GPU acceleration, return a
+                CuPy array for better performance.
+
         Returns:
-            Latest captured frame as numpy or cupy array
+            The latest captured frame, or None if none arrived within a second.
+
+        The frame is copied out of the capture queue. That queue holds pooled
+        buffers, and the producer hands an evicted one straight back to the pool
+        for the next capture to write into -- so returning the pooled array
+        itself, which this used to do, meant the caller's frame could change
+        under it at any moment with nothing raising. ``stop()`` did the same, by
+        returning every queued buffer to the pool.
+
+        Use :meth:`get_latest_frame_buffer` to skip the copy; it hands over the
+        buffer itself, and with it the duty to release it.
         """
-        # Phase 4: Get from deque
+        frame = self.get_latest_frame_buffer()
+        if frame is None:
+            return None
+
+        try:
+            frame_array = self._frame_array(frame)
+
+            if self.nvidia_gpu and CUPY_AVAILABLE and isinstance(frame_array, cp.ndarray):
+                # asnumpy() already copies to the host; only the stay-on-device
+                # path still needs one.
+                return cp.asnumpy(frame_array) if as_numpy else frame_array.copy()
+
+            if isinstance(frame_array, np.ndarray):
+                return frame_array.copy()
+
+            logger.error(f"Unexpected array type in deque: {type(frame_array)}")
+            return None
+        finally:
+            self._discard_frame(frame)
+
+    def get_latest_frame_buffer(self):
+        """
+        The latest captured frame, handed over without a copy.
+
+        Ownership transfers to the caller. The frame leaves the capture queue,
+        so the producer will not recycle it, and the caller must ``release()``
+        it -- until then that buffer is unavailable to capture. Colour modes
+        other than BGRA may yield a plain array with no ``release()``, so use
+        ``getattr(frame, "release", None)`` rather than assuming one.
+
+        Returns:
+            A :class:`~rapidshot.memory_pool.PooledBuffer` or a plain array, or
+            None if no frame arrived within a second.
+
+        Prefer :meth:`get_latest_frame` unless the copy shows up in a profile.
+        """
         if not self._frame_available_event.wait(timeout=1.0): # Wait for a short duration
             logger.debug("get_latest_frame timed out waiting for frame_available_event.")
             return None # No frame available or timeout
-        
+
         with self._capture_lock: # Protect access to deque
             if not self._pooled_frames_deque:
                 self._frame_available_event.clear() # Clear if deque is empty after wait
                 return None
 
-            # Get the most recent frame (without removing it). Entries are
-            # PooledBuffer wrappers for BGRA output and plain arrays otherwise.
-            frame_array = self._frame_array(self._pooled_frames_deque[-1])
+            # Take the newest frame out of the queue rather than peeking at it.
+            # While it sits there the producer may evict and release it, and a
+            # caller reading the array it wrapped would then be looking at a
+            # buffer the next capture is writing into.
+            frame = self._pooled_frames_deque.pop()
 
-            # self._frame_available_event.clear() # Do not clear here, new frames might arrive.
-            # Event should be cleared only if no frames are in buffer after waiting.
-            # Or, it's a signal that *at least one* frame is ready.
+            # video_mode duplicates the newest frame when the screen is idle.
+            # That frame is now the caller's and may be released at any moment,
+            # so the producer must not copy out of it; it picks up a fresh
+            # source on the next real frame.
+            if self._last_dup_source is frame:
+                self._last_dup_source = None
 
-        # Convert to numpy if requested and if data is on GPU
-        if self.nvidia_gpu and CUPY_AVAILABLE and isinstance(frame_array, cp.ndarray):
-            if as_numpy:
-                return cp.asnumpy(frame_array)
-            else:
-                return frame_array # Return CuPy array directly
-        elif isinstance(frame_array, np.ndarray): # Already a NumPy array
-            return frame_array
-        else: # Should not happen if pool stores np or cp arrays
-            logger.error(f"Unexpected array type in deque: {type(frame_array)}")
-            return None
+            if not self._pooled_frames_deque:
+                # Nothing left to hand out: the next call waits for a new frame,
+                # which is what "blocks until a new frame arrives" promises.
+                self._frame_available_event.clear()
+
+        return frame
 
     def _capture_thread_func( # Renamed from __capture
         self, region: Tuple[int, int, int, int], target_fps: int = 60, video_mode: bool = False
@@ -1636,7 +1689,6 @@ class ScreenCapture:
 
         self._capture_start_time = time.perf_counter()
         capture_error = None
-        last_successful_pooled_buffer = None # For video_mode duplication
 
         while not self._stop_capture_event.is_set():
             if self._timer_handle:
@@ -1671,7 +1723,7 @@ class ScreenCapture:
                         if len(self._pooled_frames_deque) == self.max_buffer_len:
                             evicted_buffer = self._pooled_frames_deque[0]
                         self._pooled_frames_deque.append(grab_result)
-                        last_successful_pooled_buffer = grab_result
+                        self._last_dup_source = grab_result
                     # Check the evicted buffer back in outside the capture
                     # lock: release() takes the pool's own lock, and holding
                     # both here stalls every get_latest_frame() consumer for
@@ -1685,13 +1737,20 @@ class ScreenCapture:
                     time.sleep(0.1) # Avoid tight loop if _grab keeps failing due to re-init
                     continue # Try again, _grab will attempt re-init
 
-                elif video_mode and last_successful_pooled_buffer is not None:
+                elif video_mode:
                     # No new content this tick: re-queue a copy of the last frame
                     # so the output stream keeps a constant frame rate.
+                    with self._capture_lock:
+                        dup_source = self._last_dup_source
+                    if dup_source is None:
+                        # Nothing captured yet, or the last frame was handed to
+                        # a caller by get_latest_frame_buffer(). Either way
+                        # there is nothing safe to copy from until the next one.
+                        continue
                     duplicate_frame = None
                     try:
-                        source_array = self._frame_array(last_successful_pooled_buffer)
-                        if isinstance(last_successful_pooled_buffer, PooledBuffer):
+                        source_array = self._frame_array(dup_source)
+                        if isinstance(dup_source, PooledBuffer):
                             if self.memory_pool is None:
                                 logger.warning("Video_mode: Memory pool not available for duplicating frame.")
                                 raise PoolExhaustedError("no pool")
@@ -1710,6 +1769,7 @@ class ScreenCapture:
                             if len(self._pooled_frames_deque) == self.max_buffer_len:
                                 evicted_buffer = self._pooled_frames_deque[0]
                             self._pooled_frames_deque.append(duplicate_frame)
+                            self._last_dup_source = duplicate_frame
                         self._discard_frame(evicted_buffer)  # Outside the lock, see above
                         self._frame_available_event.set()
                         self._frame_count += 1
@@ -1800,6 +1860,7 @@ class ScreenCapture:
             stale_buffers = list(self._pooled_frames_deque or ())
             if self._pooled_frames_deque is not None:
                 self._pooled_frames_deque.clear()
+            self._last_dup_source = None
         for buffer_wrapper in stale_buffers:
             self._discard_frame(buffer_wrapper)
         self._frame_available_event.clear()

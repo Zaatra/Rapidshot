@@ -108,23 +108,12 @@ class DXCamera:
     def get_latest_frame(self):
         """Latest frame from continuous capture, as a plain ndarray.
 
-        Copied for the same reason as :meth:`grab`.
+        Copied for the same reason as :meth:`grab` -- but by the camera now,
+        which owns the pool and so can copy before anything can recycle the
+        buffer. Copying again here would only cost a second memcpy per frame.
         """
         self._retire_view()
-        frame = self.rapidshot_camera.get_latest_frame()
-        if frame is None:
-            return None
-        try:
-            # `np.asarray(...).copy()`, not `np.array(..., copy=True)`.
-            # The latter delegates the decision to __array__, and any
-            # buffer that accepts `copy` without honouring it then hands
-            # back a view. Copying the view explicitly cannot be got
-            # wrong by an implementation this layer does not control.
-            return np.asarray(frame).copy()
-        finally:
-            release = getattr(frame, "release", None)
-            if release is not None:
-                release()
+        return self.rapidshot_camera.get_latest_frame()
 
     def stop(self) -> None:
         self._retire_view()
@@ -154,9 +143,16 @@ class DXCamera:
         return np.asarray(frame)
 
     def get_latest_frame_view(self):
-        """Continuous-capture counterpart of :meth:`grab_view`."""
+        """Continuous-capture counterpart of :meth:`grab_view`.
+
+        Takes the buffer rather than a copy of it, which is what keeps this
+        zero-copy now that `get_latest_frame()` copies. It also makes the
+        retirement real: this used to hold a plain array, whose absent
+        `release()` made `_retire_view()` a no-op, so the buffer went back to
+        the pool on the producer's schedule instead of this one's.
+        """
         self._retire_view()
-        frame = self.rapidshot_camera.get_latest_frame()
+        frame = self.rapidshot_camera.get_latest_frame_buffer()
         if frame is None:
             return None
         self._outstanding = frame

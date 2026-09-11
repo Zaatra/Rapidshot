@@ -144,6 +144,22 @@ While `start()` is running, the capture thread owns the duplicator: `grab()`,
 `grab_frame()` and `shot()` raise `RuntimeError` rather than compete with it
 for frames. Read with `get_latest_frame()`, or `stop()` first.
 
+Unlike `grab()`, `get_latest_frame()` returns a plain array that is yours to
+keep — it is copied out of the capture queue, and nothing releases. Reading it
+is also what returns that buffer to the pool, so a consumer that stops reading
+eventually stalls the producer. To skip the copy, take the buffer itself:
+
+```python
+frame = camera.get_latest_frame_buffer()   # a PooledBuffer, as grab() returns
+if frame is not None:
+    arr = np.asarray(frame)                # zero-copy
+    frame.release()                        # yours until you do
+```
+
+> Before 2.5.0, `get_latest_frame()` returned the queued buffer's array without
+> taking it out of the queue, so the next capture could overwrite the frame
+> while you read it — see [Frame buffers](#frame-buffers).
+
 ### One camera per output
 
 `rapidshot.create()` called again for the same output returns the camera that
