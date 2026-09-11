@@ -60,6 +60,11 @@ returned a view of a pooled buffer that the next capture overwrote.
   says whether `release()` has run, and `create()` builds a new camera in place
   of a released one.
 
+- **Pillow 12 triggered a warning that Pillow was too old.** The processor's
+  dependency checks compared version strings, and `"12.3.0" < "9.0.0"` is True
+  as text. NumPy, Pillow, OpenCV and CuPy versions are now compared
+  numerically; OpenCV 10 would have hit the same false alarm.
+
 - **`np.array(frame, copy=True)` returned a view of a pooled buffer.**
   `PooledBuffer.__array__` accepted NumPy's `copy` argument and ignored it.
   NumPy 2 forwards `copy` and trusts the answer, so an explicit copy request

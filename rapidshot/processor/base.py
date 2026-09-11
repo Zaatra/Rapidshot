@@ -1,5 +1,18 @@
 import enum
+import re
 from typing import Any, Optional
+
+
+def version_below(version: str, minimum: str) -> bool:
+    """True if ``version`` is older than ``minimum``, compared numerically.
+
+    Comparing the strings directly is wrong as soon as a component reaches two
+    digits: ``"12.3.0" < "9.0.0"`` is True, which made every import on Pillow 12
+    warn that Pillow was too old. Pre-release and local suffixes are ignored.
+    """
+    def parts(text: str) -> tuple:
+        return tuple(int(n) for n in re.findall(r"\d+", str(text).split("+")[0])[:3])
+    return parts(version) < parts(minimum)
 
 
 class ProcessorBackends(enum.Enum):
@@ -115,14 +128,14 @@ class Processor:
         try:
             import numpy as np
             version = np.__version__
-            if version < "1.20.0":
+            if version_below(version, "1.20.0"):
                 print(f"Warning: Using NumPy version {version}. Version 1.20.0 or higher is recommended.")
         except ImportError:
             pass
             
         try:
             from PIL import Image, __version__ as pil_version
-            if pil_version < "9.0.0":
+            if version_below(pil_version, "9.0.0"):
                 print(f"Warning: Using PIL version {pil_version}. Version 9.0.0 or higher is recommended.")
         except (ImportError, AttributeError):
             pass
@@ -130,7 +143,7 @@ class Processor:
         try:
             import cv2  # type: ignore[import-not-found]
             version = cv2.__version__
-            if version < "4.5.0":
+            if version_below(version, "4.5.0"):
                 print(f"Warning: Using OpenCV version {version}. Version 4.5.0 or higher is recommended.")
         except ImportError:
             pass

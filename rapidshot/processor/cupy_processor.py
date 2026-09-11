@@ -4,7 +4,7 @@ import logging  # Added missing import
 from rapidshot.util.logging import get_logger
 import warnings
 import sys
-from rapidshot.processor.base import ProcessorBackends
+from rapidshot.processor.base import ProcessorBackends, version_below
 from rapidshot.util.ctypes_helpers import pointer_to_address
 
 # Configure logging
@@ -42,7 +42,7 @@ class CupyProcessor:
             
             # Check version compatibility
             version = cp.__version__
-            if version < self.MIN_CUPY_VERSION:
+            if version_below(version, self.MIN_CUPY_VERSION):
                 warning_msg = (
                     f"Warning: Using CuPy version {version}. "
                     f"Version {self.MIN_CUPY_VERSION} or higher is recommended. "
