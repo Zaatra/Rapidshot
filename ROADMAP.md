@@ -845,8 +845,10 @@ number that decides whether capture starves the model.
 
 The broader claim § 7.0 was aiming at — "fastest Windows desktop-to-model
 pipeline" — is not earned by this table. It needs present-to-inference measured
-as pixel age, with a trained model, and neither has been run (see *What is
-still not measured*).
+as pixel age with a trained model, which was done afterwards (*Present to
+inference, with a trained YOLO11n*, below): on this machine every RapidShot path
+returned more frames with younger pixels than every other library, on every
+pass. One machine is still not the general claim.
 
 Which to reach for:
 
@@ -895,7 +897,10 @@ now exposes it with `read_back_source()` (2.5.0), and `ai_ingestion.py` and
 `section7_adapters.py` verify the async paths with it rather than with the
 blocking `transfer_with_reference`.
 
-#### Call duration through inference — measured 2026-09-10 ⚠ mislabelled once
+#### Call duration through inference — measured 2026-09-10 ⚠ superseded
+
+**Superseded by the trained-YOLO11n pixel-age measurement below.** Kept because
+its capture-share conclusion still stands; do not quote its figures.
 
 **These are call durations, not present-to-inference latency.** The heading here
 first read "present → inference complete", which this benchmark does not
@@ -1020,6 +1025,92 @@ source runs at 165/s and no path sustains that. The drop column is therefore a
 real differentiator here rather than a rounding error, and RapidShot's CPU path
 drops the fewest.
 
+#### Present to inference, with a trained YOLO11n — measured 2026-09-11 ✅
+
+The same controlled source and pixel-age clock, now carried through a trained
+model: each path's FP16 tensor goes into **YOLO11n** on the RTX 4060 through ONNX
+Runtime's CUDA provider, and age is taken when the forward pass completes.
+**Medians across 3 passes, 8 s per path**; the bracket is the max–min spread
+across passes as a percentage of the median. Every path passed verification
+before timing (CPU paths within 1 RGB8 level of the exact reference, GPU paths
+bit-exact). `benchmarks/section7-inference-machineB.json`, with every pass and
+the model's provenance.
+
+| path | unique fps | age p50 | age p95 | YOLO11n ms | CPU ms/frame |
+| --- | --- | --- | --- | --- | --- |
+| mss | 26.8 [0.7%] | 53.66 [1.7%] | 63.95 | 4.99 | 20.25 |
+| dxcam (DXGI) | 68.1 [0.3%] | 42.18 [0.2%] | 45.76 | 5.44 | 13.36 |
+| dxcam (WGC) | 65.8 [2.3%] | 45.41 [1.5%] | 49.80 | 5.50 | 14.62 |
+| rapidshot-cpu | 80.3 [0.8%] | 39.34 [0.4%] | 43.34 | 4.88 | 12.73 |
+| **rapidshot-cupy** | **81.8** [1.6%] | 38.75 [1.7%] | 42.53 | 4.17 | **8.89** |
+| rapidshot-xadapter | 75.2 [3.2%] | 39.57 [0.7%] | 42.60 | 4.18 | 8.91 |
+| rapidshot-xadapter-async | 76.2 [3.7%] | 39.63 [1.4%] | 42.81 | 4.21 | 9.12 |
+| **rapidshot-xadapter-semaphore** | 81.0 [2.4%] | **38.32** [2.3%] | **41.07** | 4.08 | 11.90 |
+| rapidshot-direct | — | unavailable: `CrossAdapterRequired` on hybrid hardware |
+
+**Every RapidShot path beat DXcam on every pass**, on all three axes that
+matter: **10–20% more unique frames, pixels 2.6–3.9 ms (6–9%) younger at
+inference completion, and 5–33% less CPU per frame.** The check that makes that
+more than a median: each RapidShot path's *worst* pass against DXcam's *best*
+still wins every one of those comparisons. Against DXcam's WGC backend and mss
+the same holds for frames and pixel age; on CPU per frame one pair overlaps —
+`rapidshot-cpu`'s worst pass (12.81 ms) against WGC's best (12.39) — although the
+medians still favour RapidShot (12.73 against 14.62). The best configurations against
+DXcam: `nvidia_gpu=True` at +20% frames and a third less CPU; the GPU-side
+semaphore wait at 9% younger pixels (10% at p95).
+
+**The gap narrows once a model is in the loop, as it should.** Tensor-only,
+RapidShot returned 32% more unique frames than DXcam; here it is 20%. The loop is
+capture → preprocess → infer, run synchronously, so YOLO11n's ~4–5 ms per frame
+paces every path and dilutes a capture-side advantage. A pipelined consumer
+would recover some of it; this benchmark does not measure one.
+
+**RapidShot's own paths are roughly tied on latency** — within 1.3 ms of each
+other at p50, which is inside their pass-to-pass spread. Choose between them on
+frames and CPU, not latency. (A single trial pass before this run suggested the
+cross-adapter paths lost their latency lead; three passes do not support that.)
+
+**YOLO11n itself took 4.1–4.2 ms after GPU-side paths and 4.9–5.5 ms after
+CPU-side ones.** Same model, same GPU, same stream binding; the likely cause is
+CPU contention delaying kernel launches in the busier CPU paths, but it has not
+been isolated, so it is recorded rather than claimed as a RapidShot effect. It
+sits inside the age column either way.
+
+Caveats that travel with this table:
+
+- **One machine, hybrid Intel→NVIDIA.** The direct single-adapter path could not
+  run.
+- **Age is submission age** (QPC before `Present()`), not photon age.
+- **Raw detector output, no NMS or postprocessing timed.** Forward pass only.
+- **The model file is our export of the official weights, not the published
+  `yolo11n.onnx`.** The weights are the Ultralytics v8.3.0 release asset (byte
+  size matches; GitHub publishes no digest for it), exported with Ultralytics'
+  own exporter at opset 17 by `prepare_model.py`, and all 239 nodes run on CUDA.
+  The published ONNX (digest-verified) is opset 22, for which ONNX Runtime 1.30
+  has no CUDA `MaxPool` kernel: 7 of its 246 nodes fall back to the CPU, and ORT's
+  spinning CPU thread pool then dominates the CPU column and contends with
+  capture. In a single trial pass it ranked the paths the same way (+23% frames
+  and 9.5% younger pixels against DXcam), but its absolute numbers describe that
+  fallback, not capture.
+
+This supersedes the stand-in call-duration table above for any claim about
+inference.
+
+**Three harness bugs had to be fixed before any of this could run**, and none
+of them had ever been hit, because the inference category had never completed a
+run:
+
+- It required `get_providers() == ["CUDAExecutionProvider"]`, but ONNX Runtime
+  always lists the CPU provider as registered, so no model could pass. The
+  placement guarantee is `disable_cpu_ep_fallback`, which fails session creation
+  if any node lands on the CPU; that is what caught the published file.
+- It required a fixed `[1, 3, 640, 640]` input declaration, rejecting the
+  published file's symbolic axes. They are now pinned with ORT's free-dimension
+  overrides, recorded in every row, leaving the file untouched.
+- Verification still demanded a bit-identical tensor after the measured loop
+  moved to `pipeline_rgb`, so every CPU path failed before it could be timed. It
+  now allows the documented 1-level tolerance and records the deviation seen.
+
 #### Two apparatus bugs found while getting there, both worth recording
 
 **The source default made every path report a tie.** `--motion-fps` defaulted to
@@ -1050,16 +1141,16 @@ against. § 10 records the same correction being needed once before.
 In rough order of value. The harness for most of it exists; what is missing is
 the run.
 
-- **A trained model.** The inference table above uses a FLOP-calibrated
-  stand-in. `benchmarks/prepare_model.py` exports pinned YOLO11n weights with a
-  recorded SHA-256, and the inference category refuses to run without a model
-  and its hash — but the export has not been run, so no inference figure here rests on a trained
-  model yet.
-- **Inference and agent, as pixel age.** Both categories are built into
-  `section7.py` and measure pixel age. Neither has been run: inference waits on
-  the model above, and agent (`--category agent`, OS pixels → PNG/JPEG data URL
-  for cloud computer-use pipelines, CPU paths only) needs only a run. Only the
-  ingestion category has been measured with the controlled source.
+- **The agent category.** Built into `section7.py` (`--category agent`, OS
+  pixels → PNG/JPEG data URL for cloud computer-use pipelines, CPU paths only)
+  and never run. Ingestion and inference have both been measured as pixel age.
+- **A pipelined inference loop.** The inference run is synchronous — capture,
+  preprocess, infer, repeat — so the model's time paces every path. A consumer
+  that overlaps capture with inference is the realistic deployment and would
+  show more of the capture-side difference.
+- **The published `yolo11n.onnx` fully on the GPU.** It needs an ONNX Runtime
+  whose CUDA provider has an opset-22 `MaxPool` kernel; until then it runs 7
+  nodes on the CPU and its absolute numbers describe that fallback.
 - **The direct single-adapter path.** `rapidshot-direct` raises
   `CrossAdapterRequired` on this hybrid machine. It needs one where the NVIDIA GPU
   drives the display, and is expected to beat every path measured here.

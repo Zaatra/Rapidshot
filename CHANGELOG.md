@@ -36,7 +36,11 @@ model-ready CUDA tensor, every library timed against one clock by decoding a
 frame ID out of the captured pixels. On a hybrid 2560x1600 laptop RapidShot
 returns 32% more unique frames per second than DXcam, the youngest pixels, and
 the lowest CPU per frame -- having lost the capture-only frame-rate comparison
-to it. One machine; ROADMAP section 7.0 carries the caveats.
+to it. Carried on through a trained YOLO11n on the RTX 4060, the lead narrows
+but holds: every RapidShot path beat DXcam on every one of three passes, with up
+to 20% more frames, pixels up to 9% younger when inference completes, and up to
+a third less CPU per frame. One machine; ROADMAP section 7.0 carries the
+caveats.
 
 **A silent-corruption fix for anyone on NumPy 2.** `np.array(frame, copy=True)`
 returned a view of a pooled buffer that the next capture overwrote.
@@ -372,9 +376,34 @@ returned a view of a pooled buffer that the next capture overwrote.
 
   These are call durations, so they are lower bounds on present-to-inference
   latency, and the inference figures use a FLOP-calibrated stand-in rather than
-  a trained model. `ai_pipeline.py` now refuses to run without `--model` and
-  `--model-sha256`, and `benchmarks/prepare_model.py` exports pinned YOLO11n
-  weights with a recorded hash for the re-run.
+  a trained model -- superseded by the YOLO11n measurement below.
+
+- **Present to inference with a trained YOLO11n, measured as pixel age**
+  (`benchmarks/section7-inference-machineB.json`). The official Ultralytics
+  weights, exported with Ultralytics' own exporter and run entirely on the RTX
+  4060; age is taken when the forward pass completes. Medians across 3 passes of
+  8 s per path, every path verified before timing.
+
+  Every RapidShot path beat DXcam on every pass: **10-20% more unique frames,
+  pixels 2.6-3.9 ms (6-9%) younger, 5-33% less CPU per frame**, and each path's
+  worst pass still beats DXcam's best. Against DXcam's WGC backend and mss the
+  frame and age leads hold on every pass too; on CPU one pair's pass ranges
+  overlap, and the medians still favour RapidShot. The lead is smaller than at
+  the tensor (20% more frames, against 32%) because the loop is synchronous and
+  the model's 4-5 ms paces every path. RapidShot's own paths finish within
+  1.3 ms of each other, inside their spread.
+
+  The published `yolo11n.onnx` was tried first and is not the recorded model:
+  it targets opset 22, for which ONNX Runtime 1.30 has no CUDA `MaxPool`
+  kernel, so 7 of its nodes run on the CPU and ORT's spinning thread pool
+  dominates the CPU column. It ranked the paths the same way in a trial pass.
+
+  Three harness bugs meant the inference category had never completed a run:
+  a provider check no ONNX Runtime session could pass, an input-shape check
+  that rejected the published model's symbolic axes, and a verify step that
+  still demanded bit-identical tensors after the loop moved to the idiomatic
+  resize, failing every CPU path. All three are fixed, and the relaxations are
+  recorded in every result.
 
 - **Two apparatus bugs found on the way, both of which flattered or hid a
   result.** The motion source defaulted to 60 fps on a 165 Hz panel, so every

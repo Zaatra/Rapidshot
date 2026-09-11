@@ -1,0 +1,3251 @@
+{
+ "schema_version": 3,
+ "category": "inference",
+ "description": "Pixel age from Present() submission to YOLO11n forward-pass completion on CUDA, per capture path. Medians across 3 passes of 8 s per path; min/max are the per-pass extremes. Every path verified before timing.",
+ "machine": "Machine B: Intel UHD capture, RTX 4060 Laptop inference, 2560x1600 at 165 Hz",
+ "model": {
+  "model": "YOLO11n",
+  "trained": true,
+  "weights_url": "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt",
+  "weights_sha256": "0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1",
+  "onnx_sha256": "ab5ca471dd01fc05f7b5dd80e62e5b15f8b4ca296a2b8d97de7a55f2df329c48",
+  "input": "RGB normalized, 1x3x640x640 FP32",
+  "output": "raw detector predictions; no NMS or detection postprocessing timed",
+  "export_options": {
+   "imgsz": 640,
+   "batch": 1,
+   "device": "cpu",
+   "dynamic": false,
+   "simplify": false,
+   "opset": 17
+  },
+  "packages": {
+   "torch": "2.14.0+cpu",
+   "ultralytics": "8.4.146",
+   "onnx": "1.22.0"
+  },
+  "weights_bytes": 5613764,
+  "weights_note": "Official Ultralytics v8.3.0 release asset; byte size matches the release (5,613,764). GitHub publishes no digest for this asset.",
+  "export": "benchmarks/prepare_model.py (Ultralytics' own exporter, options above)",
+  "placement": "all 239 nodes on CUDAExecutionProvider; CPU fallback disabled",
+  "official_onnx_not_used_because": "The published yolo11n.onnx (sha256 634279b4...) is opset 22; ONNX Runtime 1.30 has no CUDA MaxPool kernel at that opset, so 7 of 246 nodes fall back to the CPU and ORT's spinning CPU thread pool dominates the CPU column. It ranked the paths the same way in a single trial pass."
+ },
+ "summary": {
+  "mss": {
+   "unique_fps": {
+    "median": 26.84448888949005,
+    "min": 26.74604693425303,
+    "max": 26.93072810788672
+   },
+   "age_p50_ms": {
+    "median": 53.6581,
+    "min": 53.1897,
+    "max": 54.1181
+   },
+   "age_p95_ms": {
+    "median": 63.9493,
+    "min": 63.107,
+    "max": 64.1583
+   },
+   "age_p99_ms": {
+    "median": 68.2169,
+    "min": 67.5676,
+    "max": 69.3038
+   },
+   "tensor_age_p50_ms": {
+    "median": 48.7315,
+    "min": 48.6535,
+    "max": 48.806
+   },
+   "inference_p50_ms": {
+    "median": 4.985699997632764,
+    "min": 4.400999998324551,
+    "max": 5.254299998341594
+   },
+   "cpu_ms_per_unique_frame": {
+    "median": 20.25462962962963,
+    "min": 19.33139534883721,
+    "max": 21.247079439252335
+   },
+   "dropped_source_frames": {
+    "median": 889,
+    "min": 887,
+    "max": 895
+   },
+   "source_frames_in_window": {
+    "median": 1103,
+    "min": 1102,
+    "max": 1108
+   },
+   "h2d_bytes_per_frame": {
+    "median": 1228800,
+    "min": 1228800,
+    "max": 1228800
+   }
+  },
+  "dxcam": {
+   "unique_fps": {
+    "median": 68.05018817499571,
+    "min": 67.94084814980833,
+    "max": 68.15611580245626
+   },
+   "age_p50_ms": {
+    "median": 42.1775,
+    "min": 42.1535,
+    "max": 42.2205
+   },
+   "age_p95_ms": {
+    "median": 45.7615,
+    "min": 45.6328,
+    "max": 46.0288
+   },
+   "age_p99_ms": {
+    "median": 47.3923,
+    "min": 46.6538,
+    "max": 47.4077
+   },
+   "tensor_age_p50_ms": {
+    "median": 36.6082,
+    "min": 36.5975,
+    "max": 36.6158
+   },
+   "inference_p50_ms": {
+    "median": 5.437200001324527,
+    "min": 5.355599998438265,
+    "max": 5.449399999633897
+   },
+   "cpu_ms_per_unique_frame": {
+    "median": 13.355928308823529,
+    "min": 13.33562271062271,
+    "max": 14.306192660550458
+   },
+   "dropped_source_frames": {
+    "median": 779,
+    "min": 778,
+    "max": 780
+   },
+   "source_frames_in_window": {
+    "median": 1321,
+    "min": 1321,
+    "max": 1322
+   },
+   "h2d_bytes_per_frame": {
+    "median": 1228800,
+    "min": 1228800,
+    "max": 1228800
+   }
+  },
+  "dxcam-wgc": {
+   "unique_fps": {
+    "median": 65.7578523860271,
+    "min": 64.86912204670048,
+    "max": 66.36431036873415
+   },
+   "age_p50_ms": {
+    "median": 45.4137,
+    "min": 45.1141,
+    "max": 45.7952
+   },
+   "age_p95_ms": {
+    "median": 49.7999,
+    "min": 49.3507,
+    "max": 50.3555
+   },
+   "age_p99_ms": {
+    "median": 52.8644,
+    "min": 52.28,
+    "max": 54.1363
+   },
+   "tensor_age_p50_ms": {
+    "median": 39.7902,
+    "min": 39.6691,
+    "max": 39.9414
+   },
+   "inference_p50_ms": {
+    "median": 5.5015000034472905,
+    "min": 5.474400000821333,
+    "max": 5.614800000330433
+   },
+   "cpu_ms_per_unique_frame": {
+    "median": 14.624529190207156,
+    "min": 12.393263757115749,
+    "max": 14.842244701348747
+   },
+   "dropped_source_frames": {
+    "median": 797,
+    "min": 790,
+    "max": 803
+   },
+   "source_frames_in_window": {
+    "median": 1320,
+    "min": 1318,
+    "max": 1322
+   },
+   "h2d_bytes_per_frame": {
+    "median": 1228800,
+    "min": 1228800,
+    "max": 1228800
+   }
+  },
+  "rapidshot-cpu": {
+   "unique_fps": {
+    "median": 80.25440671896632,
+    "min": 79.71786971265401,
+    "max": 80.3439099197769
+   },
+   "age_p50_ms": {
+    "median": 39.3376,
+    "min": 39.3217,
+    "max": 39.4677
+   },
+   "age_p95_ms": {
+    "median": 43.3426,
+    "min": 42.8913,
+    "max": 43.3798
+   },
+   "age_p99_ms": {
+    "median": 45.2283,
+    "min": 44.9676,
+    "max": 45.4335
+   },
+   "tensor_age_p50_ms": {
+    "median": 34.2914,
+    "min": 34.1635,
+    "max": 34.3964
+   },
+   "inference_p50_ms": {
+    "median": 4.877300001680851,
+    "min": 4.852400001254864,
+    "max": 4.938300000503659
+   },
+   "cpu_ms_per_unique_frame": {
+    "median": 12.733281493001556,
+    "min": 11.314655172413794,
+    "max": 12.806181959564542
+   },
+   "dropped_source_frames": {
+    "median": 682,
+    "min": 681,
+    "max": 685
+   },
+   "source_frames_in_window": {
+    "median": 1321,
+    "min": 1321,
+    "max": 1322
+   },
+   "h2d_bytes_per_frame": {
+    "median": 1228800,
+    "min": 1228800,
+    "max": 1228800
+   }
+  },
+  "rapidshot-cupy": {
+   "unique_fps": {
+    "median": 81.82033583366801,
+    "min": 80.77711832686431,
+    "max": 82.04853179398897
+   },
+   "age_p50_ms": {
+    "median": 38.7532,
+    "min": 38.4688,
+    "max": 39.1409
+   },
+   "age_p95_ms": {
+    "median": 42.5319,
+    "min": 41.4534,
+    "max": 42.6701
+   },
+   "age_p99_ms": {
+    "median": 44.756,
+    "min": 44.3849,
+    "max": 45.1363
+   },
+   "tensor_age_p50_ms": {
+    "median": 34.3744,
+    "min": 34.1434,
+    "max": 34.7265
+   },
+   "inference_p50_ms": {
+    "median": 4.167400002188515,
+    "min": 4.142799996770918,
+    "max": 4.213500003970694
+   },
+   "cpu_ms_per_unique_frame": {
+    "median": 8.894596651445967,
+    "min": 8.814721792890262,
+    "max": 9.18416030534351
+   },
+   "dropped_source_frames": {
+    "median": 669,
+    "min": 665,
+    "max": 677
+   },
+   "source_frames_in_window": {
+    "median": 1321,
+    "min": 1319,
+    "max": 1322
+   },
+   "h2d_bytes_per_frame": {
+    "median": 16384000,
+    "min": 16384000,
+    "max": 16384000
+   }
+  },
+  "rapidshot-xadapter": {
+   "unique_fps": {
+    "median": 75.21221620304513,
+    "min": 73.0996864923672,
+    "max": 75.53038403206791
+   },
+   "age_p50_ms": {
+    "median": 39.5744,
+    "min": 39.5638,
+    "max": 39.8459
+   },
+   "age_p95_ms": {
+    "median": 42.6034,
+    "min": 42.4003,
+    "max": 43.2954
+   },
+   "age_p99_ms": {
+    "median": 44.9727,
+    "min": 44.6649,
+    "max": 45.7886
+   },
+   "tensor_age_p50_ms": {
+    "median": 35.2678,
+    "min": 35.2383,
+    "max": 35.3628
+   },
+   "inference_p50_ms": {
+    "median": 4.182099997706246,
+    "min": 4.115999996429309,
+    "max": 4.24629999906756
+   },
+   "cpu_ms_per_unique_frame": {
+    "median": 8.910123966942148,
+    "min": 8.89423076923077,
+    "max": 9.084302325581396
+   },
+   "dropped_source_frames": {
+    "median": 721,
+    "min": 719,
+    "max": 737
+   },
+   "source_frames_in_window": {
+    "median": 1321,
+    "min": 1320,
+    "max": 1322
+   },
+   "h2d_bytes_per_frame": {
+    "median": 0,
+    "min": 0,
+    "max": 0
+   }
+  },
+  "rapidshot-xadapter-async": {
+   "unique_fps": {
+    "median": 76.16311882631805,
+    "min": 73.51189001153331,
+    "max": 76.31589048093488
+   },
+   "age_p50_ms": {
+    "median": 39.6312,
+    "min": 39.4967,
+    "max": 40.0463
+   },
+   "age_p95_ms": {
+    "median": 42.8141,
+    "min": 42.1915,
+    "max": 42.8451
+   },
+   "age_p99_ms": {
+    "median": 44.9984,
+    "min": 44.7349,
+    "max": 45.5669
+   },
+   "tensor_age_p50_ms": {
+    "median": 35.2505,
+    "min": 35.2481,
+    "max": 35.5026
+   },
+   "inference_p50_ms": {
+    "median": 4.208300000755116,
+    "min": 4.05740000132937,
+    "max": 4.3191000004298985
+   },
+   "cpu_ms_per_unique_frame": {
+    "median": 9.118852459016393,
+    "min": 8.6180441898527,
+    "max": 9.33786078098472
+   },
+   "dropped_source_frames": {
+    "median": 712,
+    "min": 712,
+    "max": 735
+   },
+   "source_frames_in_window": {
+    "median": 1321,
+    "min": 1319,
+    "max": 1322
+   },
+   "h2d_bytes_per_frame": {
+    "median": 0,
+    "min": 0,
+    "max": 0
+   }
+  },
+  "rapidshot-xadapter-semaphore": {
+   "unique_fps": {
+    "median": 80.97302282526007,
+    "min": 79.20137035856055,
+    "max": 81.1498134546636
+   },
+   "age_p50_ms": {
+    "median": 38.3165,
+    "min": 38.1948,
+    "max": 39.0736
+   },
+   "age_p95_ms": {
+    "median": 41.0672,
+    "min": 40.6287,
+    "max": 41.6853
+   },
+   "age_p99_ms": {
+    "median": 43.459,
+    "min": 42.6768,
+    "max": 43.9656
+   },
+   "tensor_age_p50_ms": {
+    "median": 33.9376,
+    "min": 33.9241,
+    "max": 34.5683
+   },
+   "inference_p50_ms": {
+    "median": 4.084499996679369,
+    "min": 4.053000004205387,
+    "max": 4.217200003040489
+   },
+   "cpu_ms_per_unique_frame": {
+    "median": 11.90358832807571,
+    "min": 11.826923076923077,
+    "max": 12.056327160493828
+   },
+   "dropped_source_frames": {
+    "median": 675,
+    "min": 675,
+    "max": 689
+   },
+   "source_frames_in_window": {
+    "median": 1321,
+    "min": 1321,
+    "max": 1322
+   },
+   "h2d_bytes_per_frame": {
+    "median": 0,
+    "min": 0,
+    "max": 0
+   }
+  },
+  "rapidshot-direct": {
+   "unavailable": "CrossAdapterRequired: no CUDA device owns the adapter this frame was captured on. On a hybrid laptop that is expected: capture runs on the integrated GPU and CUDA only sees the discrete one. The frame has to cross adapters first \u2014 see native.cross_adapter_transfer() and ROADMAP \u00a7 6.1."
+  }
+ },
+ "verify": {
+  "schema_version": 3,
+  "category": "inference",
+  "results": [
+   {
+    "path": "mss",
+    "category": "inference",
+    "model_input_overrides": {},
+    "cpu_nodes_allowed": false,
+    "verify_max_rgb8_deviation": 1,
+    "verify_fraction_off_by_one": 0.3801025390625,
+    "verified": true,
+    "frame_id": 213,
+    "returncode": 0,
+    "stdout_log": "build/section7/inference-final-verify.logs/rapidshot-ai-zn6ahc0w/00-mss.stdout.log",
+    "stderr_log": "build/section7/inference-final-verify.logs/rapidshot-ai-zn6ahc0w/00-mss.stderr.log"
+   },
+   {
+    "path": "dxcam",
+    "category": "inference",
+    "model_input_overrides": {},
+    "cpu_nodes_allowed": false,
+    "verify_max_rgb8_deviation": 1,
+    "verify_fraction_off_by_one": 0.3801025390625,
+    "verified": true,
+    "frame_id": 559,
+    "returncode": 0,
+    "stdout_log": "build/section7/inference-final-verify.logs/rapidshot-ai-zn6ahc0w/01-dxcam.stdout.log",
+    "stderr_log": "build/section7/inference-final-verify.logs/rapidshot-ai-zn6ahc0w/01-dxcam.stderr.log"
+   },
+   {
+    "path": "dxcam-wgc",
+    "category": "inference",
+    "model_input_overrides": {},
+    "cpu_nodes_allowed": false,
+    "verify_max_rgb8_deviation": 1,
+    "verify_fraction_off_by_one": 0.38005126953125,
+    "verified": true,
+    "frame_id": 900,
+    "returncode": 0,
+    "stdout_log": "build/section7/inference-final-verify.logs/rapidshot-ai-zn6ahc0w/02-dxcam-wgc.stdout.log",
+    "stderr_log": "build/section7/inference-final-verify.logs/rapidshot-ai-zn6ahc0w/02-dxcam-wgc.stderr.log"
+   },
+   {
+    "path": "rapidshot-cpu",
+    "category": "inference",
+    "model_input_overrides": {},
+    "cpu_nodes_allowed": false,
+    "verify_max_rgb8_deviation": 1,
+    "verify_fraction_off_by_one": 0.3801025390625,
+    "verified": true,
+    "frame_id": 1236,
+    "returncode": 0,
+    "stdout_log": "build/section7/inference-final-verify.logs/rapidshot-ai-zn6ahc0w/03-rapidshot-cpu.stdout.log",
+    "stderr_log": "build/section7/inference-final-verify.logs/rapidshot-ai-zn6ahc0w/03-rapidshot-cpu.stderr.log"
+   },
+   {
+    "path": "rapidshot-cupy",
+    "category": "inference",
+    "model_input_overrides": {},
+    "cpu_nodes_allowed": false,
+    "verify_max_rgb8_deviation": 0,
+    "verify_fraction_off_by_one": 0.0,
+    "verified": true,
+    "frame_id": 1567,
+    "returncode": 0,
+    "stdout_log": "build/section7/inference-final-verify.logs/rapidshot-ai-zn6ahc0w/04-rapidshot-cupy.stdout.log",
+    "stderr_log": "build/section7/inference-final-verify.logs/rapidshot-ai-zn6ahc0w/04-rapidshot-cupy.stderr.log"
+   },
+   {
+    "path": "rapidshot-xadapter",
+    "category": "inference",
+    "model_input_overrides": {},
+    "cpu_nodes_allowed": false,
+    "verify_max_rgb8_deviation": 0,
+    "verify_fraction_off_by_one": 0.0,
+    "verified": true,
+    "frame_id": 1950,
+    "returncode": 0,
+    "stdout_log": "build/section7/inference-final-verify.logs/rapidshot-ai-zn6ahc0w/05-rapidshot-xadapter.stdout.log",
+    "stderr_log": "build/section7/inference-final-verify.logs/rapidshot-ai-zn6ahc0w/05-rapidshot-xadapter.stderr.log"
+   },
+   {
+    "path": "rapidshot-xadapter-async",
+    "category": "inference",
+    "model_input_overrides": {},
+    "cpu_nodes_allowed": false,
+    "verify_max_rgb8_deviation": 0,
+    "verify_fraction_off_by_one": 0.0,
+    "verified": true,
+    "frame_id": 2308,
+    "returncode": 0,
+    "stdout_log": "build/section7/inference-final-verify.logs/rapidshot-ai-zn6ahc0w/06-rapidshot-xadapter-async.stdout.log",
+    "stderr_log": "build/section7/inference-final-verify.logs/rapidshot-ai-zn6ahc0w/06-rapidshot-xadapter-async.stderr.log"
+   },
+   {
+    "path": "rapidshot-xadapter-semaphore",
+    "category": "inference",
+    "model_input_overrides": {},
+    "cpu_nodes_allowed": false,
+    "verify_max_rgb8_deviation": 0,
+    "verify_fraction_off_by_one": 0.0,
+    "verified": true,
+    "frame_id": 2744,
+    "returncode": 0,
+    "stdout_log": "build/section7/inference-final-verify.logs/rapidshot-ai-zn6ahc0w/07-rapidshot-xadapter-semaphore.stdout.log",
+    "stderr_log": "build/section7/inference-final-verify.logs/rapidshot-ai-zn6ahc0w/07-rapidshot-xadapter-semaphore.stderr.log"
+   },
+   {
+    "path": "rapidshot-direct",
+    "category": "inference",
+    "model_input_overrides": {},
+    "cpu_nodes_allowed": false,
+    "error": "CrossAdapterRequired: no CUDA device owns the adapter this frame was captured on. On a hybrid laptop that is expected: capture runs on the integrated GPU and CUDA only sees the discrete one. The frame has to cross adapters first \u2014 see native.cross_adapter_transfer() and ROADMAP \u00a7 6.1.",
+    "unavailable": true,
+    "returncode": 1,
+    "stdout_log": "build/section7/inference-final-verify.logs/rapidshot-ai-zn6ahc0w/08-rapidshot-direct.stdout.log",
+    "stderr_log": "build/section7/inference-final-verify.logs/rapidshot-ai-zn6ahc0w/08-rapidshot-direct.stderr.log"
+   }
+  ],
+  "status": "verified",
+  "started_at": "2026-09-11T12:42:29.892750+00:00",
+  "logs": "build/section7/inference-final-verify.logs/rapidshot-ai-zn6ahc0w",
+  "python": "3.13.15 (tags/v3.13.15:4061bc4, Aug  5 2026, 13:05:39) [MSC v.1944 64 bit (AMD64)]",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "contract": {
+   "shape": [
+    1,
+    3,
+    640,
+    640
+   ],
+   "dtype": "float16",
+   "resize": "rational-bilinear-round-half-up-rgb8"
+  },
+  "latency_origin": "QPC immediately before successful Present(1); submission age, not photon age",
+  "instrumentation": "marker decode and completion barriers included; VRAM is device-wide",
+  "workload": "motion",
+  "requested_source_fps": 165.0,
+  "versions": {
+   "anyio": "4.15.1",
+   "certifi": "2026.7.22",
+   "charset-normalizer": "3.5.1",
+   "cloudpickle": "3.1.2",
+   "colorama": "0.4.6",
+   "comtypes": "1.4.16",
+   "contourpy": "1.3.3",
+   "cuda-pathfinder": "1.8.1",
+   "cuda-toolkit": "13.2.2",
+   "cupy-cuda13x": "14.2.0",
+   "cycler": "0.12.1",
+   "dxcam": "0.3.0",
+   "filelock": "3.32.3",
+   "flatbuffers": "25.12.19",
+   "fonttools": "4.65.0",
+   "fsspec": "2026.7.0",
+   "h11": "0.16.0",
+   "httpcore": "1.0.9",
+   "httpx": "0.28.1",
+   "idna": "3.19",
+   "iniconfig": "2.3.0",
+   "Jinja2": "3.1.6",
+   "kiwisolver": "1.5.1",
+   "MarkupSafe": "3.0.3",
+   "matplotlib": "3.11.1",
+   "ml_dtypes": "0.6.0",
+   "mpmath": "1.3.0",
+   "mss": "10.2.0",
+   "networkx": "3.6.1",
+   "numpy": "2.5.3",
+   "nvidia-cublas": "13.4.1.3",
+   "nvidia-cuda-nvrtc": "13.2.86",
+   "nvidia-cuda-runtime": "13.2.86",
+   "nvidia-cudnn-cu13": "9.26.0.51",
+   "nvidia-cufft": "12.2.0.57",
+   "nvidia-curand": "10.4.2.66",
+   "nvidia-cusolver": "12.2.0.11",
+   "nvidia-cusparse": "12.7.10.12",
+   "nvidia-ml-py": "13.610.43",
+   "nvidia-nvjitlink": "13.4.52",
+   "onnx": "1.22.0",
+   "onnxruntime-gpu": "1.30.0",
+   "opencv-python": "5.0.0.93",
+   "packaging": "26.3",
+   "pillow": "12.3.0",
+   "pluggy": "1.6.0",
+   "polars": "1.44.2",
+   "polars-runtime-32": "1.44.2",
+   "protobuf": "7.36.1",
+   "psutil": "7.2.2",
+   "Pygments": "2.21.0",
+   "pyparsing": "3.3.2",
+   "pytest": "9.1.1",
+   "python-dateutil": "2.9.0.post0",
+   "PyYAML": "6.0.3",
+   "requests": "2.34.2",
+   "setuptools": "78.1.0",
+   "six": "1.17.0",
+   "sympy": "1.14.0",
+   "torch": "2.14.0+cpu",
+   "torchvision": "0.29.0+cpu",
+   "typing_extensions": "4.16.0",
+   "ultralytics": "8.4.146",
+   "ultralytics-platform": "0.1.34",
+   "ultralytics-thop": "2.1.6",
+   "urllib3": "2.7.0",
+   "winrt-runtime": "3.2.1",
+   "winrt-Windows.Foundation": "3.2.1",
+   "winrt-Windows.Foundation.Collections": "3.2.1",
+   "winrt-Windows.Graphics": "3.2.1",
+   "winrt-Windows.Graphics.Capture": "3.2.1",
+   "winrt-Windows.Graphics.Capture.Interop": "3.2.1",
+   "winrt-Windows.Graphics.DirectX": "3.2.1",
+   "winrt-Windows.Graphics.DirectX.Direct3D11": "3.2.1",
+   "winrt-Windows.Graphics.DirectX.Direct3D11.Interop": "3.2.1"
+  },
+  "display": {
+   "width": 2560,
+   "height": 1600,
+   "refresh_hz": 165
+  },
+  "model": {
+   "path": "build/section7/model/yolo11n.onnx",
+   "sha256": "ab5ca471dd01fc05f7b5dd80e62e5b15f8b4ca296a2b8d97de7a55f2df329c48",
+   "cpu_nodes_allowed": false
+  },
+  "health": "no new WHEA records",
+  "source": {
+   "fps_limit": 165.0,
+   "rate_samples": [
+    165.00952568585137,
+    165.16606724524357,
+    165.19053205724396,
+    165.14685821573437,
+    165.1791807362151,
+    164.67444685229535,
+    165.17997206312629,
+    164.63453602520445,
+    164.0323110746639
+   ],
+   "minimum_updates_per_second": 164.0323110746639,
+   "rate_observed": true
+  }
+ },
+ "passes": [
+  {
+   "schema_version": 3,
+   "category": "inference",
+   "results": [
+    {
+     "path": "mss",
+     "category": "inference",
+     "model_input_overrides": {},
+     "cpu_nodes_allowed": false,
+     "h2d_bytes_per_frame": 1228800,
+     "frames": 215,
+     "unique_frames": 215,
+     "unique_fps": 26.84448888949005,
+     "elapsed_seconds": 8.009092699998291,
+     "requested_seconds": 8.0,
+     "no_frame_polls": 0,
+     "duplicate_frames": 0,
+     "dropped_source_frames": 889,
+     "source_frames_in_window": 1103,
+     "qpc_frequency": 10000000,
+     "present_to_ready_ms": {
+      "count": 215,
+      "p50": 53.6581,
+      "p95": 63.107,
+      "p99": 68.2169,
+      "jitter_stdev": 4.214625779108074
+     },
+     "present_to_tensor_ms": {
+      "count": 215,
+      "p50": 48.7315,
+      "p95": 55.0025,
+      "p99": 63.6111,
+      "jitter_stdev": 2.895257661448662
+     },
+     "call_ms": {
+      "count": 215,
+      "p50": 36.63280000182567,
+      "p95": 42.968800000380725,
+      "p99": 43.81960000318941,
+      "jitter_stdev": 3.202186946115908
+     },
+     "stages": {
+      "capture_call_ms": {
+       "count": 215,
+       "p50": 28.393200002028607,
+       "p95": 30.2672000034363,
+       "p99": 30.941999997594394,
+       "jitter_stdev": 1.7673573872449468
+      },
+      "marker_decode_ms": {
+       "count": 215,
+       "p50": 0.11580000136746094,
+       "p95": 0.14319999900180846,
+       "p99": 0.17469999875174835,
+       "jitter_stdev": 0.018789698678539937
+      },
+      "preprocess_completion_ms": {
+       "count": 215,
+       "p50": 2.4560000019846484,
+       "p95": 3.5542000041459687,
+       "p99": 3.835399998934008,
+       "jitter_stdev": 0.4750929114430755
+      },
+      "inference_ms": {
+       "count": 215,
+       "p50": 4.985699997632764,
+       "p95": 10.389999995823018,
+       "p99": 10.807499995280523,
+       "jitter_stdev": 2.1453777061248425
+      }
+     },
+     "cpu_percent": 51.89414276602001,
+     "cpu_ms_per_unique_frame": 19.33139534883721,
+     "rss_mb": 1093.156864,
+     "rss_growth_mb": 1.441792,
+     "device_vram_used_mb": 1245.184,
+     "returncode": 0,
+     "stdout_log": "build/section7/inference-final-pass1.logs/rapidshot-ai-dzxkqinn/00-mss.stdout.log",
+     "stderr_log": "build/section7/inference-final-pass1.logs/rapidshot-ai-dzxkqinn/00-mss.stderr.log"
+    },
+    {
+     "path": "dxcam",
+     "category": "inference",
+     "model_input_overrides": {},
+     "cpu_nodes_allowed": false,
+     "h2d_bytes_per_frame": 1228800,
+     "frames": 545,
+     "unique_frames": 545,
+     "unique_fps": 68.05018817499571,
+     "elapsed_seconds": 8.008794900000794,
+     "requested_seconds": 8.0,
+     "no_frame_polls": 2,
+     "duplicate_frames": 0,
+     "dropped_source_frames": 779,
+     "source_frames_in_window": 1321,
+     "qpc_frequency": 10000000,
+     "present_to_ready_ms": {
+      "count": 545,
+      "p50": 42.2205,
+      "p95": 45.7615,
+      "p99": 47.3923,
+      "jitter_stdev": 1.937370059831555
+     },
+     "present_to_tensor_ms": {
+      "count": 545,
+      "p50": 36.5975,
+      "p95": 39.9417,
+      "p99": 40.46,
+      "jitter_stdev": 1.5273730065694728
+     },
+     "call_ms": {
+      "count": 545,
+      "p50": 14.541300006385427,
+      "p95": 17.30449999740813,
+      "p99": 17.94759999756934,
+      "jitter_stdev": 1.3511109557084229
+     },
+     "stages": {
+      "capture_call_ms": {
+       "count": 545,
+       "p50": 5.90609999926528,
+       "p95": 7.858299999497831,
+       "p99": 8.676600002218038,
+       "jitter_stdev": 0.8814785915418542
+      },
+      "marker_decode_ms": {
+       "count": 545,
+       "p50": 0.10769999789772555,
+       "p95": 0.13389999367063865,
+       "p99": 0.20399999630171806,
+       "jitter_stdev": 0.01996887567755608
+      },
+      "preprocess_completion_ms": {
+       "count": 545,
+       "p50": 2.4301000012201257,
+       "p95": 2.809200006595347,
+       "p99": 2.9327000011107884,
+       "jitter_stdev": 0.19317474611287747
+      },
+      "inference_ms": {
+       "count": 545,
+       "p50": 5.437200001324527,
+       "p95": 7.084700002451427,
+       "p99": 7.797300000675023,
+       "jitter_stdev": 0.9570135025096715
+      }
+     },
+     "cpu_percent": 97.35391026182013,
+     "cpu_ms_per_unique_frame": 14.306192660550458,
+     "rss_mb": 1107.042304,
+     "rss_growth_mb": 2.3552,
+     "device_vram_used_mb": 1245.184,
+     "returncode": 0,
+     "stdout_log": "build/section7/inference-final-pass1.logs/rapidshot-ai-dzxkqinn/01-dxcam.stdout.log",
+     "stderr_log": "build/section7/inference-final-pass1.logs/rapidshot-ai-dzxkqinn/01-dxcam.stderr.log"
+    },
+    {
+     "path": "dxcam-wgc",
+     "category": "inference",
+     "model_input_overrides": {},
+     "cpu_nodes_allowed": false,
+     "h2d_bytes_per_frame": 1228800,
+     "frames": 527,
+     "unique_frames": 527,
+     "unique_fps": 65.7578523860271,
+     "elapsed_seconds": 8.014251999993576,
+     "requested_seconds": 8.0,
+     "no_frame_polls": 0,
+     "duplicate_frames": 0,
+     "dropped_source_frames": 797,
+     "source_frames_in_window": 1322,
+     "qpc_frequency": 10000000,
+     "present_to_ready_ms": {
+      "count": 527,
+      "p50": 45.4137,
+      "p95": 49.3507,
+      "p99": 52.8644,
+      "jitter_stdev": 2.540629048902196
+     },
+     "present_to_tensor_ms": {
+      "count": 527,
+      "p50": 39.7902,
+      "p95": 43.1862,
+      "p99": 46.6153,
+      "jitter_stdev": 2.223386512302569
+     },
+     "call_ms": {
+      "count": 527,
+      "p50": 15.124899997317698,
+      "p95": 17.20709999790415,
+      "p99": 18.86680000461638,
+      "jitter_stdev": 1.2998101112747649
+     },
+     "stages": {
+      "capture_call_ms": {
+       "count": 527,
+       "p50": 6.397400000423659,
+       "p95": 8.115500000712927,
+       "p99": 8.663399996294174,
+       "jitter_stdev": 0.7282490131274281
+      },
+      "marker_decode_ms": {
+       "count": 527,
+       "p50": 0.10520000068936497,
+       "p95": 0.1562000034027733,
+       "p99": 0.24709999706828967,
+       "jitter_stdev": 0.026756779226602936
+      },
+      "preprocess_completion_ms": {
+       "count": 527,
+       "p50": 2.407100000709761,
+       "p95": 2.881899999920279,
+       "p99": 3.253700000641402,
+       "jitter_stdev": 0.25218462858709817
+      },
+      "inference_ms": {
+       "count": 527,
+       "p50": 5.5015000034472905,
+       "p95": 7.467199997336138,
+       "p99": 8.05650000256719,
+       "jitter_stdev": 0.9726686924982797
+      }
+     },
+     "cpu_percent": 81.4954408721517,
+     "cpu_ms_per_unique_frame": 12.393263757115749,
+     "rss_mb": 1120.530432,
+     "rss_growth_mb": 3.944448,
+     "device_vram_used_mb": 1245.184,
+     "returncode": 0,
+     "stdout_log": "build/section7/inference-final-pass1.logs/rapidshot-ai-dzxkqinn/02-dxcam-wgc.stdout.log",
+     "stderr_log": "build/section7/inference-final-pass1.logs/rapidshot-ai-dzxkqinn/02-dxcam-wgc.stderr.log"
+    },
+    {
+     "path": "rapidshot-cpu",
+     "category": "inference",
+     "model_input_overrides": {},
+     "cpu_nodes_allowed": false,
+     "h2d_bytes_per_frame": 1228800,
+     "frames": 643,
+     "unique_frames": 643,
+     "unique_fps": 80.3439099197769,
+     "elapsed_seconds": 8.003095699998084,
+     "requested_seconds": 8.0,
+     "no_frame_polls": 0,
+     "duplicate_frames": 0,
+     "dropped_source_frames": 681,
+     "source_frames_in_window": 1321,
+     "qpc_frequency": 10000000,
+     "present_to_ready_ms": {
+      "count": 643,
+      "p50": 39.4677,
+      "p95": 43.3798,
+      "p99": 45.4335,
+      "jitter_stdev": 1.870898177936858
+     },
+     "present_to_tensor_ms": {
+      "count": 643,
+      "p50": 34.3964,
+      "p95": 38.4281,
+      "p99": 39.6201,
+      "jitter_stdev": 1.5413995698939036
+     },
+     "call_ms": {
+      "count": 643,
+      "p50": 12.235900001542177,
+      "p95": 14.801299999817275,
+      "p99": 16.342099996109027,
+      "jitter_stdev": 1.2839580112719997
+     },
+     "stages": {
+      "capture_call_ms": {
+       "count": 643,
+       "p50": 4.434599999513011,
+       "p95": 6.083300002501346,
+       "p99": 6.746999999450054,
+       "jitter_stdev": 0.7080120864153713
+      },
+      "marker_decode_ms": {
+       "count": 643,
+       "p50": 0.1100999943446368,
+       "p95": 0.15189999976428226,
+       "p99": 0.23530000180471689,
+       "jitter_stdev": 0.021888145571966642
+      },
+      "preprocess_completion_ms": {
+       "count": 643,
+       "p50": 2.504100004443899,
+       "p95": 2.906599998823367,
+       "p99": 3.124399998341687,
+       "jitter_stdev": 0.22660577830587036
+      },
+      "inference_ms": {
+       "count": 643,
+       "p50": 4.852400001254864,
+       "p95": 6.6903999977512285,
+       "p99": 7.6872999998158775,
+       "jitter_stdev": 0.9344796682553995
+      }
+     },
+     "cpu_percent": 102.30416212568794,
+     "cpu_ms_per_unique_frame": 12.733281493001556,
+     "rss_mb": 1200.799744,
+     "rss_growth_mb": 5.595136,
+     "device_vram_used_mb": 1252.130816,
+     "returncode": 0,
+     "stdout_log": "build/section7/inference-final-pass1.logs/rapidshot-ai-dzxkqinn/03-rapidshot-cpu.stdout.log",
+     "stderr_log": "build/section7/inference-final-pass1.logs/rapidshot-ai-dzxkqinn/03-rapidshot-cpu.stderr.log"
+    },
+    {
+     "path": "rapidshot-cupy",
+     "category": "inference",
+     "model_input_overrides": {},
+     "cpu_nodes_allowed": false,
+     "h2d_bytes_per_frame": 16384000,
+     "frames": 657,
+     "unique_frames": 657,
+     "unique_fps": 82.04853179398897,
+     "elapsed_seconds": 8.007455899998604,
+     "requested_seconds": 8.0,
+     "no_frame_polls": 0,
+     "duplicate_frames": 0,
+     "dropped_source_frames": 665,
+     "source_frames_in_window": 1319,
+     "qpc_frequency": 10000000,
+     "present_to_ready_ms": {
+      "count": 657,
+      "p50": 38.7532,
+      "p95": 42.5319,
+      "p99": 45.1363,
+      "jitter_stdev": 1.701994390782102
+     },
+     "present_to_tensor_ms": {
+      "count": 657,
+      "p50": 34.3744,
+      "p95": 37.9444,
+      "p99": 39.9746,
+      "jitter_stdev": 1.5315938710821775
+     },
+     "call_ms": {
+      "count": 657,
+      "p50": 12.054500002705026,
+      "p95": 14.199500001268461,
+      "p99": 15.716399997472763,
+      "jitter_stdev": 1.1429663247869954
+     },
+     "stages": {
+      "capture_call_ms": {
+       "count": 657,
+       "p50": 5.490399998961948,
+       "p95": 7.075200002873316,
+       "p99": 7.589299995743204,
+       "jitter_stdev": 0.7517120103950157
+      },
+      "marker_decode_ms": {
+       "count": 657,
+       "p50": 0.356099997588899,
+       "p95": 0.5877000003238209,
+       "p99": 0.6749999956809916,
+       "jitter_stdev": 0.09005638480359779
+      },
+      "preprocess_completion_ms": {
+       "count": 657,
+       "p50": 1.5774999992572702,
+       "p95": 2.293000005010981,
+       "p99": 2.4216000019805506,
+       "jitter_stdev": 0.2356195557701318
+      },
+      "gpu_preprocess_ms": {
+       "count": 657,
+       "p50": 1.5263680219650269,
+       "p95": 2.2334721088409424,
+       "p99": 2.360896110534668,
+       "jitter_stdev": 0.23580173065644197
+      },
+      "inference_ms": {
+       "count": 657,
+       "p50": 4.142799996770918,
+       "p95": 5.692599996109493,
+       "p99": 6.886200004373677,
+       "jitter_stdev": 0.6860595608675728
+      }
+     },
+     "cpu_percent": 72.97885961508722,
+     "cpu_ms_per_unique_frame": 8.894596651445967,
+     "rss_mb": 1132.040192,
+     "rss_growth_mb": 6.807552,
+     "device_vram_used_mb": 1396.834304,
+     "returncode": 0,
+     "stdout_log": "build/section7/inference-final-pass1.logs/rapidshot-ai-dzxkqinn/04-rapidshot-cupy.stdout.log",
+     "stderr_log": "build/section7/inference-final-pass1.logs/rapidshot-ai-dzxkqinn/04-rapidshot-cupy.stderr.log"
+    },
+    {
+     "path": "rapidshot-xadapter",
+     "category": "inference",
+     "model_input_overrides": {},
+     "cpu_nodes_allowed": false,
+     "h2d_bytes_per_frame": 0,
+     "frames": 605,
+     "unique_frames": 605,
+     "unique_fps": 75.53038403206791,
+     "elapsed_seconds": 8.010021499998402,
+     "requested_seconds": 8.0,
+     "no_frame_polls": 0,
+     "duplicate_frames": 0,
+     "dropped_source_frames": 719,
+     "source_frames_in_window": 1322,
+     "qpc_frequency": 10000000,
+     "present_to_ready_ms": {
+      "count": 605,
+      "p50": 39.5744,
+      "p95": 42.6034,
+      "p99": 44.6649,
+      "jitter_stdev": 1.5398990539158441
+     },
+     "present_to_tensor_ms": {
+      "count": 605,
+      "p50": 35.2383,
+      "p95": 37.5649,
+      "p99": 39.6278,
+      "jitter_stdev": 1.3129923071617096
+     },
+     "call_ms": {
+      "count": 605,
+      "p50": 12.792699999408796,
+      "p95": 15.916299998934846,
+      "p99": 16.86640000116313,
+      "jitter_stdev": 1.3433998162067133
+     },
+     "stages": {
+      "capture_call_ms": {
+       "count": 605,
+       "p50": 0.21079999714856967,
+       "p95": 1.7239000007975847,
+       "p99": 2.1993999980622903,
+       "jitter_stdev": 0.47451325945836254
+      },
+      "transfer_submit_or_block_ms": {
+       "count": 605,
+       "p50": 3.6030999981448986,
+       "p95": 4.961800004821271,
+       "p99": 5.479100000229664,
+       "jitter_stdev": 0.5481972035674785
+      },
+      "marker_decode_ms": {
+       "count": 605,
+       "p50": 0.43400000140536577,
+       "p95": 0.6930999952601269,
+       "p99": 0.8747000028961338,
+       "jitter_stdev": 0.13457083684804347
+      },
+      "preprocess_completion_ms": {
+       "count": 605,
+       "p50": 3.6822999973082915,
+       "p95": 4.22930000058841,
+       "p99": 4.528500001470093,
+       "jitter_stdev": 0.21197272719005525
+      },
+      "gpu_preprocess_ms": {
+       "count": 605,
+       "p50": 3.625760078430176,
+       "p95": 4.160223960876465,
+       "p99": 4.4594879150390625,
+       "jitter_stdev": 0.2062121415894967
+      },
+      "inference_ms": {
+       "count": 605,
+       "p50": 4.115999996429309,
+       "p95": 5.608000006759539,
+       "p99": 6.825500000559259,
+       "jitter_stdev": 0.7848005933281161
+      }
+     },
+     "cpu_percent": 67.2985084996473,
+     "cpu_ms_per_unique_frame": 8.910123966942148,
+     "rss_mb": 1258.184704,
+     "rss_growth_mb": 8.093696,
+     "device_vram_used_mb": 1338.073088,
+     "returncode": 0,
+     "stdout_log": "build/section7/inference-final-pass1.logs/rapidshot-ai-dzxkqinn/05-rapidshot-xadapter.stdout.log",
+     "stderr_log": "build/section7/inference-final-pass1.logs/rapidshot-ai-dzxkqinn/05-rapidshot-xadapter.stderr.log"
+    },
+    {
+     "path": "rapidshot-xadapter-async",
+     "category": "inference",
+     "model_input_overrides": {},
+     "cpu_nodes_allowed": false,
+     "h2d_bytes_per_frame": 0,
+     "frames": 611,
+     "unique_frames": 611,
+     "unique_fps": 76.31589048093488,
+     "elapsed_seconds": 8.006196300004376,
+     "requested_seconds": 8.0,
+     "no_frame_polls": 0,
+     "duplicate_frames": 0,
+     "dropped_source_frames": 712,
+     "source_frames_in_window": 1321,
+     "qpc_frequency": 10000000,
+     "present_to_ready_ms": {
+      "count": 611,
+      "p50": 39.4967,
+      "p95": 42.8141,
+      "p99": 45.5669,
+      "jitter_stdev": 1.593341558795789
+     },
+     "present_to_tensor_ms": {
+      "count": 611,
+      "p50": 35.2505,
+      "p95": 37.9471,
+      "p99": 41.0574,
+      "jitter_stdev": 1.3856577784997248
+     },
+     "call_ms": {
+      "count": 611,
+      "p50": 12.655400001676753,
+      "p95": 15.890599999693222,
+      "p99": 17.09199999459088,
+      "jitter_stdev": 1.2636003280340629
+     },
+     "stages": {
+      "capture_call_ms": {
+       "count": 611,
+       "p50": 0.2082999999402091,
+       "p95": 1.4379999993252568,
+       "p99": 2.0729999960167333,
+       "jitter_stdev": 0.40124896302856716
+      },
+      "transfer_submit_or_block_ms": {
+       "count": 611,
+       "p50": 0.0790999984019436,
+       "p95": 0.11020000238204375,
+       "p99": 0.1435999947716482,
+       "jitter_stdev": 0.017894630618792658
+      },
+      "fence_completion_wall_ms": {
+       "count": 611,
+       "p50": 3.508599998895079,
+       "p95": 4.874700003711041,
+       "p99": 5.255899995972868,
+       "jitter_stdev": 0.525225666222448
+      },
+      "marker_decode_ms": {
+       "count": 611,
+       "p50": 0.4364000051282346,
+       "p95": 0.6789000035496429,
+       "p99": 0.7957999987411313,
+       "jitter_stdev": 0.11594520368712723
+      },
+      "preprocess_completion_ms": {
+       "count": 611,
+       "p50": 3.6672999995062128,
+       "p95": 4.1955999986384995,
+       "p99": 4.372100003820378,
+       "jitter_stdev": 0.1959179471720492
+      },
+      "gpu_preprocess_ms": {
+       "count": 611,
+       "p50": 3.614720106124878,
+       "p95": 4.127744197845459,
+       "p99": 4.282368183135986,
+       "jitter_stdev": 0.18954182125672026
+      },
+      "inference_ms": {
+       "count": 611,
+       "p50": 4.05740000132937,
+       "p95": 5.883400001039263,
+       "p99": 7.345300000451971,
+       "jitter_stdev": 0.7547163149323197
+      }
+     },
+     "cpu_percent": 65.76937165526559,
+     "cpu_ms_per_unique_frame": 8.6180441898527,
+     "rss_mb": 1258.868736,
+     "rss_growth_mb": 9.007104,
+     "device_vram_used_mb": 1338.073088,
+     "returncode": 0,
+     "stdout_log": "build/section7/inference-final-pass1.logs/rapidshot-ai-dzxkqinn/06-rapidshot-xadapter-async.stdout.log",
+     "stderr_log": "build/section7/inference-final-pass1.logs/rapidshot-ai-dzxkqinn/06-rapidshot-xadapter-async.stderr.log"
+    },
+    {
+     "path": "rapidshot-xadapter-semaphore",
+     "category": "inference",
+     "model_input_overrides": {},
+     "cpu_nodes_allowed": false,
+     "h2d_bytes_per_frame": 0,
+     "frames": 650,
+     "unique_frames": 650,
+     "unique_fps": 81.1498134546636,
+     "elapsed_seconds": 8.009876700001769,
+     "requested_seconds": 8.0,
+     "no_frame_polls": 0,
+     "duplicate_frames": 0,
+     "dropped_source_frames": 675,
+     "source_frames_in_window": 1322,
+     "qpc_frequency": 10000000,
+     "present_to_ready_ms": {
+      "count": 650,
+      "p50": 38.1948,
+      "p95": 41.0672,
+      "p99": 43.459,
+      "jitter_stdev": 1.5341175521579424
+     },
+     "present_to_tensor_ms": {
+      "count": 650,
+      "p50": 33.9241,
+      "p95": 36.6948,
+      "p99": 38.6904,
+      "jitter_stdev": 1.3417440508239693
+     },
+     "call_ms": {
+      "count": 650,
+      "p50": 12.141999999585096,
+      "p95": 13.942099998530466,
+      "p99": 15.21869999851333,
+      "jitter_stdev": 0.8721466590383318
+     },
+     "stages": {
+      "capture_call_ms": {
+       "count": 650,
+       "p50": 0.20360000053187832,
+       "p95": 0.37599999632220715,
+       "p99": 1.6533000016352162,
+       "jitter_stdev": 0.20718816089229508
+      },
+      "transfer_submit_or_block_ms": {
+       "count": 650,
+       "p50": 0.08240000170189887,
+       "p95": 0.11000000085914508,
+       "p99": 0.14340000052470714,
+       "jitter_stdev": 0.013762433329921482
+      },
+      "fence_completion_wall_ms": {
+       "count": 650,
+       "p50": 0.05270000110613182,
+       "p95": 0.10379999730503187,
+       "p99": 0.14200000441633165,
+       "jitter_stdev": 0.019480322198375682
+      },
+      "marker_decode_ms": {
+       "count": 650,
+       "p50": 0.4563999973470345,
+       "p95": 0.7033000001683831,
+       "p99": 0.8144000021275133,
+       "jitter_stdev": 0.1144234172673244
+      },
+      "preprocess_completion_ms": {
+       "count": 650,
+       "p50": 6.668599999102298,
+       "p95": 7.5416000036057085,
+       "p99": 8.49999999627471,
+       "jitter_stdev": 0.45859062033480247
+      },
+      "gpu_preprocess_ms": {
+       "count": 650,
+       "p50": 3.253472089767456,
+       "p95": 3.3157119750976562,
+       "p99": 3.4119679927825928,
+       "jitter_stdev": 0.03666325636839956
+      },
+      "gpu_fence_wait_ms": {
+       "count": 650,
+       "p50": 3.4600958824157715,
+       "p95": 4.284416198730469,
+       "p99": 5.294079780578613,
+       "jitter_stdev": 0.4519287218474931
+      },
+      "inference_ms": {
+       "count": 650,
+       "p50": 4.053000004205387,
+       "p95": 5.42709999717772,
+       "p99": 6.556199994520284,
+       "jitter_stdev": 0.6138618841580316
+      }
+     },
+     "cpu_percent": 95.97526014349637,
+     "cpu_ms_per_unique_frame": 11.826923076923077,
+     "rss_mb": 1260.683264,
+     "rss_growth_mb": 10.481664,
+     "device_vram_used_mb": 1338.073088,
+     "returncode": 0,
+     "stdout_log": "build/section7/inference-final-pass1.logs/rapidshot-ai-dzxkqinn/07-rapidshot-xadapter-semaphore.stdout.log",
+     "stderr_log": "build/section7/inference-final-pass1.logs/rapidshot-ai-dzxkqinn/07-rapidshot-xadapter-semaphore.stderr.log"
+    },
+    {
+     "path": "rapidshot-direct",
+     "category": "inference",
+     "model_input_overrides": {},
+     "cpu_nodes_allowed": false,
+     "error": "CrossAdapterRequired: no CUDA device owns the adapter this frame was captured on. On a hybrid laptop that is expected: capture runs on the integrated GPU and CUDA only sees the discrete one. The frame has to cross adapters first \u2014 see native.cross_adapter_transfer() and ROADMAP \u00a7 6.1.",
+     "unavailable": true,
+     "returncode": 1,
+     "stdout_log": "build/section7/inference-final-pass1.logs/rapidshot-ai-dzxkqinn/08-rapidshot-direct.stdout.log",
+     "stderr_log": "build/section7/inference-final-pass1.logs/rapidshot-ai-dzxkqinn/08-rapidshot-direct.stderr.log"
+    }
+   ],
+   "status": "measured",
+   "started_at": "2026-09-11T12:42:50.697232+00:00",
+   "logs": "build/section7/inference-final-pass1.logs/rapidshot-ai-dzxkqinn",
+   "python": "3.13.15 (tags/v3.13.15:4061bc4, Aug  5 2026, 13:05:39) [MSC v.1944 64 bit (AMD64)]",
+   "platform": "Windows-11-10.0.26200-SP0",
+   "contract": {
+    "shape": [
+     1,
+     3,
+     640,
+     640
+    ],
+    "dtype": "float16",
+    "resize": "rational-bilinear-round-half-up-rgb8"
+   },
+   "latency_origin": "QPC immediately before successful Present(1); submission age, not photon age",
+   "instrumentation": "marker decode and completion barriers included; VRAM is device-wide",
+   "workload": "motion",
+   "requested_source_fps": 165.0,
+   "versions": {
+    "anyio": "4.15.1",
+    "certifi": "2026.7.22",
+    "charset-normalizer": "3.5.1",
+    "cloudpickle": "3.1.2",
+    "colorama": "0.4.6",
+    "comtypes": "1.4.16",
+    "contourpy": "1.3.3",
+    "cuda-pathfinder": "1.8.1",
+    "cuda-toolkit": "13.2.2",
+    "cupy-cuda13x": "14.2.0",
+    "cycler": "0.12.1",
+    "dxcam": "0.3.0",
+    "filelock": "3.32.3",
+    "flatbuffers": "25.12.19",
+    "fonttools": "4.65.0",
+    "fsspec": "2026.7.0",
+    "h11": "0.16.0",
+    "httpcore": "1.0.9",
+    "httpx": "0.28.1",
+    "idna": "3.19",
+    "iniconfig": "2.3.0",
+    "Jinja2": "3.1.6",
+    "kiwisolver": "1.5.1",
+    "MarkupSafe": "3.0.3",
+    "matplotlib": "3.11.1",
+    "ml_dtypes": "0.6.0",
+    "mpmath": "1.3.0",
+    "mss": "10.2.0",
+    "networkx": "3.6.1",
+    "numpy": "2.5.3",
+    "nvidia-cublas": "13.4.1.3",
+    "nvidia-cuda-nvrtc": "13.2.86",
+    "nvidia-cuda-runtime": "13.2.86",
+    "nvidia-cudnn-cu13": "9.26.0.51",
+    "nvidia-cufft": "12.2.0.57",
+    "nvidia-curand": "10.4.2.66",
+    "nvidia-cusolver": "12.2.0.11",
+    "nvidia-cusparse": "12.7.10.12",
+    "nvidia-ml-py": "13.610.43",
+    "nvidia-nvjitlink": "13.4.52",
+    "onnx": "1.22.0",
+    "onnxruntime-gpu": "1.30.0",
+    "opencv-python": "5.0.0.93",
+    "packaging": "26.3",
+    "pillow": "12.3.0",
+    "pluggy": "1.6.0",
+    "polars": "1.44.2",
+    "polars-runtime-32": "1.44.2",
+    "protobuf": "7.36.1",
+    "psutil": "7.2.2",
+    "Pygments": "2.21.0",
+    "pyparsing": "3.3.2",
+    "pytest": "9.1.1",
+    "python-dateutil": "2.9.0.post0",
+    "PyYAML": "6.0.3",
+    "requests": "2.34.2",
+    "setuptools": "78.1.0",
+    "six": "1.17.0",
+    "sympy": "1.14.0",
+    "torch": "2.14.0+cpu",
+    "torchvision": "0.29.0+cpu",
+    "typing_extensions": "4.16.0",
+    "ultralytics": "8.4.146",
+    "ultralytics-platform": "0.1.34",
+    "ultralytics-thop": "2.1.6",
+    "urllib3": "2.7.0",
+    "winrt-runtime": "3.2.1",
+    "winrt-Windows.Foundation": "3.2.1",
+    "winrt-Windows.Foundation.Collections": "3.2.1",
+    "winrt-Windows.Graphics": "3.2.1",
+    "winrt-Windows.Graphics.Capture": "3.2.1",
+    "winrt-Windows.Graphics.Capture.Interop": "3.2.1",
+    "winrt-Windows.Graphics.DirectX": "3.2.1",
+    "winrt-Windows.Graphics.DirectX.Direct3D11": "3.2.1",
+    "winrt-Windows.Graphics.DirectX.Direct3D11.Interop": "3.2.1"
+   },
+   "display": {
+    "width": 2560,
+    "height": 1600,
+    "refresh_hz": 165
+   },
+   "model": {
+    "path": "build/section7/model/yolo11n.onnx",
+    "sha256": "ab5ca471dd01fc05f7b5dd80e62e5b15f8b4ca296a2b8d97de7a55f2df329c48",
+    "cpu_nodes_allowed": false
+   },
+   "health": "no new WHEA records",
+   "source": {
+    "fps_limit": 165.0,
+    "rate_samples": [
+     162.77253352302824,
+     136.51842443189526,
+     137.4516513816265,
+     136.46753437357253,
+     142.3564122048296,
+     165.14347175881989,
+     165.18250271153815,
+     165.1653419840719,
+     165.16628976983452,
+     165.19378853388417,
+     165.19273325650624,
+     165.09863695862174,
+     165.16031478059077,
+     165.16134492030815,
+     165.1876631664848,
+     165.18087055808178,
+     165.14888521259377,
+     165.1703859777428,
+     165.1834259641397,
+     165.1666359203901,
+     165.1967483290923,
+     164.61447290445776,
+     165.1805078616939,
+     164.6408278021083,
+     165.23071524183462,
+     165.20670028464966,
+     165.07629043153486,
+     165.02781416671547,
+     165.1741856600762,
+     165.17682328639899,
+     165.18412665380626,
+     164.6617436131826,
+     165.1720756196685,
+     165.21019653375032,
+     165.3844954683649,
+     165.18336826054977,
+     164.64989669216862,
+     165.14838257865176,
+     165.20842365309466,
+     165.1607268349357,
+     165.07552479554076
+    ],
+    "minimum_updates_per_second": 136.46753437357253,
+    "rate_observed": true
+   }
+  },
+  {
+   "schema_version": 3,
+   "category": "inference",
+   "results": [
+    {
+     "path": "mss",
+     "category": "inference",
+     "model_input_overrides": {},
+     "cpu_nodes_allowed": false,
+     "h2d_bytes_per_frame": 1228800,
+     "frames": 214,
+     "unique_frames": 214,
+     "unique_fps": 26.74604693425303,
+     "elapsed_seconds": 8.001182400003017,
+     "requested_seconds": 8.0,
+     "no_frame_polls": 0,
+     "duplicate_frames": 0,
+     "dropped_source_frames": 895,
+     "source_frames_in_window": 1108,
+     "qpc_frequency": 10000000,
+     "present_to_ready_ms": {
+      "count": 214,
+      "p50": 54.1181,
+      "p95": 63.9493,
+      "p99": 69.3038,
+      "jitter_stdev": 4.702799183712023
+     },
+     "present_to_tensor_ms": {
+      "count": 214,
+      "p50": 48.806,
+      "p95": 54.8824,
+      "p99": 63.4313,
+      "jitter_stdev": 3.083325159881242
+     },
+     "call_ms": {
+      "count": 214,
+      "p50": 36.6890000004787,
+      "p95": 43.51920000044629,
+      "p99": 44.21290000027511,
+      "jitter_stdev": 3.68374026647786
+     },
+     "stages": {
+      "capture_call_ms": {
+       "count": 214,
+       "p50": 28.13880000030622,
+       "p95": 30.180299996573012,
+       "p99": 31.09540000150446,
+       "jitter_stdev": 1.8107696300897478
+      },
+      "marker_decode_ms": {
+       "count": 214,
+       "p50": 0.1131999961216934,
+       "p95": 0.1371000034851022,
+       "p99": 0.16859999595908448,
+       "jitter_stdev": 0.017142138172385232
+      },
+      "preprocess_completion_ms": {
+       "count": 214,
+       "p50": 2.4623999997857027,
+       "p95": 3.5891000006813556,
+       "p99": 4.022199995233677,
+       "jitter_stdev": 0.4998322654453571
+      },
+      "inference_ms": {
+       "count": 214,
+       "p50": 5.254299998341594,
+       "p95": 10.73319999704836,
+       "p99": 11.251800002355594,
+       "jitter_stdev": 2.4208217144455633
+      }
+     },
+     "cpu_percent": 56.82753838980455,
+     "cpu_ms_per_unique_frame": 21.247079439252335,
+     "rss_mb": 1091.981312,
+     "rss_growth_mb": 1.236992,
+     "device_vram_used_mb": 1245.184,
+     "returncode": 0,
+     "stdout_log": "build/section7/inference-final-pass2.logs/rapidshot-ai-psqtf_y3/00-mss.stdout.log",
+     "stderr_log": "build/section7/inference-final-pass2.logs/rapidshot-ai-psqtf_y3/00-mss.stderr.log"
+    },
+    {
+     "path": "dxcam",
+     "category": "inference",
+     "model_input_overrides": {},
+     "cpu_nodes_allowed": false,
+     "h2d_bytes_per_frame": 1228800,
+     "frames": 546,
+     "unique_frames": 546,
+     "unique_fps": 68.15611580245626,
+     "elapsed_seconds": 8.011019899997336,
+     "requested_seconds": 8.0,
+     "no_frame_polls": 6,
+     "duplicate_frames": 0,
+     "dropped_source_frames": 778,
+     "source_frames_in_window": 1322,
+     "qpc_frequency": 10000000,
+     "present_to_ready_ms": {
+      "count": 546,
+      "p50": 42.1535,
+      "p95": 45.6328,
+      "p99": 46.6538,
+      "jitter_stdev": 1.8153785812943235
+     },
+     "present_to_tensor_ms": {
+      "count": 546,
+      "p50": 36.6082,
+      "p95": 39.9285,
+      "p99": 40.5114,
+      "jitter_stdev": 1.46672594122354
+     },
+     "call_ms": {
+      "count": 546,
+      "p50": 14.629299999796785,
+      "p95": 17.01119999779621,
+      "p99": 18.443299995851703,
+      "jitter_stdev": 1.4178977955968366
+     },
+     "stages": {
+      "capture_call_ms": {
+       "count": 546,
+       "p50": 5.70309999602614,
+       "p95": 7.859299999836367,
+       "p99": 8.352700002433266,
+       "jitter_stdev": 0.9369631339067918
+      },
+      "marker_decode_ms": {
+       "count": 546,
+       "p50": 0.1083999959519133,
+       "p95": 0.13410000246949494,
+       "p99": 0.20360000053187832,
+       "jitter_stdev": 0.021175356482351672
+      },
+      "preprocess_completion_ms": {
+       "count": 546,
+       "p50": 2.4248000045190565,
+       "p95": 2.8228000010130927,
+       "p99": 2.98579999798676,
+       "jitter_stdev": 0.20373926739760415
+      },
+      "inference_ms": {
+       "count": 546,
+       "p50": 5.355599998438265,
+       "p95": 7.17169999552425,
+       "p99": 8.19480000063777,
+       "jitter_stdev": 1.0498580061814167
+      }
+     },
+     "cpu_percent": 90.89042457630671,
+     "cpu_ms_per_unique_frame": 13.33562271062271,
+     "rss_mb": 1106.178048,
+     "rss_growth_mb": 2.301952,
+     "device_vram_used_mb": 1245.184,
+     "returncode": 0,
+     "stdout_log": "build/section7/inference-final-pass2.logs/rapidshot-ai-psqtf_y3/01-dxcam.stdout.log",
+     "stderr_log": "build/section7/inference-final-pass2.logs/rapidshot-ai-psqtf_y3/01-dxcam.stderr.log"
+    },
+    {
+     "path": "dxcam-wgc",
+     "category": "inference",
+     "model_input_overrides": {},
+     "cpu_nodes_allowed": false,
+     "h2d_bytes_per_frame": 1228800,
+     "frames": 519,
+     "unique_frames": 519,
+     "unique_fps": 64.86912204670048,
+     "elapsed_seconds": 8.000724899997294,
+     "requested_seconds": 8.0,
+     "no_frame_polls": 0,
+     "duplicate_frames": 0,
+     "dropped_source_frames": 803,
+     "source_frames_in_window": 1320,
+     "qpc_frequency": 10000000,
+     "present_to_ready_ms": {
+      "count": 519,
+      "p50": 45.7952,
+      "p95": 50.3555,
+      "p99": 52.28,
+      "jitter_stdev": 2.6865208447821147
+     },
+     "present_to_tensor_ms": {
+      "count": 519,
+      "p50": 39.9414,
+      "p95": 43.5681,
+      "p99": 45.5332,
+      "jitter_stdev": 2.2570540467044458
+     },
+     "call_ms": {
+      "count": 519,
+      "p50": 15.304599997762125,
+      "p95": 17.55270000285236,
+      "p99": 18.756800003757235,
+      "jitter_stdev": 1.3673209661009156
+     },
+     "stages": {
+      "capture_call_ms": {
+       "count": 519,
+       "p50": 6.351899995934218,
+       "p95": 8.127900000545196,
+       "p99": 8.74620000104187,
+       "jitter_stdev": 0.7309749243053414
+      },
+      "marker_decode_ms": {
+       "count": 519,
+       "p50": 0.10649999603629112,
+       "p95": 0.14180000289343297,
+       "p99": 0.19830000383080915,
+       "jitter_stdev": 0.018775979656150268
+      },
+      "preprocess_completion_ms": {
+       "count": 519,
+       "p50": 2.4481000000378117,
+       "p95": 2.943200001027435,
+       "p99": 3.1292999992729165,
+       "jitter_stdev": 0.2693347238875721
+      },
+      "inference_ms": {
+       "count": 519,
+       "p50": 5.614800000330433,
+       "p95": 7.559400000900496,
+       "p99": 7.964999997057021,
+       "jitter_stdev": 1.033034610220553
+      }
+     },
+     "cpu_percent": 96.28033829787854,
+     "cpu_ms_per_unique_frame": 14.842244701348747,
+     "rss_mb": 1118.859264,
+     "rss_growth_mb": 3.997696,
+     "device_vram_used_mb": 1245.184,
+     "returncode": 0,
+     "stdout_log": "build/section7/inference-final-pass2.logs/rapidshot-ai-psqtf_y3/02-dxcam-wgc.stdout.log",
+     "stderr_log": "build/section7/inference-final-pass2.logs/rapidshot-ai-psqtf_y3/02-dxcam-wgc.stderr.log"
+    },
+    {
+     "path": "rapidshot-cpu",
+     "category": "inference",
+     "model_input_overrides": {},
+     "cpu_nodes_allowed": false,
+     "h2d_bytes_per_frame": 1228800,
+     "frames": 643,
+     "unique_frames": 643,
+     "unique_fps": 80.25440671896632,
+     "elapsed_seconds": 8.012021099995764,
+     "requested_seconds": 8.0,
+     "no_frame_polls": 0,
+     "duplicate_frames": 0,
+     "dropped_source_frames": 682,
+     "source_frames_in_window": 1322,
+     "qpc_frequency": 10000000,
+     "present_to_ready_ms": {
+      "count": 643,
+      "p50": 39.3217,
+      "p95": 42.8913,
+      "p99": 44.9676,
+      "jitter_stdev": 1.6772311607416674
+     },
+     "present_to_tensor_ms": {
+      "count": 643,
+      "p50": 34.2914,
+      "p95": 37.2863,
+      "p99": 38.6545,
+      "jitter_stdev": 1.253282169050634
+     },
+     "call_ms": {
+      "count": 643,
+      "p50": 12.30799999757437,
+      "p95": 14.81449999846518,
+      "p99": 16.199500001675915,
+      "jitter_stdev": 1.220807095957688
+     },
+     "stages": {
+      "capture_call_ms": {
+       "count": 643,
+       "p50": 4.475299996556714,
+       "p95": 6.037999999534804,
+       "p99": 6.759899995813612,
+       "jitter_stdev": 0.6634418486200081
+      },
+      "marker_decode_ms": {
+       "count": 643,
+       "p50": 0.11000000085914508,
+       "p95": 0.1511999944341369,
+       "p99": 0.22249999892665073,
+       "jitter_stdev": 0.02096216804121763
+      },
+      "preprocess_completion_ms": {
+       "count": 643,
+       "p50": 2.461200005200226,
+       "p95": 2.8395999979693443,
+       "p99": 3.1428000002051704,
+       "jitter_stdev": 0.19843249169746396
+      },
+      "inference_ms": {
+       "count": 643,
+       "p50": 4.877300001680851,
+       "p95": 7.082299998728558,
+       "p99": 7.819699996616691,
+       "jitter_stdev": 0.9371665966274558
+      }
+     },
+     "cpu_percent": 102.7752535499982,
+     "cpu_ms_per_unique_frame": 12.806181959564542,
+     "rss_mb": 1198.870528,
+     "rss_growth_mb": 5.308416,
+     "device_vram_used_mb": 1252.130816,
+     "returncode": 0,
+     "stdout_log": "build/section7/inference-final-pass2.logs/rapidshot-ai-psqtf_y3/03-rapidshot-cpu.stdout.log",
+     "stderr_log": "build/section7/inference-final-pass2.logs/rapidshot-ai-psqtf_y3/03-rapidshot-cpu.stderr.log"
+    },
+    {
+     "path": "rapidshot-cupy",
+     "category": "inference",
+     "model_input_overrides": {},
+     "cpu_nodes_allowed": false,
+     "h2d_bytes_per_frame": 16384000,
+     "frames": 647,
+     "unique_frames": 647,
+     "unique_fps": 80.77711832686431,
+     "elapsed_seconds": 8.009694000000309,
+     "requested_seconds": 8.0,
+     "no_frame_polls": 0,
+     "duplicate_frames": 0,
+     "dropped_source_frames": 677,
+     "source_frames_in_window": 1322,
+     "qpc_frequency": 10000000,
+     "present_to_ready_ms": {
+      "count": 647,
+      "p50": 39.1409,
+      "p95": 42.6701,
+      "p99": 44.3849,
+      "jitter_stdev": 1.6662905430672563
+     },
+     "present_to_tensor_ms": {
+      "count": 647,
+      "p50": 34.7265,
+      "p95": 38.1455,
+      "p99": 39.1141,
+      "jitter_stdev": 1.4295571840591146
+     },
+     "call_ms": {
+      "count": 647,
+      "p50": 12.182899998151697,
+      "p95": 14.595799999369774,
+      "p99": 15.61020000372082,
+      "jitter_stdev": 1.1671719743667812
+     },
+     "stages": {
+      "capture_call_ms": {
+       "count": 647,
+       "p50": 5.413600003521424,
+       "p95": 7.018500000413042,
+       "p99": 7.772199998726137,
+       "jitter_stdev": 0.6881933982274324
+      },
+      "marker_decode_ms": {
+       "count": 647,
+       "p50": 0.3654999964055605,
+       "p95": 0.6368999966070987,
+       "p99": 0.7818000012775883,
+       "jitter_stdev": 0.11058569668828526
+      },
+      "preprocess_completion_ms": {
+       "count": 647,
+       "p50": 1.6086000032373704,
+       "p95": 2.3934999990160577,
+       "p99": 2.5572000013198704,
+       "jitter_stdev": 0.3295369981460005
+      },
+      "gpu_preprocess_ms": {
+       "count": 647,
+       "p50": 1.5555520057678223,
+       "p95": 2.330143928527832,
+       "p99": 2.4812800884246826,
+       "jitter_stdev": 0.32956582978942195
+      },
+      "inference_ms": {
+       "count": 647,
+       "p50": 4.213500003970694,
+       "p95": 6.121099999290891,
+       "p99": 7.2142999997595325,
+       "jitter_stdev": 0.7457329693965673
+      }
+     },
+     "cpu_percent": 71.20278252826863,
+     "cpu_ms_per_unique_frame": 8.814721792890262,
+     "rss_mb": 1133.084672,
+     "rss_growth_mb": 6.69696,
+     "device_vram_used_mb": 1396.834304,
+     "returncode": 0,
+     "stdout_log": "build/section7/inference-final-pass2.logs/rapidshot-ai-psqtf_y3/04-rapidshot-cupy.stdout.log",
+     "stderr_log": "build/section7/inference-final-pass2.logs/rapidshot-ai-psqtf_y3/04-rapidshot-cupy.stderr.log"
+    },
+    {
+     "path": "rapidshot-xadapter",
+     "category": "inference",
+     "model_input_overrides": {},
+     "cpu_nodes_allowed": false,
+     "h2d_bytes_per_frame": 0,
+     "frames": 585,
+     "unique_frames": 585,
+     "unique_fps": 73.0996864923672,
+     "elapsed_seconds": 8.002770299994154,
+     "requested_seconds": 8.0,
+     "no_frame_polls": 0,
+     "duplicate_frames": 0,
+     "dropped_source_frames": 737,
+     "source_frames_in_window": 1320,
+     "qpc_frequency": 10000000,
+     "present_to_ready_ms": {
+      "count": 585,
+      "p50": 39.8459,
+      "p95": 43.2954,
+      "p99": 45.7886,
+      "jitter_stdev": 1.932625547674654
+     },
+     "present_to_tensor_ms": {
+      "count": 585,
+      "p50": 35.3628,
+      "p95": 38.0512,
+      "p99": 39.8753,
+      "jitter_stdev": 1.387337328752789
+     },
+     "call_ms": {
+      "count": 585,
+      "p50": 13.226200004282873,
+      "p95": 16.211200003453996,
+      "p99": 20.77399999689078,
+      "jitter_stdev": 1.7257516116308929
+     },
+     "stages": {
+      "capture_call_ms": {
+       "count": 585,
+       "p50": 0.2103000006172806,
+       "p95": 1.7109999971580692,
+       "p99": 2.271500001370441,
+       "jitter_stdev": 0.4740282022517105
+      },
+      "transfer_submit_or_block_ms": {
+       "count": 585,
+       "p50": 3.6092000009375624,
+       "p95": 4.974199997377582,
+       "p99": 5.363100004615262,
+       "jitter_stdev": 0.5759876382548867
+      },
+      "marker_decode_ms": {
+       "count": 585,
+       "p50": 0.43960000039078295,
+       "p95": 0.7401000038953498,
+       "p99": 0.9877000047708862,
+       "jitter_stdev": 0.1317226734557888
+      },
+      "preprocess_completion_ms": {
+       "count": 585,
+       "p50": 3.8057999990996905,
+       "p95": 4.274500002793502,
+       "p99": 4.847799995332025,
+       "jitter_stdev": 0.2731698290229046
+      },
+      "gpu_preprocess_ms": {
+       "count": 585,
+       "p50": 3.7344319820404053,
+       "p95": 4.204127788543701,
+       "p99": 4.730016231536865,
+       "jitter_stdev": 0.2674658986339923
+      },
+      "inference_ms": {
+       "count": 585,
+       "p50": 4.24629999906756,
+       "p95": 6.397000004653819,
+       "p99": 9.304799998062663,
+       "jitter_stdev": 1.1678016940369038
+      }
+     },
+     "cpu_percent": 65.01654808215352,
+     "cpu_ms_per_unique_frame": 8.89423076923077,
+     "rss_mb": 1257.607168,
+     "rss_growth_mb": 8.134656,
+     "device_vram_used_mb": 1338.073088,
+     "returncode": 0,
+     "stdout_log": "build/section7/inference-final-pass2.logs/rapidshot-ai-psqtf_y3/05-rapidshot-xadapter.stdout.log",
+     "stderr_log": "build/section7/inference-final-pass2.logs/rapidshot-ai-psqtf_y3/05-rapidshot-xadapter.stderr.log"
+    },
+    {
+     "path": "rapidshot-xadapter-async",
+     "category": "inference",
+     "model_input_overrides": {},
+     "cpu_nodes_allowed": false,
+     "h2d_bytes_per_frame": 0,
+     "frames": 589,
+     "unique_frames": 589,
+     "unique_fps": 73.51189001153331,
+     "elapsed_seconds": 8.012309300000197,
+     "requested_seconds": 8.0,
+     "no_frame_polls": 0,
+     "duplicate_frames": 0,
+     "dropped_source_frames": 735,
+     "source_frames_in_window": 1322,
+     "qpc_frequency": 10000000,
+     "present_to_ready_ms": {
+      "count": 589,
+      "p50": 40.0463,
+      "p95": 42.8451,
+      "p99": 44.9984,
+      "jitter_stdev": 1.4758236270105811
+     },
+     "present_to_tensor_ms": {
+      "count": 589,
+      "p50": 35.5026,
+      "p95": 38.0144,
+      "p99": 39.7528,
+      "jitter_stdev": 1.3324287099739487
+     },
+     "call_ms": {
+      "count": 589,
+      "p50": 13.234199999715202,
+      "p95": 16.242900004726835,
+      "p99": 17.396900002495386,
+      "jitter_stdev": 1.323515747039826
+     },
+     "stages": {
+      "capture_call_ms": {
+       "count": 589,
+       "p50": 0.21910000214120373,
+       "p95": 1.7559000043547712,
+       "p99": 2.0843000020249747,
+       "jitter_stdev": 0.4823284884719141
+      },
+      "transfer_submit_or_block_ms": {
+       "count": 589,
+       "p50": 0.08099999831756577,
+       "p95": 0.10859999747481197,
+       "p99": 0.16429999959655106,
+       "jitter_stdev": 0.01859985164882996
+      },
+      "fence_completion_wall_ms": {
+       "count": 589,
+       "p50": 3.5195999953430146,
+       "p95": 4.912600001262035,
+       "p99": 5.686299999069888,
+       "jitter_stdev": 0.5990455045712858
+      },
+      "marker_decode_ms": {
+       "count": 589,
+       "p50": 0.4410999972606078,
+       "p95": 0.7101000010152347,
+       "p99": 0.8347999973921105,
+       "jitter_stdev": 0.11860567904497941
+      },
+      "preprocess_completion_ms": {
+       "count": 589,
+       "p50": 3.7841000012122095,
+       "p95": 4.323000001022592,
+       "p99": 4.59219999902416,
+       "jitter_stdev": 0.25091419853362823
+      },
+      "gpu_preprocess_ms": {
+       "count": 589,
+       "p50": 3.7212159633636475,
+       "p95": 4.237311840057373,
+       "p99": 4.524032115936279,
+       "jitter_stdev": 0.24685491750879932
+      },
+      "inference_ms": {
+       "count": 589,
+       "p50": 4.3191000004298985,
+       "p95": 5.643399999826215,
+       "p99": 6.7735999982687645,
+       "jitter_stdev": 0.6619349561258726
+      }
+     },
+     "cpu_percent": 68.64437946747593,
+     "cpu_ms_per_unique_frame": 9.33786078098472,
+     "rss_mb": 1259.237376,
+     "rss_growth_mb": 9.383936,
+     "device_vram_used_mb": 1338.073088,
+     "returncode": 0,
+     "stdout_log": "build/section7/inference-final-pass2.logs/rapidshot-ai-psqtf_y3/06-rapidshot-xadapter-async.stdout.log",
+     "stderr_log": "build/section7/inference-final-pass2.logs/rapidshot-ai-psqtf_y3/06-rapidshot-xadapter-async.stderr.log"
+    },
+    {
+     "path": "rapidshot-xadapter-semaphore",
+     "category": "inference",
+     "model_input_overrides": {},
+     "cpu_nodes_allowed": false,
+     "h2d_bytes_per_frame": 0,
+     "frames": 634,
+     "unique_frames": 634,
+     "unique_fps": 79.20137035856055,
+     "elapsed_seconds": 8.00491200000397,
+     "requested_seconds": 8.0,
+     "no_frame_polls": 0,
+     "duplicate_frames": 0,
+     "dropped_source_frames": 689,
+     "source_frames_in_window": 1321,
+     "qpc_frequency": 10000000,
+     "present_to_ready_ms": {
+      "count": 634,
+      "p50": 39.0736,
+      "p95": 41.6853,
+      "p99": 43.9656,
+      "jitter_stdev": 1.508441412592928
+     },
+     "present_to_tensor_ms": {
+      "count": 634,
+      "p50": 34.5683,
+      "p95": 36.9184,
+      "p99": 38.3212,
+      "jitter_stdev": 1.278272395176061
+     },
+     "call_ms": {
+      "count": 634,
+      "p50": 12.403300002915785,
+      "p95": 14.680599997518584,
+      "p99": 16.12340000428958,
+      "jitter_stdev": 1.0837943805257149
+     },
+     "stages": {
+      "capture_call_ms": {
+       "count": 634,
+       "p50": 0.21500000002561137,
+       "p95": 0.6826000026194379,
+       "p99": 1.9971000001532957,
+       "jitter_stdev": 0.2854616661276888
+      },
+      "transfer_submit_or_block_ms": {
+       "count": 634,
+       "p50": 0.08289999823318794,
+       "p95": 0.11510000331327319,
+       "p99": 0.15020000137155876,
+       "jitter_stdev": 0.019342405011760686
+      },
+      "fence_completion_wall_ms": {
+       "count": 634,
+       "p50": 0.05489999603014439,
+       "p95": 0.10409999958937988,
+       "p99": 0.13419999595498666,
+       "jitter_stdev": 0.020642191888436683
+      },
+      "marker_decode_ms": {
+       "count": 634,
+       "p50": 0.46629999997094274,
+       "p95": 0.7362999967881478,
+       "p99": 0.8640000014565885,
+       "jitter_stdev": 0.1259394123102429
+      },
+      "preprocess_completion_ms": {
+       "count": 634,
+       "p50": 6.673299998510629,
+       "p95": 7.886699997470714,
+       "p99": 8.29840000369586,
+       "jitter_stdev": 0.4599999297084167
+      },
+      "gpu_preprocess_ms": {
+       "count": 634,
+       "p50": 3.252415895462036,
+       "p95": 3.3218560218811035,
+       "p99": 3.3712000846862793,
+       "jitter_stdev": 0.03376018355157366
+      },
+      "gpu_fence_wait_ms": {
+       "count": 634,
+       "p50": 3.476639986038208,
+       "p95": 4.625152111053467,
+       "p99": 5.050335884094238,
+       "jitter_stdev": 0.45626847366157514
+      },
+      "inference_ms": {
+       "count": 634,
+       "p50": 4.217200003040489,
+       "p95": 5.617999995592982,
+       "p99": 7.3957999993581325,
+       "jitter_stdev": 0.800119658607161
+      }
+     },
+     "cpu_percent": 94.27805077677628,
+     "cpu_ms_per_unique_frame": 11.90358832807571,
+     "rss_mb": 1259.278336,
+     "rss_growth_mb": 10.571776,
+     "device_vram_used_mb": 1338.073088,
+     "returncode": 0,
+     "stdout_log": "build/section7/inference-final-pass2.logs/rapidshot-ai-psqtf_y3/07-rapidshot-xadapter-semaphore.stdout.log",
+     "stderr_log": "build/section7/inference-final-pass2.logs/rapidshot-ai-psqtf_y3/07-rapidshot-xadapter-semaphore.stderr.log"
+    },
+    {
+     "path": "rapidshot-direct",
+     "category": "inference",
+     "model_input_overrides": {},
+     "cpu_nodes_allowed": false,
+     "error": "CrossAdapterRequired: no CUDA device owns the adapter this frame was captured on. On a hybrid laptop that is expected: capture runs on the integrated GPU and CUDA only sees the discrete one. The frame has to cross adapters first \u2014 see native.cross_adapter_transfer() and ROADMAP \u00a7 6.1.",
+     "unavailable": true,
+     "returncode": 1,
+     "stdout_log": "build/section7/inference-final-pass2.logs/rapidshot-ai-psqtf_y3/08-rapidshot-direct.stdout.log",
+     "stderr_log": "build/section7/inference-final-pass2.logs/rapidshot-ai-psqtf_y3/08-rapidshot-direct.stderr.log"
+    }
+   ],
+   "status": "measured",
+   "started_at": "2026-09-11T12:44:15.960838+00:00",
+   "logs": "build/section7/inference-final-pass2.logs/rapidshot-ai-psqtf_y3",
+   "python": "3.13.15 (tags/v3.13.15:4061bc4, Aug  5 2026, 13:05:39) [MSC v.1944 64 bit (AMD64)]",
+   "platform": "Windows-11-10.0.26200-SP0",
+   "contract": {
+    "shape": [
+     1,
+     3,
+     640,
+     640
+    ],
+    "dtype": "float16",
+    "resize": "rational-bilinear-round-half-up-rgb8"
+   },
+   "latency_origin": "QPC immediately before successful Present(1); submission age, not photon age",
+   "instrumentation": "marker decode and completion barriers included; VRAM is device-wide",
+   "workload": "motion",
+   "requested_source_fps": 165.0,
+   "versions": {
+    "anyio": "4.15.1",
+    "certifi": "2026.7.22",
+    "charset-normalizer": "3.5.1",
+    "cloudpickle": "3.1.2",
+    "colorama": "0.4.6",
+    "comtypes": "1.4.16",
+    "contourpy": "1.3.3",
+    "cuda-pathfinder": "1.8.1",
+    "cuda-toolkit": "13.2.2",
+    "cupy-cuda13x": "14.2.0",
+    "cycler": "0.12.1",
+    "dxcam": "0.3.0",
+    "filelock": "3.32.3",
+    "flatbuffers": "25.12.19",
+    "fonttools": "4.65.0",
+    "fsspec": "2026.7.0",
+    "h11": "0.16.0",
+    "httpcore": "1.0.9",
+    "httpx": "0.28.1",
+    "idna": "3.19",
+    "iniconfig": "2.3.0",
+    "Jinja2": "3.1.6",
+    "kiwisolver": "1.5.1",
+    "MarkupSafe": "3.0.3",
+    "matplotlib": "3.11.1",
+    "ml_dtypes": "0.6.0",
+    "mpmath": "1.3.0",
+    "mss": "10.2.0",
+    "networkx": "3.6.1",
+    "numpy": "2.5.3",
+    "nvidia-cublas": "13.4.1.3",
+    "nvidia-cuda-nvrtc": "13.2.86",
+    "nvidia-cuda-runtime": "13.2.86",
+    "nvidia-cudnn-cu13": "9.26.0.51",
+    "nvidia-cufft": "12.2.0.57",
+    "nvidia-curand": "10.4.2.66",
+    "nvidia-cusolver": "12.2.0.11",
+    "nvidia-cusparse": "12.7.10.12",
+    "nvidia-ml-py": "13.610.43",
+    "nvidia-nvjitlink": "13.4.52",
+    "onnx": "1.22.0",
+    "onnxruntime-gpu": "1.30.0",
+    "opencv-python": "5.0.0.93",
+    "packaging": "26.3",
+    "pillow": "12.3.0",
+    "pluggy": "1.6.0",
+    "polars": "1.44.2",
+    "polars-runtime-32": "1.44.2",
+    "protobuf": "7.36.1",
+    "psutil": "7.2.2",
+    "Pygments": "2.21.0",
+    "pyparsing": "3.3.2",
+    "pytest": "9.1.1",
+    "python-dateutil": "2.9.0.post0",
+    "PyYAML": "6.0.3",
+    "requests": "2.34.2",
+    "setuptools": "78.1.0",
+    "six": "1.17.0",
+    "sympy": "1.14.0",
+    "torch": "2.14.0+cpu",
+    "torchvision": "0.29.0+cpu",
+    "typing_extensions": "4.16.0",
+    "ultralytics": "8.4.146",
+    "ultralytics-platform": "0.1.34",
+    "ultralytics-thop": "2.1.6",
+    "urllib3": "2.7.0",
+    "winrt-runtime": "3.2.1",
+    "winrt-Windows.Foundation": "3.2.1",
+    "winrt-Windows.Foundation.Collections": "3.2.1",
+    "winrt-Windows.Graphics": "3.2.1",
+    "winrt-Windows.Graphics.Capture": "3.2.1",
+    "winrt-Windows.Graphics.Capture.Interop": "3.2.1",
+    "winrt-Windows.Graphics.DirectX": "3.2.1",
+    "winrt-Windows.Graphics.DirectX.Direct3D11": "3.2.1",
+    "winrt-Windows.Graphics.DirectX.Direct3D11.Interop": "3.2.1"
+   },
+   "display": {
+    "width": 2560,
+    "height": 1600,
+    "refresh_hz": 165
+   },
+   "model": {
+    "path": "build/section7/model/yolo11n.onnx",
+    "sha256": "ab5ca471dd01fc05f7b5dd80e62e5b15f8b4ca296a2b8d97de7a55f2df329c48",
+    "cpu_nodes_allowed": false
+   },
+   "health": "no new WHEA records",
+   "source": {
+    "fps_limit": 165.0,
+    "rate_samples": [
+     163.16093526043528,
+     137.8955303462097,
+     136.7269153320074,
+     137.77291035425097,
+     142.94753110870656,
+     165.15434022362896,
+     165.1802605696154,
+     165.08048097370153,
+     165.1860803728594,
+     165.1922550883831,
+     165.14238416708616,
+     165.06912007586598,
+     165.18648431209985,
+     165.18051610477593,
+     165.17819983108907,
+     165.17849657426785,
+     165.13919562843122,
+     165.0841941858943,
+     165.16135316147773,
+     165.22558508700826,
+     165.20849786594044,
+     165.1325882477781,
+     165.21080674333612,
+     165.20526554600266,
+     165.1821235214952,
+     165.6184647427721,
+     164.67161187160565,
+     165.12608848523402,
+     165.15059913494017,
+     165.2509172923652,
+     165.1814146056501,
+     164.06279725473573,
+     165.16593537910222,
+     165.19887548975726,
+     165.18514060349568,
+     165.19418426637685,
+     165.16169929134153,
+     165.18111785198673,
+     165.16019116468823,
+     165.16611669510087,
+     165.19752333477405
+    ],
+    "minimum_updates_per_second": 136.7269153320074,
+    "rate_observed": true
+   }
+  },
+  {
+   "schema_version": 3,
+   "category": "inference",
+   "results": [
+    {
+     "path": "mss",
+     "category": "inference",
+     "model_input_overrides": {},
+     "cpu_nodes_allowed": false,
+     "h2d_bytes_per_frame": 1228800,
+     "frames": 216,
+     "unique_frames": 216,
+     "unique_fps": 26.93072810788672,
+     "elapsed_seconds": 8.020577800001774,
+     "requested_seconds": 8.0,
+     "no_frame_polls": 0,
+     "duplicate_frames": 0,
+     "dropped_source_frames": 887,
+     "source_frames_in_window": 1102,
+     "qpc_frequency": 10000000,
+     "present_to_ready_ms": {
+      "count": 216,
+      "p50": 53.1897,
+      "p95": 64.1583,
+      "p99": 67.5676,
+      "jitter_stdev": 4.678306045410174
+     },
+     "present_to_tensor_ms": {
+      "count": 216,
+      "p50": 48.6535,
+      "p95": 55.7759,
+      "p99": 63.3622,
+      "jitter_stdev": 3.381692804733387
+     },
+     "call_ms": {
+      "count": 216,
+      "p50": 36.40889999951469,
+      "p95": 43.08360000140965,
+      "p99": 44.388900001649745,
+      "jitter_stdev": 3.447611938195303
+     },
+     "stages": {
+      "capture_call_ms": {
+       "count": 216,
+       "p50": 28.851700000814162,
+       "p95": 30.416799992963206,
+       "p99": 31.22109999821987,
+       "jitter_stdev": 1.877257891655823
+      },
+      "marker_decode_ms": {
+       "count": 216,
+       "p50": 0.11590000212891027,
+       "p95": 0.13860000035492703,
+       "p99": 0.1630000042496249,
+       "jitter_stdev": 0.016404344762046073
+      },
+      "preprocess_completion_ms": {
+       "count": 216,
+       "p50": 2.430200001981575,
+       "p95": 3.557399999408517,
+       "p99": 3.9885999940452166,
+       "jitter_stdev": 0.4816294405129753
+      },
+      "inference_ms": {
+       "count": 216,
+       "p50": 4.400999998324551,
+       "p95": 10.140699996554758,
+       "p99": 11.010000001988374,
+       "jitter_stdev": 2.2106599936887914
+      }
+     },
+     "cpu_percent": 54.54719234815018,
+     "cpu_ms_per_unique_frame": 20.25462962962963,
+     "rss_mb": 1092.354048,
+     "rss_growth_mb": 1.183744,
+     "device_vram_used_mb": 1245.184,
+     "returncode": 0,
+     "stdout_log": "build/section7/inference-final-pass3.logs/rapidshot-ai-8r_qsltl/00-mss.stdout.log",
+     "stderr_log": "build/section7/inference-final-pass3.logs/rapidshot-ai-8r_qsltl/00-mss.stderr.log"
+    },
+    {
+     "path": "dxcam",
+     "category": "inference",
+     "model_input_overrides": {},
+     "cpu_nodes_allowed": false,
+     "h2d_bytes_per_frame": 1228800,
+     "frames": 544,
+     "unique_frames": 544,
+     "unique_fps": 67.94084814980833,
+     "elapsed_seconds": 8.006965100001253,
+     "requested_seconds": 8.0,
+     "no_frame_polls": 4,
+     "duplicate_frames": 0,
+     "dropped_source_frames": 780,
+     "source_frames_in_window": 1321,
+     "qpc_frequency": 10000000,
+     "present_to_ready_ms": {
+      "count": 544,
+      "p50": 42.1775,
+      "p95": 46.0288,
+      "p99": 47.4077,
+      "jitter_stdev": 1.976915360929838
+     },
+     "present_to_tensor_ms": {
+      "count": 544,
+      "p50": 36.6158,
+      "p95": 39.9286,
+      "p99": 40.6269,
+      "jitter_stdev": 1.4744551768948455
+     },
+     "call_ms": {
+      "count": 544,
+      "p50": 14.490299996396061,
+      "p95": 17.74979999754578,
+      "p99": 19.21559999755118,
+      "jitter_stdev": 1.6866766127864727
+     },
+     "stages": {
+      "capture_call_ms": {
+       "count": 544,
+       "p50": 5.687899996701162,
+       "p95": 7.992099999682978,
+       "p99": 8.527000005415175,
+       "jitter_stdev": 0.9563051003541707
+      },
+      "marker_decode_ms": {
+       "count": 544,
+       "p50": 0.10730000212788582,
+       "p95": 0.1360000023851171,
+       "p99": 0.16450000111944973,
+       "jitter_stdev": 0.01812994662148429
+      },
+      "preprocess_completion_ms": {
+       "count": 544,
+       "p50": 2.429400003165938,
+       "p95": 2.833399994415231,
+       "p99": 3.2292000032612123,
+       "jitter_stdev": 0.21555849735098312
+      },
+      "inference_ms": {
+       "count": 544,
+       "p50": 5.449399999633897,
+       "p95": 7.987199998751748,
+       "p99": 8.631299999251496,
+       "jitter_stdev": 1.2432893195947177
+      }
+     },
+     "cpu_percent": 90.74130971295058,
+     "cpu_ms_per_unique_frame": 13.355928308823529,
+     "rss_mb": 1106.640896,
+     "rss_growth_mb": 2.433024,
+     "device_vram_used_mb": 1245.184,
+     "returncode": 0,
+     "stdout_log": "build/section7/inference-final-pass3.logs/rapidshot-ai-8r_qsltl/01-dxcam.stdout.log",
+     "stderr_log": "build/section7/inference-final-pass3.logs/rapidshot-ai-8r_qsltl/01-dxcam.stderr.log"
+    },
+    {
+     "path": "dxcam-wgc",
+     "category": "inference",
+     "model_input_overrides": {},
+     "cpu_nodes_allowed": false,
+     "h2d_bytes_per_frame": 1228800,
+     "frames": 531,
+     "unique_frames": 531,
+     "unique_fps": 66.36431036873415,
+     "elapsed_seconds": 8.00128859999677,
+     "requested_seconds": 8.0,
+     "no_frame_polls": 0,
+     "duplicate_frames": 0,
+     "dropped_source_frames": 790,
+     "source_frames_in_window": 1318,
+     "qpc_frequency": 10000000,
+     "present_to_ready_ms": {
+      "count": 531,
+      "p50": 45.1141,
+      "p95": 49.7999,
+      "p99": 54.1363,
+      "jitter_stdev": 2.7906951579213337
+     },
+     "present_to_tensor_ms": {
+      "count": 531,
+      "p50": 39.6691,
+      "p95": 43.2009,
+      "p99": 47.9258,
+      "jitter_stdev": 2.3966483921679704
+     },
+     "call_ms": {
+      "count": 531,
+      "p50": 14.953400001104455,
+      "p95": 17.257400002563372,
+      "p99": 18.47239999915473,
+      "jitter_stdev": 1.2770384757246802
+     },
+     "stages": {
+      "capture_call_ms": {
+       "count": 531,
+       "p50": 6.298100001004059,
+       "p95": 8.077800004684832,
+       "p99": 8.675700002640951,
+       "jitter_stdev": 0.7450129361192271
+      },
+      "marker_decode_ms": {
+       "count": 531,
+       "p50": 0.1089999932446517,
+       "p95": 0.14029999874765053,
+       "p99": 0.19949999841628596,
+       "jitter_stdev": 0.0193887900753291
+      },
+      "preprocess_completion_ms": {
+       "count": 531,
+       "p50": 2.403899998171255,
+       "p95": 2.8402000025380403,
+       "p99": 3.0372000037459657,
+       "jitter_stdev": 0.22598553988571918
+      },
+      "inference_ms": {
+       "count": 531,
+       "p50": 5.474400000821333,
+       "p95": 7.083100004820153,
+       "p99": 7.8544999996665865,
+       "jitter_stdev": 0.9264289604909721
+      }
+     },
+     "cpu_percent": 97.05467941755201,
+     "cpu_ms_per_unique_frame": 14.624529190207156,
+     "rss_mb": 1118.875648,
+     "rss_growth_mb": 3.997696,
+     "device_vram_used_mb": 1245.184,
+     "returncode": 0,
+     "stdout_log": "build/section7/inference-final-pass3.logs/rapidshot-ai-8r_qsltl/02-dxcam-wgc.stdout.log",
+     "stderr_log": "build/section7/inference-final-pass3.logs/rapidshot-ai-8r_qsltl/02-dxcam-wgc.stderr.log"
+    },
+    {
+     "path": "rapidshot-cpu",
+     "category": "inference",
+     "model_input_overrides": {},
+     "cpu_nodes_allowed": false,
+     "h2d_bytes_per_frame": 1228800,
+     "frames": 638,
+     "unique_frames": 638,
+     "unique_fps": 79.71786971265401,
+     "elapsed_seconds": 8.003224399995815,
+     "requested_seconds": 8.0,
+     "no_frame_polls": 0,
+     "duplicate_frames": 0,
+     "dropped_source_frames": 685,
+     "source_frames_in_window": 1321,
+     "qpc_frequency": 10000000,
+     "present_to_ready_ms": {
+      "count": 638,
+      "p50": 39.3376,
+      "p95": 43.3426,
+      "p99": 45.2283,
+      "jitter_stdev": 1.89206724826335
+     },
+     "present_to_tensor_ms": {
+      "count": 638,
+      "p50": 34.1635,
+      "p95": 37.6805,
+      "p99": 39.0876,
+      "jitter_stdev": 1.4686208307191562
+     },
+     "call_ms": {
+      "count": 638,
+      "p50": 12.411299998348113,
+      "p95": 15.033499999844935,
+      "p99": 16.637399996398017,
+      "jitter_stdev": 1.3016402221212828
+     },
+     "stages": {
+      "capture_call_ms": {
+       "count": 638,
+       "p50": 4.412300004332792,
+       "p95": 6.0068000020692125,
+       "p99": 6.688800000119954,
+       "jitter_stdev": 0.6845422906512829
+      },
+      "marker_decode_ms": {
+       "count": 638,
+       "p50": 0.1081000009435229,
+       "p95": 0.1464000015403144,
+       "p99": 0.2240999965579249,
+       "jitter_stdev": 0.024939828067222225
+      },
+      "preprocess_completion_ms": {
+       "count": 638,
+       "p50": 2.5062999993679114,
+       "p95": 2.854099999240134,
+       "p99": 3.1132000003708526,
+       "jitter_stdev": 0.22853483818695555
+      },
+      "inference_ms": {
+       "count": 638,
+       "p50": 4.938300000503659,
+       "p95": 7.369699997070711,
+       "p99": 7.861100006266497,
+       "jitter_stdev": 1.0216453908461496
+      }
+     },
+     "cpu_percent": 90.19802068780896,
+     "cpu_ms_per_unique_frame": 11.314655172413794,
+     "rss_mb": 1199.382528,
+     "rss_growth_mb": 5.619712,
+     "device_vram_used_mb": 1252.130816,
+     "returncode": 0,
+     "stdout_log": "build/section7/inference-final-pass3.logs/rapidshot-ai-8r_qsltl/03-rapidshot-cpu.stdout.log",
+     "stderr_log": "build/section7/inference-final-pass3.logs/rapidshot-ai-8r_qsltl/03-rapidshot-cpu.stderr.log"
+    },
+    {
+     "path": "rapidshot-cupy",
+     "category": "inference",
+     "model_input_overrides": {},
+     "cpu_nodes_allowed": false,
+     "h2d_bytes_per_frame": 16384000,
+     "frames": 655,
+     "unique_frames": 655,
+     "unique_fps": 81.82033583366801,
+     "elapsed_seconds": 8.005344799996237,
+     "requested_seconds": 8.0,
+     "no_frame_polls": 0,
+     "duplicate_frames": 0,
+     "dropped_source_frames": 669,
+     "source_frames_in_window": 1321,
+     "qpc_frequency": 10000000,
+     "present_to_ready_ms": {
+      "count": 655,
+      "p50": 38.4688,
+      "p95": 41.4534,
+      "p99": 44.756,
+      "jitter_stdev": 1.5151798151693503
+     },
+     "present_to_tensor_ms": {
+      "count": 655,
+      "p50": 34.1434,
+      "p95": 36.5189,
+      "p99": 39.6136,
+      "jitter_stdev": 1.2803518068477842
+     },
+     "call_ms": {
+      "count": 655,
+      "p50": 12.082000001100823,
+      "p95": 14.137699996354058,
+      "p99": 15.750300000945572,
+      "jitter_stdev": 1.1251428642498296
+     },
+     "stages": {
+      "capture_call_ms": {
+       "count": 655,
+       "p50": 5.489200004376471,
+       "p95": 6.939599996258039,
+       "p99": 7.426199998008087,
+       "jitter_stdev": 0.7112187452704322
+      },
+      "marker_decode_ms": {
+       "count": 655,
+       "p50": 0.35909999860450625,
+       "p95": 0.5787999980384484,
+       "p99": 0.7113000028766692,
+       "jitter_stdev": 0.09851592654948897
+      },
+      "preprocess_completion_ms": {
+       "count": 655,
+       "p50": 1.5943000034894794,
+       "p95": 2.341100000194274,
+       "p99": 2.5753000008990057,
+       "jitter_stdev": 0.2956365507863617
+      },
+      "gpu_preprocess_ms": {
+       "count": 655,
+       "p50": 1.5429120063781738,
+       "p95": 2.287584066390991,
+       "p99": 2.527456045150757,
+       "jitter_stdev": 0.2949337414687953
+      },
+      "inference_ms": {
+       "count": 655,
+       "p50": 4.167400002188515,
+       "p95": 5.534099997021258,
+       "p99": 7.3275000031571835,
+       "jitter_stdev": 0.6787102383248774
+      }
+     },
+     "cpu_percent": 75.1451080533449,
+     "cpu_ms_per_unique_frame": 9.18416030534351,
+     "rss_mb": 1133.928448,
+     "rss_growth_mb": 6.877184,
+     "device_vram_used_mb": 1396.834304,
+     "returncode": 0,
+     "stdout_log": "build/section7/inference-final-pass3.logs/rapidshot-ai-8r_qsltl/04-rapidshot-cupy.stdout.log",
+     "stderr_log": "build/section7/inference-final-pass3.logs/rapidshot-ai-8r_qsltl/04-rapidshot-cupy.stderr.log"
+    },
+    {
+     "path": "rapidshot-xadapter",
+     "category": "inference",
+     "model_input_overrides": {},
+     "cpu_nodes_allowed": false,
+     "h2d_bytes_per_frame": 0,
+     "frames": 602,
+     "unique_frames": 602,
+     "unique_fps": 75.21221620304513,
+     "elapsed_seconds": 8.00401889999921,
+     "requested_seconds": 8.0,
+     "no_frame_polls": 0,
+     "duplicate_frames": 0,
+     "dropped_source_frames": 721,
+     "source_frames_in_window": 1321,
+     "qpc_frequency": 10000000,
+     "present_to_ready_ms": {
+      "count": 602,
+      "p50": 39.5638,
+      "p95": 42.4003,
+      "p99": 44.9727,
+      "jitter_stdev": 1.5205166327680188
+     },
+     "present_to_tensor_ms": {
+      "count": 602,
+      "p50": 35.2678,
+      "p95": 37.7156,
+      "p99": 39.6679,
+      "jitter_stdev": 1.2692053654718798
+     },
+     "call_ms": {
+      "count": 602,
+      "p50": 12.85039999493165,
+      "p95": 16.126700000313576,
+      "p99": 16.926099997363053,
+      "jitter_stdev": 1.3609072807440037
+     },
+     "stages": {
+      "capture_call_ms": {
+       "count": 602,
+       "p50": 0.21720000222558156,
+       "p95": 1.7834999962360598,
+       "p99": 2.2022000048309565,
+       "jitter_stdev": 0.4895934088992345
+      },
+      "transfer_submit_or_block_ms": {
+       "count": 602,
+       "p50": 3.622900003392715,
+       "p95": 5.080099996121135,
+       "p99": 5.390099999203812,
+       "jitter_stdev": 0.5779662222742771
+      },
+      "marker_decode_ms": {
+       "count": 602,
+       "p50": 0.425300000642892,
+       "p95": 0.7123999967006966,
+       "p99": 0.8392000017920509,
+       "jitter_stdev": 0.1261521995561095
+      },
+      "preprocess_completion_ms": {
+       "count": 602,
+       "p50": 3.672200000437442,
+       "p95": 4.222100003971718,
+       "p99": 4.633899996406399,
+       "jitter_stdev": 0.2624166928669951
+      },
+      "gpu_preprocess_ms": {
+       "count": 602,
+       "p50": 3.6187520027160645,
+       "p95": 4.139103889465332,
+       "p99": 4.581151962280273,
+       "jitter_stdev": 0.25384410053677464
+      },
+      "inference_ms": {
+       "count": 602,
+       "p50": 4.182099997706246,
+       "p95": 5.460999993374571,
+       "p99": 7.701700000325218,
+       "jitter_stdev": 0.7640198660267533
+      }
+     },
+     "cpu_percent": 68.32505105654536,
+     "cpu_ms_per_unique_frame": 9.084302325581396,
+     "rss_mb": 1256.996864,
+     "rss_growth_mb": 7.757824,
+     "device_vram_used_mb": 1338.073088,
+     "returncode": 0,
+     "stdout_log": "build/section7/inference-final-pass3.logs/rapidshot-ai-8r_qsltl/05-rapidshot-xadapter.stdout.log",
+     "stderr_log": "build/section7/inference-final-pass3.logs/rapidshot-ai-8r_qsltl/05-rapidshot-xadapter.stderr.log"
+    },
+    {
+     "path": "rapidshot-xadapter-async",
+     "category": "inference",
+     "model_input_overrides": {},
+     "cpu_nodes_allowed": false,
+     "h2d_bytes_per_frame": 0,
+     "frames": 610,
+     "unique_frames": 610,
+     "unique_fps": 76.16311882631805,
+     "elapsed_seconds": 8.009125799995672,
+     "requested_seconds": 8.0,
+     "no_frame_polls": 0,
+     "duplicate_frames": 0,
+     "dropped_source_frames": 712,
+     "source_frames_in_window": 1319,
+     "qpc_frequency": 10000000,
+     "present_to_ready_ms": {
+      "count": 610,
+      "p50": 39.6312,
+      "p95": 42.1915,
+      "p99": 44.7349,
+      "jitter_stdev": 1.4760812149552904
+     },
+     "present_to_tensor_ms": {
+      "count": 610,
+      "p50": 35.2481,
+      "p95": 37.7345,
+      "p99": 40.6104,
+      "jitter_stdev": 1.4061964364273252
+     },
+     "call_ms": {
+      "count": 610,
+      "p50": 12.84509999823058,
+      "p95": 15.403400000650436,
+      "p99": 16.395500002545305,
+      "jitter_stdev": 1.108044844894579
+     },
+     "stages": {
+      "capture_call_ms": {
+       "count": 610,
+       "p50": 0.22360000002663583,
+       "p95": 1.589899999089539,
+       "p99": 2.151599997887388,
+       "jitter_stdev": 0.4415652674688999
+      },
+      "transfer_submit_or_block_ms": {
+       "count": 610,
+       "p50": 0.07990000449353829,
+       "p95": 0.11200000153621659,
+       "p99": 0.1773000039975159,
+       "jitter_stdev": 0.021218338867106508
+      },
+      "fence_completion_wall_ms": {
+       "count": 610,
+       "p50": 3.4617999990587123,
+       "p95": 4.796900000656024,
+       "p99": 5.22560000536032,
+       "jitter_stdev": 0.5436494762416436
+      },
+      "marker_decode_ms": {
+       "count": 610,
+       "p50": 0.4144000049564056,
+       "p95": 0.7053000008454546,
+       "p99": 0.9385000012116507,
+       "jitter_stdev": 0.13870594494318036
+      },
+      "preprocess_completion_ms": {
+       "count": 610,
+       "p50": 3.685899995616637,
+       "p95": 4.220299997541588,
+       "p99": 4.5076999958837405,
+       "jitter_stdev": 0.19793391897148205
+      },
+      "gpu_preprocess_ms": {
+       "count": 610,
+       "p50": 3.632159948348999,
+       "p95": 4.155392169952393,
+       "p99": 4.428800106048584,
+       "jitter_stdev": 0.19061153591183658
+      },
+      "inference_ms": {
+       "count": 610,
+       "p50": 4.208300000755116,
+       "p95": 5.3336999990278855,
+       "p99": 5.863400001544505,
+       "jitter_stdev": 0.5292769338353829
+      }
+     },
+     "cpu_percent": 69.45202433957282,
+     "cpu_ms_per_unique_frame": 9.118852459016393,
+     "rss_mb": 1258.72128,
+     "rss_growth_mb": 9.6256,
+     "device_vram_used_mb": 1338.073088,
+     "returncode": 0,
+     "stdout_log": "build/section7/inference-final-pass3.logs/rapidshot-ai-8r_qsltl/06-rapidshot-xadapter-async.stdout.log",
+     "stderr_log": "build/section7/inference-final-pass3.logs/rapidshot-ai-8r_qsltl/06-rapidshot-xadapter-async.stderr.log"
+    },
+    {
+     "path": "rapidshot-xadapter-semaphore",
+     "category": "inference",
+     "model_input_overrides": {},
+     "cpu_nodes_allowed": false,
+     "h2d_bytes_per_frame": 0,
+     "frames": 648,
+     "unique_frames": 648,
+     "unique_fps": 80.97302282526007,
+     "elapsed_seconds": 8.002665300002263,
+     "requested_seconds": 8.0,
+     "no_frame_polls": 0,
+     "duplicate_frames": 0,
+     "dropped_source_frames": 675,
+     "source_frames_in_window": 1321,
+     "qpc_frequency": 10000000,
+     "present_to_ready_ms": {
+      "count": 648,
+      "p50": 38.3165,
+      "p95": 40.6287,
+      "p99": 42.6768,
+      "jitter_stdev": 1.3894482720196284
+     },
+     "present_to_tensor_ms": {
+      "count": 648,
+      "p50": 33.9376,
+      "p95": 36.3871,
+      "p99": 38.5958,
+      "jitter_stdev": 1.2638108624876432
+     },
+     "call_ms": {
+      "count": 648,
+      "p50": 12.154600000940263,
+      "p95": 13.955800000985619,
+      "p99": 15.426599995407742,
+      "jitter_stdev": 0.8863729586922348
+     },
+     "stages": {
+      "capture_call_ms": {
+       "count": 648,
+       "p50": 0.2158999996026978,
+       "p95": 0.45569999929284677,
+       "p99": 2.0581000062520616,
+       "jitter_stdev": 0.2778180279920985
+      },
+      "transfer_submit_or_block_ms": {
+       "count": 648,
+       "p50": 0.08349999552592635,
+       "p95": 0.1154000055976212,
+       "p99": 0.156299996888265,
+       "jitter_stdev": 0.016855669903751234
+      },
+      "fence_completion_wall_ms": {
+       "count": 648,
+       "p50": 0.05400000372901559,
+       "p95": 0.0794000006862916,
+       "p99": 0.11610000365180895,
+       "jitter_stdev": 0.015005792616065262
+      },
+      "marker_decode_ms": {
+       "count": 648,
+       "p50": 0.45420000242302194,
+       "p95": 0.6298000007518567,
+       "p99": 0.7532000017818063,
+       "jitter_stdev": 0.083354006370235
+      },
+      "preprocess_completion_ms": {
+       "count": 648,
+       "p50": 6.682100000034552,
+       "p95": 7.653500004380476,
+       "p99": 8.513799999491312,
+       "jitter_stdev": 0.5102531758270682
+      },
+      "gpu_preprocess_ms": {
+       "count": 648,
+       "p50": 3.260607957839966,
+       "p95": 3.3259520530700684,
+       "p99": 3.4303998947143555,
+       "jitter_stdev": 0.03807644802682098
+      },
+      "gpu_fence_wait_ms": {
+       "count": 648,
+       "p50": 3.478656053543091,
+       "p95": 4.44924783706665,
+       "p99": 5.3000640869140625,
+       "jitter_stdev": 0.509621891184766
+      },
+      "inference_ms": {
+       "count": 648,
+       "p50": 4.084499996679369,
+       "p95": 5.378900001232978,
+       "p99": 5.79719999950612,
+       "jitter_stdev": 0.5574935296490714
+      }
+     },
+     "cpu_percent": 97.62372543554696,
+     "cpu_ms_per_unique_frame": 12.056327160493828,
+     "rss_mb": 1260.724224,
+     "rss_growth_mb": 10.8544,
+     "device_vram_used_mb": 1338.073088,
+     "returncode": 0,
+     "stdout_log": "build/section7/inference-final-pass3.logs/rapidshot-ai-8r_qsltl/07-rapidshot-xadapter-semaphore.stdout.log",
+     "stderr_log": "build/section7/inference-final-pass3.logs/rapidshot-ai-8r_qsltl/07-rapidshot-xadapter-semaphore.stderr.log"
+    },
+    {
+     "path": "rapidshot-direct",
+     "category": "inference",
+     "model_input_overrides": {},
+     "cpu_nodes_allowed": false,
+     "error": "CrossAdapterRequired: no CUDA device owns the adapter this frame was captured on. On a hybrid laptop that is expected: capture runs on the integrated GPU and CUDA only sees the discrete one. The frame has to cross adapters first \u2014 see native.cross_adapter_transfer() and ROADMAP \u00a7 6.1.",
+     "unavailable": true,
+     "returncode": 1,
+     "stdout_log": "build/section7/inference-final-pass3.logs/rapidshot-ai-8r_qsltl/08-rapidshot-direct.stdout.log",
+     "stderr_log": "build/section7/inference-final-pass3.logs/rapidshot-ai-8r_qsltl/08-rapidshot-direct.stderr.log"
+    }
+   ],
+   "status": "measured",
+   "started_at": "2026-09-11T12:45:41.558529+00:00",
+   "logs": "build/section7/inference-final-pass3.logs/rapidshot-ai-8r_qsltl",
+   "python": "3.13.15 (tags/v3.13.15:4061bc4, Aug  5 2026, 13:05:39) [MSC v.1944 64 bit (AMD64)]",
+   "platform": "Windows-11-10.0.26200-SP0",
+   "contract": {
+    "shape": [
+     1,
+     3,
+     640,
+     640
+    ],
+    "dtype": "float16",
+    "resize": "rational-bilinear-round-half-up-rgb8"
+   },
+   "latency_origin": "QPC immediately before successful Present(1); submission age, not photon age",
+   "instrumentation": "marker decode and completion barriers included; VRAM is device-wide",
+   "workload": "motion",
+   "requested_source_fps": 165.0,
+   "versions": {
+    "anyio": "4.15.1",
+    "certifi": "2026.7.22",
+    "charset-normalizer": "3.5.1",
+    "cloudpickle": "3.1.2",
+    "colorama": "0.4.6",
+    "comtypes": "1.4.16",
+    "contourpy": "1.3.3",
+    "cuda-pathfinder": "1.8.1",
+    "cuda-toolkit": "13.2.2",
+    "cupy-cuda13x": "14.2.0",
+    "cycler": "0.12.1",
+    "dxcam": "0.3.0",
+    "filelock": "3.32.3",
+    "flatbuffers": "25.12.19",
+    "fonttools": "4.65.0",
+    "fsspec": "2026.7.0",
+    "h11": "0.16.0",
+    "httpcore": "1.0.9",
+    "httpx": "0.28.1",
+    "idna": "3.19",
+    "iniconfig": "2.3.0",
+    "Jinja2": "3.1.6",
+    "kiwisolver": "1.5.1",
+    "MarkupSafe": "3.0.3",
+    "matplotlib": "3.11.1",
+    "ml_dtypes": "0.6.0",
+    "mpmath": "1.3.0",
+    "mss": "10.2.0",
+    "networkx": "3.6.1",
+    "numpy": "2.5.3",
+    "nvidia-cublas": "13.4.1.3",
+    "nvidia-cuda-nvrtc": "13.2.86",
+    "nvidia-cuda-runtime": "13.2.86",
+    "nvidia-cudnn-cu13": "9.26.0.51",
+    "nvidia-cufft": "12.2.0.57",
+    "nvidia-curand": "10.4.2.66",
+    "nvidia-cusolver": "12.2.0.11",
+    "nvidia-cusparse": "12.7.10.12",
+    "nvidia-ml-py": "13.610.43",
+    "nvidia-nvjitlink": "13.4.52",
+    "onnx": "1.22.0",
+    "onnxruntime-gpu": "1.30.0",
+    "opencv-python": "5.0.0.93",
+    "packaging": "26.3",
+    "pillow": "12.3.0",
+    "pluggy": "1.6.0",
+    "polars": "1.44.2",
+    "polars-runtime-32": "1.44.2",
+    "protobuf": "7.36.1",
+    "psutil": "7.2.2",
+    "Pygments": "2.21.0",
+    "pyparsing": "3.3.2",
+    "pytest": "9.1.1",
+    "python-dateutil": "2.9.0.post0",
+    "PyYAML": "6.0.3",
+    "requests": "2.34.2",
+    "setuptools": "78.1.0",
+    "six": "1.17.0",
+    "sympy": "1.14.0",
+    "torch": "2.14.0+cpu",
+    "torchvision": "0.29.0+cpu",
+    "typing_extensions": "4.16.0",
+    "ultralytics": "8.4.146",
+    "ultralytics-platform": "0.1.34",
+    "ultralytics-thop": "2.1.6",
+    "urllib3": "2.7.0",
+    "winrt-runtime": "3.2.1",
+    "winrt-Windows.Foundation": "3.2.1",
+    "winrt-Windows.Foundation.Collections": "3.2.1",
+    "winrt-Windows.Graphics": "3.2.1",
+    "winrt-Windows.Graphics.Capture": "3.2.1",
+    "winrt-Windows.Graphics.Capture.Interop": "3.2.1",
+    "winrt-Windows.Graphics.DirectX": "3.2.1",
+    "winrt-Windows.Graphics.DirectX.Direct3D11": "3.2.1",
+    "winrt-Windows.Graphics.DirectX.Direct3D11.Interop": "3.2.1"
+   },
+   "display": {
+    "width": 2560,
+    "height": 1600,
+    "refresh_hz": 165
+   },
+   "model": {
+    "path": "build/section7/model/yolo11n.onnx",
+    "sha256": "ab5ca471dd01fc05f7b5dd80e62e5b15f8b4ca296a2b8d97de7a55f2df329c48",
+    "cpu_nodes_allowed": false
+   },
+   "health": "no new WHEA records",
+   "source": {
+    "fps_limit": 165.0,
+    "rate_samples": [
+     163.39418592519485,
+     136.722432952741,
+     136.24475906836133,
+     137.11116998501365,
+     140.44565455397034,
+     165.17214155761522,
+     165.18120852660408,
+     165.16577054672166,
+     165.19402762203845,
+     165.1676991061683,
+     165.1594082682692,
+     165.24418547646388,
+     165.16281186144428,
+     165.17939505317153,
+     164.69050536778758,
+     164.69183686944174,
+     165.14612488359944,
+     165.1810931225629,
+     165.180845828732,
+     164.9550791438024,
+     165.42550889334532,
+     165.1410988498696,
+     165.18096947555492,
+     165.17303996738457,
+     165.14998112999308,
+     165.22207169210313,
+     165.15096994012853,
+     165.17327075312323,
+     165.16035598593274,
+     165.19158730649875,
+     165.1701881682656,
+     164.59671336275423,
+     165.28007832777706,
+     164.5718580826052,
+     165.2218655115978,
+     164.54034010588023,
+     165.15148907018963,
+     165.15125010515297,
+     165.17365814492018,
+     165.1996010454589,
+     165.10939245480006,
+     165.23348664771157
+    ],
+    "minimum_updates_per_second": 136.24475906836133,
+    "rate_observed": true
+   }
+  }
+ ]
+}

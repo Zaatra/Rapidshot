@@ -31,9 +31,10 @@ capture path, the colour pipeline and the GPU interop have since been rewritten.
 **What this library is not.** It is not the fastest at `grab()` alone — see
 [Against other libraries](#against-other-libraries), where it loses the
 capture-only frame-rate column in most cells. It pulls ahead once the frame has
-somewhere to go: taking pixels to a model-ready CUDA tensor, it returned more
-unique frames, younger pixels and less CPU per frame than DXcam on the one
-machine measured so far ([Desktop to model](#desktop-to-model)). It uses
+somewhere to go: taking pixels to a model-ready CUDA tensor, and on through a
+trained YOLO11n, it returned more unique frames, younger pixels and less CPU per
+frame than DXcam on the one machine measured so far
+([Desktop to model](#desktop-to-model)). It uses
 noticeably more memory than DXcam, BetterCam or mss. If capture is the only
 thing your machine is doing and you want the lowest per-call latency, DXcam and
 BetterCam are good and you should use them.
@@ -957,22 +958,64 @@ Read it with these caveats:
   best case.
 - **Age starts at `Present()` submission**, so it includes the compositor's
   queue but not scan-out to the panel.
-- **This stops at the tensor.** Present-to-inference with a trained model has
-  not been measured; the plan and what is still open are in
-  [ROADMAP.md](ROADMAP.md) section 7.0.
+- **This stops at the tensor.** The next table carries the frame through a
+  trained model.
 
-Reproduce with the test source built first:
+#### Through a trained model
+
+The same clock, carried one step further: each path's tensor goes into
+**YOLO11n** — the official Ultralytics weights — on the RTX 4060 through ONNX
+Runtime's CUDA provider, and age is taken when the forward pass completes.
+
+[`benchmarks/section7-inference-machineB.json`](benchmarks/section7-inference-machineB.json),
+recorded 2026-09-11 on the same machine. **Medians across 3 passes, 8 s per
+path**; every path was verified to produce the correct tensor before it was
+timed.
+
+| | unique frames/s | pixel age p50 / p95 | CPU per frame |
+| --- | --- | --- | --- |
+| mss | 26.8 | 53.7 / 64.0 ms | 20.3 ms |
+| DXcam (DXGI) | 68.1 | 42.2 / 45.8 ms | 13.4 ms |
+| DXcam (WGC) | 65.8 | 45.4 / 49.8 ms | 14.6 ms |
+| RapidShot `grab()` | 80.3 | 39.3 / 43.3 ms | 12.7 ms |
+| RapidShot `grab()`, `nvidia_gpu=True` | **81.8** | 38.8 / 42.5 ms | **8.9 ms** |
+| RapidShot cross-adapter | 75.2 | 39.6 / 42.6 ms | 8.9 ms |
+| RapidShot cross-adapter, async | 76.2 | 39.6 / 42.8 ms | 9.1 ms |
+| RapidShot cross-adapter, GPU-side wait | 81.0 | **38.3 / 41.1 ms** | 11.9 ms |
+
+**Every RapidShot path beat DXcam (its default DXGI backend) on every pass** —
+more frames, younger pixels and less CPU per frame, with RapidShot's worst pass
+still ahead of DXcam's best.
+At the medians: up to **20% more frames**, pixels up to **3.9 ms (9%) younger**
+when the model finishes, and up to **a third less CPU** per frame.
+
+The lead is smaller than at the tensor (20% more frames here, 32% there), which
+is expected: this loop runs capture and inference back to back, so YOLO11n's
+4–5 ms per frame paces every path alike. RapidShot's own paths finish within
+1.3 ms of each other, inside their pass-to-pass spread — pick between them on
+frames and CPU rather than latency.
+
+Caveats specific to this table: it times the raw forward pass, with no NMS or
+postprocessing; the model file is an export of the official weights made with
+Ultralytics' own exporter, because the published `yolo11n.onnx` targets an ONNX
+opset that ONNX Runtime 1.30 cannot run entirely on the GPU; and it is one
+machine. [ROADMAP.md](ROADMAP.md) section 7.0 has the spreads, the model's
+provenance, and what is still unmeasured.
+
+Reproduce with the test source built and the model exported first:
 
 ```bash
 cargo build --release --bin latency_source --manifest-path native/Cargo.toml
 python benchmarks/section7.py --seconds 5 --out results.json
+python benchmarks/prepare_model.py
+python benchmarks/ai_pipeline.py --seconds 8 --model build/section7/model/yolo11n.onnx --model-sha256 <sha256 printed by prepare_model.py>
 ```
 
 ### What these tables do not show
 
 Dirty-rect metadata and GPU-resident frames from `grab_frame()` have no column,
 because the other libraries have no equivalent to measure them against. The
-single-dispatch NCHW tensor from `GpuPreprocessor12` is not in the table above
+single-dispatch NCHW tensor from `GpuPreprocessor12` is not in the tables above
 either: on this hybrid machine CUDA cannot import it, which is the case
 cross-adapter transfer exists for.
 
