@@ -49,6 +49,38 @@ returned a view of a pooled buffer that the next capture overwrote.
 
 ### Fixed
 
+- **Single-shot capture raced the capture thread.** `grab()` was meant to
+  redirect to `get_latest_frame()` while `start()` ran, but the flag it tested,
+  `continuous_mode`, was never set anywhere -- so it called `AcquireNextFrame`
+  on the same duplication as the capture thread. `shot()` and `grab_frame()`
+  had no check at all, and nothing serialised duplicator use between threads:
+  `_capture_lock` guarded only the frame deque. All three now raise
+  `RuntimeError` while continuous capture runs (a redirect would hand code
+  written for `grab()` a plain array with no `release()`), and every use of the
+  duplicator, staging surface and context -- grab, shot, `grab_frame`,
+  rebuild, `release()` -- goes through one re-entrant lock. Verified live: two
+  threads grabbing at once captured ~280 frames with no errors and no rebuilds.
+
+- **Rotated displays mapped the capture region outside the texture.**
+  `region_to_memory_region` reversed the 90° and 270° axes by the wrong
+  dimension of the native-orientation texture. On any non-square panel a
+  full-screen region became a box with a negative or out-of-range edge -- a
+  1080x1920 portrait desktop at 270° gave a left edge of -840 -- and
+  `CopySubresourceRegion` silently skipped the copy, so capture returned a
+  stale frame. The existing test used only interior regions, where the error
+  stays in bounds, and took its expected values from the same formula. New
+  tests check that a full-screen region maps to the whole texture, that every
+  valid region stays inside it, and that every texel round-trips through the
+  texture-to-desktop mapping Microsoft's Desktop Duplication sample uses. Not
+  yet verified on a physically rotated display.
+
+- **`create()` returned a camera built with different settings.** Cameras were
+  cached by device, output and `prefer_integrated` alone, so
+  `create(output_color="BGRA")` after an RGB camera on the same output got the
+  RGB camera back, as did a different region, `nvidia_gpu`, pool or timeout
+  setting. A repeat request with the same settings still shares the camera; a
+  different one now raises `ConfigurationError` naming what differs.
+
 - **`rapidshot.create()` could return a camera that had already been released**,
   which never captures again: every `grab()` returned `None`, with no error. The
   factory caches cameras weakly, so a released one stayed cached for as long as

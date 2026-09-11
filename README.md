@@ -140,6 +140,18 @@ for _ in range(1000):
 camera.stop()
 ```
 
+While `start()` is running, the capture thread owns the duplicator: `grab()`,
+`grab_frame()` and `shot()` raise `RuntimeError` rather than compete with it
+for frames. Read with `get_latest_frame()`, or `stop()` first.
+
+### One camera per output
+
+`rapidshot.create()` called again for the same output returns the camera that
+already exists — provided the settings match. If they differ (another
+`output_color`, `region`, `nvidia_gpu`, …) it raises `ConfigurationError`
+rather than hand back a camera configured for something else; `release()` the
+old one first.
+
 ### Recording to a video file
 
 ```python
@@ -269,6 +281,12 @@ The shim provides `create()`, `device_info()`, `output_info()`, `reset()` and
 `height`, `channel_size`, `region`, `is_capturing`, `latest_frame_time`.
 Keywords `create()` does not recognise are passed through to
 `rapidshot.create()`, so `nvidia_gpu=True` keeps working.
+
+Two differences from DXcam are deliberate. `grab()` raises while `start()` is
+running, where DXcam lets it race the capture thread ([Continuous
+capture](#continuous-capture)). And a second `create()` for the same output
+with different settings raises instead of returning the first camera
+([One camera per output](#one-camera-per-output)).
 
 **It costs one copy per frame, on purpose.** DXcam code never releases a frame,
 and RapidShot's buffers [must be released](#frame-buffers), so the shim copies
