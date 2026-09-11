@@ -13,7 +13,8 @@ import sys
 import time
 
 from ai_ingestion import RunLogs, MotionSource, MotionError, _child_options, spawn, save_results, stage
-from benchmark_contract import SHAPE, PresentLog, canonical_rgb, normalized_tensor, percentiles, qpc_clock, sha256
+from benchmark_contract import (PIPELINE_TOLERANCE_RGB8, SHAPE, PresentLog, canonical_rgb,
+                                percentiles, qpc_clock, sha256)
 from section7_adapters import Adapter, PATHS, CPU_PATHS
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -162,10 +163,23 @@ def worker(args):
             if sample.frame_id is None:
                 raise ValueError("source marker missing or obscured")
             if args.category != "agent":
-                reference = normalized_tensor(canonical_rgb(sample.reference, np), np)
+                # The measured loop runs `pipeline_rgb` -- cv2's fixed-point
+                # bilinear on CPU paths, the exact contract on GPU ones -- so a
+                # bit-identical check can only ever pass the GPU paths. Compare
+                # in RGB8, which FP16 represents exactly for k/255, against the
+                # documented tolerance, and record the deviation actually seen.
+                reference = canonical_rgb(sample.reference, np).astype(np.int16)
                 actual = cp.asnumpy(sample.tensor)
-                if actual.shape != SHAPE or actual.dtype != np.float16 or not np.array_equal(actual, reference):
-                    raise ValueError("tensor is not bit-identical to canonical FP16 reference")
+                if actual.shape != SHAPE or actual.dtype != np.float16:
+                    raise ValueError(f"tensor is {actual.shape} {actual.dtype}, expected {SHAPE} float16")
+                rgb8 = np.rint(actual[0].astype(np.float32) * 255).transpose(1, 2, 0).astype(np.int16)
+                deviation = np.abs(rgb8 - reference)
+                result.update(verify_max_rgb8_deviation=int(deviation.max()),
+                              verify_fraction_off_by_one=float((deviation > 0).mean()))
+                if deviation.max() > PIPELINE_TOLERANCE_RGB8:
+                    raise ValueError(f"tensor deviates from the canonical reference by "
+                                     f"{int(deviation.max())} RGB8 levels; tolerance is "
+                                     f"{PIPELINE_TOLERANCE_RGB8}")
             result.update(verified=True, frame_id=sample.frame_id)
         else:
             got, deadline = 0, time.perf_counter() + 30

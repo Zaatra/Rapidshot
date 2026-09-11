@@ -159,6 +159,25 @@ def test_inference_accepts_the_published_model_shape(shape, accepted):
     assert ai_pipeline.accepts_input_shape(shape) is accepted
 
 
+def test_fp16_tensor_recovers_every_rgb8_level_exactly():
+    # Verification compares in RGB8 by undoing the normalisation, which is only
+    # sound if FP16 keeps every k/255 distinguishable.
+    levels = np.arange(256, dtype=np.uint8).reshape(16, 16, 1).repeat(3, axis=2)
+    tensor = contract.normalized_tensor(levels, np)
+    recovered = np.rint(tensor[0].astype(np.float32) * 255).transpose(1, 2, 0)
+    assert np.array_equal(recovered.astype(np.uint8), levels)
+
+
+@pytest.mark.parametrize("height, width", [(1600, 2560), (1080, 1920), (37, 53)])
+def test_pipeline_resize_stays_within_the_verification_tolerance(height, width):
+    pytest.importorskip("cv2")
+    rng = np.random.default_rng(height * width)
+    bgra = rng.integers(0, 256, (height, width, 4), dtype=np.uint8)
+    deviation = np.abs(contract.pipeline_rgb(bgra, np).astype(np.int16)
+                       - contract.canonical_rgb(bgra, np).astype(np.int16))
+    assert deviation.max() <= contract.PIPELINE_TOLERANCE_RGB8
+
+
 def test_symbolic_axes_are_pinned_in_the_session_not_the_file():
     import ai_pipeline
     assert ai_pipeline.symbolic_overrides(["batch", 3, "height", "width"]) == {

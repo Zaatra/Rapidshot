@@ -7,6 +7,10 @@ from pathlib import Path
 
 OUT = 640
 SHAPE = (1, 3, OUT, OUT)
+#: Largest per-channel difference, in RGB8 levels, that `pipeline_rgb` may show
+#: against `canonical_rgb`: cv2's fixed-point bilinear rounds differently from
+#: the exact contract but computes the same interpolation.
+PIPELINE_TOLERANCE_RGB8 = 1
 MARKER_BITS = 48
 CELL = 8
 MARKER_HEIGHT = 16
