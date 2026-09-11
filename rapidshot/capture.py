@@ -918,7 +918,10 @@ class ScreenCapture:
         if region is None:
             region = self.region
         else:
-            self._validate_region(region)
+            # Validate without adopting it. _validate_region() also assigns
+            # self.region, so a one-off shot(region=...) used to change the
+            # region every later grab() and start() captured.
+            region = self._normalize_region(region)
 
         # Validate the destination up front, before any capture work. Deferring
         # this to the processor would make it fire only on the calls that
@@ -1479,7 +1482,7 @@ class ScreenCapture:
         region: Optional[Tuple[int, int, int, int]] = None,
         target_fps: int = 60,
         video_mode: bool = False,
-        delay: int = 0,
+        delay: float = 0,
     ):
         """
         Start capturing frames.
@@ -1488,8 +1491,22 @@ class ScreenCapture:
             region: Region to capture (left, top, right, bottom)
             target_fps: Target frame rate
             video_mode: Whether to operate in video mode
-            delay: Delay before starting capture (ms)
+            delay: Seconds to wait before starting, as in DXcam; fractions
+                are fine. Capture resources are rebuilt after the wait, since
+                the reason to delay is usually a display change that has to
+                settle first.
+
+        Raises:
+            ValueError: If delay is negative or not a number.
         """
+        # This said milliseconds while time.sleep() takes seconds, so
+        # delay=500 meant to be half a second waited over eight minutes.
+        # Seconds is what the code always did and what DXcam means, and the
+        # DXcam shim passes the value straight through, so the docstring was
+        # the part that was wrong.
+        if isinstance(delay, bool) or not isinstance(delay, (int, float)) or delay < 0:
+            raise ValueError(f"delay must be a non-negative number of seconds, got {delay!r}")
+
         if self.is_capturing:
             logger.debug("start() called while capture is already active; ignoring request.")
             return
