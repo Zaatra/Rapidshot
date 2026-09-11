@@ -12,8 +12,7 @@ SAME captured frame, outside timing. Cross-adapter input must be BGRA8.
 With --with-motion, startup stages, PIDs, errors and animation rates are retained
 in a unique log directory printed before startup. --motion-fps is an optional
 diagnostic cap (0 preserves uncapped operation); achieved animation rate must be
-considered when interpreting throughput. No frame cap guarantees BSOD prevention.
-The old provisional dataset used different resizing and must not be pooled with
+considered when interpreting throughput. The old provisional dataset used different resizing and must not be pooled with
 these results.
 """
 

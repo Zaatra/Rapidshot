@@ -4,7 +4,7 @@
     python benchmarks/motion_source.py 60 --display2 --fps 120
 
 The default remains uncapped for comparison with historical runs. --fps is an
-optional diagnostic limit, not a crash fix. Inspect the achieved rate: a source
+optional diagnostic limit. Inspect the achieved rate: a source
 slower than the display can become the benchmark's limiting factor.
 The AI harness uses --parent-controlled and keeps stdin open for the run's
 lifetime. Closing that pipe (including parent exit) stops the animation.
