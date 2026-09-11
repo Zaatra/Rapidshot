@@ -1,7 +1,7 @@
 """Present submission -> trained-model forward-pass completion.
 
 Requires --model and --model-sha256. No synthetic-model fallback and no claim
-that raw model outputs are postprocessed detections. See SECTION7.md.
+that raw model outputs are postprocessed detections. See ROADMAP.md section 7.0.
 """
 import os
 from pathlib import Path

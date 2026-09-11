@@ -227,6 +227,23 @@ returned a view of a pooled buffer that the next capture overwrote.
   `grab_view()` avoids it, the generation check that decides when to rebuild a
   cached preprocessor, and why the profiler will not report a mean.
 
+- **The README compares libraries past `grab()` for the first time.** A new
+  *Desktop to model* section carries the pixel-age table, and the introduction
+  no longer says only that RapidShot loses the frame-rate column -- true of
+  capture alone, and not of the workload the GPU paths exist for. It keeps the
+  caveats that bound it: one hybrid machine, submission age rather than photon
+  age, and nothing yet past the tensor.
+
+- **ROADMAP section 7.0 agreed with itself only in places.** Its open-items
+  list still named the DXcam WGC backend, the GPU-side semaphore path, the
+  per-stage breakdown and the QPC frequency as missing, when the pixel-age
+  recording contains all four; it called the agent benchmark unbuilt when
+  `section7.py --category agent` exists; and it gave the inference table's
+  stand-in model as the harness default after the fallback had been removed.
+  The list now matches the recordings, the call-duration caveats sit with the
+  tables they describe, and the source rate is given as the recorded median
+  (164.5/s) rather than a single figure.
+
 - **The README's CUDA loop could never run its own `None` check.** It sat
   inside `with camera.grab_frame() as frame:`, but `grab_frame()` returns
   `None` when nothing changed and `with None` raises `TypeError`, so the loop

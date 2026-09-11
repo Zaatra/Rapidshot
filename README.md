@@ -28,11 +28,15 @@ conversion has byte-exact AVX2 kernels behind an optional extension.
 It began as a merge of several DXcam forks and keeps a broadly familiar API. The
 capture path, the colour pipeline and the GPU interop have since been rewritten.
 
-**What this library is not.** It is not the fastest by frame rate — see
-[Against other libraries](#against-other-libraries), where it loses that column
-in most cells. It uses noticeably more memory than DXcam, BetterCam or mss. If
-capture is the only thing your machine is doing and you want the lowest
-per-call latency, DXcam and BetterCam are good and you should use them.
+**What this library is not.** It is not the fastest at `grab()` alone — see
+[Against other libraries](#against-other-libraries), where it loses the
+capture-only frame-rate column in most cells. It pulls ahead once the frame has
+somewhere to go: taking pixels to a model-ready CUDA tensor, it returned more
+unique frames, younger pixels and less CPU per frame than DXcam on the one
+machine measured so far ([Desktop to model](#desktop-to-model)). It uses
+noticeably more memory than DXcam, BetterCam or mss. If capture is the only
+thing your machine is doing and you want the lowest per-call latency, DXcam and
+BetterCam are good and you should use them.
 
 ---
 
@@ -773,9 +777,10 @@ minutes, zero errors, VRAM flat, no throughput decay.
 
 ## Against other libraries
 
-Two independent recordings on different machines. **They are not comparable to
-each other** — different panels, different resolutions, different RapidShot
-versions — and neither predicts your hardware.
+Two capture-only recordings on different machines, then one that follows the
+frame to a model-ready tensor. **They are not comparable to each other** —
+different panels, different resolutions, different RapidShot versions,
+different workloads — and none predicts your hardware.
 
 Reproduce with:
 
@@ -908,12 +913,68 @@ because they come from different hardware with no shared harness. A number
 measured on someone else's machine tells you nothing about yours, this page
 included.
 
-### What neither table shows
+### Desktop to model
 
-They measure `grab()`, the CPU round trip. The paths RapidShot is built around
-have no column because the other libraries have no equivalent: `grab_frame()`
-handing back a GPU-resident frame, the NCHW tensor produced by one dispatch,
-cross-adapter transfer, and dirty-rect metadata.
+The tables above stop at `grab()`. This one follows the frame to where most of
+RapidShot's work is aimed: a `(1, 3, 640, 640)` FP16 tensor on CUDA, ready for
+a model.
+
+It measures **pixel age**, not call duration. A test source encodes an
+incrementing frame ID into the image and records the time of every `Present()`;
+each path decodes the ID from what it captured, so every library is timed on
+one clock by how old its pixels were. RapidShot's own present timestamps would
+have given it an advantage no other library could match, so they are not used.
+
+[`benchmarks/section7-ingestion-machineB.json`](benchmarks/section7-ingestion-machineB.json),
+recorded 2026-09-10 — Machine B, Intel iGPU capture with an RTX 4060 doing the
+CUDA work, 2560×1600 at 165 Hz, 5 s per path:
+
+| | unique frames/s | pixel age p50 / p95 | CPU per frame |
+| --- | --- | --- | --- |
+| mss | 23.8 | 61.9 / 72.9 ms | 30.1 ms |
+| DXcam (DXGI) | 76.3 | 41.1 / 46.3 ms | 15.6 ms |
+| DXcam (WGC) | 68.0 | 46.5 / 55.9 ms | 17.8 ms |
+| RapidShot `grab()` | **100.4** | 37.6 / 42.8 ms | 12.0 ms |
+| RapidShot `grab()`, `nvidia_gpu=True` | 93.3 | 38.3 / 43.9 ms | 7.8 ms |
+| RapidShot cross-adapter | 81.0 | 35.0 / 39.0 ms | **6.1 ms** |
+| RapidShot cross-adapter, async | 79.5 | 35.3 / 40.3 ms | 6.4 ms |
+| RapidShot cross-adapter, GPU-side wait | 82.0 | **33.9 / 37.6 ms** | 9.5 ms |
+
+**Different paths win different columns.** `grab()` returns the most unique
+frames — 32% more than DXcam. The cross-adapter paths return the youngest pixels
+and cost the least CPU: 6.1 ms a frame, 2.5x cheaper than DXcam, with no
+host-to-device copy at all. No single configuration wins every column, so pick
+by what your pipeline is short of. [Hybrid GPU laptops](#hybrid-gpu-laptops)
+covers the cross-adapter path.
+
+Read it with these caveats:
+
+- **One machine, and a hybrid one.** The direct single-adapter GPU path could
+  not run here; on a machine whose NVIDIA GPU drives the display it is expected
+  to beat every row above, and it has not been measured.
+- **Every path drops source frames.** The source presented at a median 164.5/s
+  and no path keeps up, so these are throughput and latency under load — not a
+  best case.
+- **Age starts at `Present()` submission**, so it includes the compositor's
+  queue but not scan-out to the panel.
+- **This stops at the tensor.** Present-to-inference with a trained model has
+  not been measured; the plan and what is still open are in
+  [ROADMAP.md](ROADMAP.md) section 7.0.
+
+Reproduce with the test source built first:
+
+```bash
+cargo build --release --bin latency_source --manifest-path native/Cargo.toml
+python benchmarks/section7.py --seconds 5 --out results.json
+```
+
+### What these tables do not show
+
+Dirty-rect metadata and GPU-resident frames from `grab_frame()` have no column,
+because the other libraries have no equivalent to measure them against. The
+single-dispatch NCHW tensor from `GpuPreprocessor12` is not in the table above
+either: on this hybrid machine CUDA cannot import it, which is the case
+cross-adapter transfer exists for.
 
 ## System requirements
 
