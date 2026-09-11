@@ -276,9 +276,9 @@ each frame out and releases it at once. That copy is the price of not touching
 your code.
 
 `grab_view()` is the exception. DXcam's "valid until the next grab" contract is
-exactly a pooled buffer's lifetime, so it is genuinely zero-copy — and reading a
-retired view raises `BufferReleasedError` rather than quietly showing the next
-frame's pixels, which is stricter than DXcam.
+exactly a pooled buffer's lifetime, so it is genuinely zero-copy. The same
+caveat as DXcam applies: a view kept past the next grab is not protected, and
+silently shows whatever frame its buffer holds next. Copy what you need to keep.
 
 Migrate a call site at a time: `camera.rapidshot_camera` is the RapidShot camera
 underneath, and any attribute the shim does not define is forwarded to it. Once

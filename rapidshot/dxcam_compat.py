@@ -140,9 +140,10 @@ class DXCamera:
 
         DXcam's contract, and RapidShot's pooled buffer has the same lifetime,
         so no copy is needed. The previous view is released here, which is what
-        invalidates it -- reading a retired view raises `BufferReleasedError`
-        rather than returning another frame's pixels, which is stricter than
-        DXcam and the difference is worth having.
+        invalidates it. Like DXcam's, a retired view is a plain array over
+        memory the pool reuses: reading it does not raise, it shows whatever
+        frame that buffer holds next. Copy anything that must outlive the next
+        grab.
         """
         self._retire_view()
         frame = (self.rapidshot_camera.grab(region=region) if region is not None

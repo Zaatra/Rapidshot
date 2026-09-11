@@ -47,6 +47,17 @@ returned a view of a pooled buffer that the next capture overwrote.
 
 ### Fixed
 
+- **`rapidshot.create()` could return a camera that had already been released**,
+  which never captures again: every `grab()` returned `None`, with no error. The
+  factory caches cameras weakly, so a released one stayed cached for as long as
+  anything referenced it -- and in `camera.release(); camera = rapidshot.create()`
+  the old object is still bound when `create()` runs. `clean_up()` released
+  cameras without evicting them either. Any second camera in a process was
+  affected, including one made through the DXcam shim. Present in 2.4.0 and
+  earlier; found by a live smoke test of the shim. `ScreenCapture.released` now
+  says whether `release()` has run, and `create()` builds a new camera in place
+  of a released one.
+
 - **`np.array(frame, copy=True)` returned a view of a pooled buffer.**
   `PooledBuffer.__array__` accepted NumPy's `copy` argument and ignored it.
   NumPy 2 forwards `copy` and trusts the answer, so an explicit copy request
@@ -129,9 +140,9 @@ returned a view of a pooled buffer that the next capture overwrote.
   purpose: DXcam callers never release a frame, and a pooled buffer must be
   released, so the shim copies out and releases at once. `grab_view()` and
   `get_latest_frame_view()` are genuinely zero-copy, because DXcam's "valid
-  until the next grab" contract is exactly a pooled buffer's lifetime -- and
-  reading a retired view raises `BufferReleasedError` rather than showing
-  another frame's pixels, which is stricter than DXcam. `camera.rapidshot_camera`
+  until the next grab" contract is exactly a pooled buffer's lifetime. As with
+  DXcam, a view kept past the next grab silently shows whatever frame its
+  buffer holds next; measured against live capture, not assumed. `camera.rapidshot_camera`
   exposes the camera underneath, so a project can migrate one call site at a
   time.
 
