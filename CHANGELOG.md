@@ -49,6 +49,39 @@ returned a view of a pooled buffer that the next capture overwrote.
 
 ### Fixed
 
+- **`get_latest_frame()` handed back memory the pool could recycle.** It
+  returned the newest queued buffer's array without taking the frame out of the
+  queue, so the producer stayed free to evict that entry and release it, and
+  the next capture then wrote over the frame the caller was still reading --
+  silently, with nothing raising. `stop()` did the same to every queued buffer
+  at once. The frame is now copied out of the queue and is the caller's to
+  keep. `get_latest_frame_buffer()` is the zero-copy alternative: it hands over
+  the buffer itself, along with the duty to `release()` it, and the DXcam
+  shim's `get_latest_frame_view()` now uses it -- which also makes that view's
+  retirement real, where before it held a plain array whose absent `release()`
+  made `_retire_view()` a no-op.
+
+  This also unblocks continuous BGRA capture, which stalled after
+  `pool_size_frames` frames: the queue is bounded by `max_buffer_len` (64) but
+  backed by a pool of 4, and nothing returned a buffer until the queue reached
+  64, which it could never do. Verified live -- twelve reads at
+  `pool_size_frames=2` gave two distinct frames before and twelve after, and no
+  frame changed while capture kept running or after `stop()`. A consumer that
+  stops reading can still fill the queue and stall the producer; the queue
+  bound itself is not fixed.
+
+- **A rotated display corrupted frames on the CuPy path.** `cp.rot90` returns a
+  view, and `process()` passed it on two different wrong ways. At 180° the
+  shape is unchanged, so the pooled buffer was assigned from a view of itself
+  -- an overlapping device copy, which CuPy's elementwise kernel tears, unlike
+  NumPy's overlap-safe assignment. At 90° and 270° the view was returned with
+  the pooled flag cleared, so `_grab()` checked the buffer back in while the
+  caller still pointed into it. Rotation now copies, as the NumPy path does.
+  `.copy()` rather than `ascontiguousarray`, which hands a contiguous view
+  straight back -- true of a 1x1 region, where both flips are no-ops. Covered
+  by tests that run NumPy in CuPy's place, so they need no GPU; not yet
+  verified on a physically rotated display or a real device.
+
 - **`native.probe_onnxruntime()` no longer loads a DLL by bare name.** With no
   argument it passed `"onnxruntime.dll"` to `LoadLibraryW`, which walks the DLL
   search path. On Windows 11 that found the OS's own System32 copy (1.17), not
