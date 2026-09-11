@@ -964,11 +964,11 @@ are all justified by removing copies and conversions from the capture path — a
 the capture path is where 80% of the time is. That supports the ranking as
 written. The same table put the cross-adapter path's 2.3 ms deficit against the
 CPU path at ~20% of a frame budget, and that closing it with the GPU-side
-semaphore wait would be a real win. Measured as pixel age (below), the deficit
-does not appear: cross-adapter pixels are *younger* than the CPU path's (35.05
-against 37.55 ms p50), though it delivers fewer unique frames (81.0 against
-100.4 a second). The semaphore wait takes another 1.1 ms off, at 3.4 ms more CPU
-per frame.
+semaphore wait would be a real win. Measured as pixel age (below), the
+cross-adapter paths trail the CPU path by 1.1–2.4 ms p50 and return ~80 frames a
+second against its 140, and the semaphore wait does not close the gap — it is
+the slowest of the three cross-adapter variants there, at more CPU. On hybrid
+hardware the case for the cross-adapter path is CPU cost, not latency.
 
 **Caveats that travel with the call-duration tables above.** One machine, hybrid
 Intel→NVIDIA. On a single-adapter NVIDIA box the direct `GpuPreprocessor12 →
@@ -980,7 +980,7 @@ limiter; **a capped source made every path report 82–86 fps and looked like a
 tie**, which is the failure `benchmarks/motion_source.py` was written to warn
 about.
 
-#### Pixel age, measured against a shared clock — 2026-09-10 ✅
+#### Pixel age, measured against a shared clock — 2026-09-11 ✅
 
 The measurement § 7.0 actually asked for. `native/src/bin/latency_source.rs` is a
 D3D11 source that encodes an incrementing frame ID into the image and records
@@ -988,42 +988,62 @@ D3D11 source that encodes an incrementing frame ID into the image and records
 captured pixels, so latency is **how old the pixels were**, not how long the call
 took, and every library is measured against one clock.
 
-Machine B, 2560×1600 at 165 Hz, 5 s per path, pixels to a `(1, 3, 640, 640)`
-**FP16** tensor on CUDA — the contract § 7.0 specified, where the call-duration
-run above used FP32. The source presented at a median **164.5/s** across 26
-samples, minimum 136.2 — above the fastest path throughout, which is the
-condition the throughput column needs. `benchmarks/section7-ingestion-machineB.json`,
-which also records per-stage timings (capture call, GPU preprocess, fence wait)
-and the QPC frequency for every path.
+Machine B, 2560×1600 at 165 Hz, pixels to a `(1, 3, 640, 640)` **FP16** tensor on
+CUDA — the contract § 7.0 specified, where the call-duration run above used
+FP32. **Medians across 3 passes, 8 s per path**; the bracket is the max–min spread
+across passes. Every path passed verification first (CPU paths within 1 RGB8
+level of the exact reference, GPU paths bit-exact).
+`benchmarks/section7-ingestion-machineB.json` has every pass, with per-stage
+timings (capture call, GPU preprocess, fence wait) and the QPC frequency.
 
 Age is measured from the QPC taken immediately before `Present()`, so it is
 *submission* age: it includes the compositor's queue, not scan-out to the panel.
 
 | path | unique fps | age p50 | p95 | p99 | CPU ms/frame | source frames dropped |
 | --- | --- | --- | --- | --- | --- | --- |
-| mss | 23.8 | 61.87 | 72.91 | 78.11 | 30.07 | 561 |
-| dxcam (DXGI) | 76.3 | 41.08 | 46.30 | 48.13 | 15.58 | 444 |
-| dxcam (WGC) | 68.0 | 46.46 | 55.94 | 58.96 | 17.83 | 482 |
-| **rapidshot-cpu** | **100.4** | 37.55 | 42.85 | 45.07 | 12.02 | **323** |
-| rapidshot-cupy | 93.3 | 38.28 | 43.93 | 46.26 | 7.83 | 358 |
-| rapidshot-xadapter | 81.0 | 35.05 | 39.03 | 41.87 | **6.12** | 424 |
-| rapidshot-xadapter-async | 79.5 | 35.29 | 40.34 | 43.47 | 6.44 | 429 |
-| **rapidshot-xadapter-semaphore** | 82.0 | **33.95** | **37.63** | 41.15 | 9.53 | 417 |
+| mss | 33.0 [0.9%] | 57.64 [1.0%] | 60.72 | 64.63 | 15.27 | 788 of 1051 |
+| dxcam (DXGI) | 108.2 [2.5%] | 36.55 [1.1%] | 39.58 | 40.55 | 8.94 | 458 of 1322 |
+| dxcam (WGC) | 106.0 [2.1%] | 40.73 [0.6%] | 45.08 | 48.19 | 8.73 | 476 of 1321 |
+| **rapidshot-cpu** | **140.5** [4.2%] | **33.57** [1.6%] | **36.13** | **38.05** | 7.73 | **199** of 1321 |
+| **rapidshot-cupy** | 128.8 [5.1%] | 34.42 [0.5%] | 36.56 | 39.10 | **4.44** | 293 of 1320 |
+| rapidshot-xadapter | 80.2 [2.4%] | 35.13 [3.5%] | 40.20 | 42.56 | 4.92 | 681 of 1319 |
+| rapidshot-xadapter-async | 80.8 [1.8%] | 34.64 [3.3%] | 40.34 | 42.55 | 4.95 | 673 of 1318 |
+| rapidshot-xadapter-semaphore | 81.4 [0.1%] | 35.96 [0.2%] | 36.98 | 42.01 | 11.02 | 670 of 1320 |
 | rapidshot-direct | — | unavailable: `CrossAdapterRequired` on hybrid hardware |
 
-**RapidShot leads on every axis that separates the paths.** 100.4 unique frames
-per second against DXcam's 76.3 (+32%) and WGC's 68.0; the lowest pixel age
-(33.95 ms, the GPU-side semaphore path); and the lowest CPU per frame (6.12 ms
-cross-adapter, 2.5× cheaper than DXcam's 15.58). mss is not in the same class.
+**`grab()` and `nvidia_gpu=True` beat DXcam on every axis, on every pass.**
+`rapidshot-cpu` returns **30% more unique frames** than DXcam, pixels **3.0 ms
+(8%) younger**, at 14% less CPU per frame; `rapidshot-cupy` returns 19% more
+frames, 5.8% younger pixels, at **half DXcam's CPU**. Both hold the stricter
+test: each one's worst pass beats DXcam's best on frames, age and CPU, and the
+same is true against DXcam's WGC backend.
 
-**The GPU-side semaphore wait is the best latency path**, marginally ahead of
-blocking (33.95 vs 35.05 ms p50) — the first end-to-end confirmation of § 6.1's
-mechanism inside a capture benchmark rather than a synthetic consumer.
+**The cross-adapter paths are capped at ~80 frames a second** — about 25% fewer
+than DXcam — while still returning younger pixels on every pass (1.6–5.2%) and,
+blocking or async, costing ~45% less CPU. The cap is the same across all three
+variants and both recording sessions, which points at the copy itself: a full
+2560×1600 BGRA frame is 16 MB through the system-memory shared heap. The
+GPU-side semaphore wait buys no latency here (35.96 ms p50, against 35.13
+blocking) and costs 23% *more* CPU than DXcam; on this hardware it is the one
+configuration with nothing to recommend it.
 
-**Everything drops source frames**, 323–561 of roughly 820 presented, because the
-source runs at 165/s and no path sustains that. The drop column is therefore a
-real differentiator here rather than a rounding error, and RapidShot's CPU path
-drops the fewest.
+**This supersedes the single 5 s pass recorded 2026-09-10**, and the change is
+worth stating rather than smoothing over. That pass had RapidShot at 100.4
+unique frames against DXcam's 76.3, and the semaphore path as the lowest-latency
+path at 33.95 ms. Today every path that reads frames back to the CPU runs 38–56%
+faster in absolute terms (DXcam 76.3 → 108.2, RapidShot 100.4 → 140.5, WGC
+68.0 → 106.0) while the cross-adapter paths reproduced within
+2%, so the cross-adapter paths went from matching DXcam's frame rate to trailing
+it, and the semaphore path lost its latency lead. The cause of the session-to-
+session shift is not established. The ranking of `grab()` and `nvidia_gpu=True`
+above DXcam survived it; the claims that did not are the reason not to quote
+single passes.
+
+**The source was briefly the limit for the fastest path.** It presented at a
+median 165.1/s, but one 2-second window dipped to 128.7/s — below
+`rapidshot-cpu`'s average — so that path's frame rate is, if anything,
+understated. Everything drops source frames; RapidShot's CPU path drops the
+fewest (199 of ~1,320).
 
 #### Present to inference, with a trained YOLO11n — measured 2026-09-11 ✅
 
@@ -1060,7 +1080,7 @@ DXcam: `nvidia_gpu=True` at +20% frames and a third less CPU; the GPU-side
 semaphore wait at 9% younger pixels (10% at p95).
 
 **The gap narrows once a model is in the loop, as it should.** Tensor-only,
-RapidShot returned 32% more unique frames than DXcam; here it is 20%. The loop is
+RapidShot returned 30% more unique frames than DXcam; here it is 20%. The loop is
 capture → preprocess → infer, run synchronously, so YOLO11n's ~4–5 ms per frame
 paces every path and dilutes a capture-side advantage. A pipelined consumer
 would recover some of it; this benchmark does not measure one.

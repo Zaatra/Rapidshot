@@ -557,12 +557,14 @@ transfer.wait_shared_fence(value)          # CPU wait, or...
 handle = transfer.shared_fence_handle      # ...import into CUDA, wait GPU-side
 ```
 
-**Prefer the GPU-side wait.** Measured against a CuPy consumer, Intel iGPU to
-RTX 4060 at 2560×1600, the CPU-side async wait buys nothing — the calling
-thread was never the constraint. Importing `shared_fence_handle` with
-`cuImportExternalSemaphore` and waiting on it in a stream is worth **7–14%**.
-Quote the range rather than a point estimate: two runs disagreed by a factor of
-two on the margin.
+**Measure the GPU-side wait for your own consumer before adopting it.** Against
+a synthetic CuPy consumer, Intel iGPU to RTX 4060 at 2560×1600, the CPU-side
+async wait bought nothing — the calling thread was never the constraint — and
+importing `shared_fence_handle` with `cuImportExternalSemaphore` to wait on it
+in a stream was worth **7–14%** (two runs disagreed by a factor of two on the
+margin). In the end-to-end [pixel-age benchmark](#desktop-to-model) on the same
+laptop it did not pay: no younger pixels than the blocking transfer, and more
+CPU per frame. Which one you see depends on what else your stream is doing.
 
 `transfer()` remains the default and still holds the GIL for its copy.
 `wait_shared_fence()` releases it.
@@ -927,35 +929,50 @@ one clock by how old its pixels were. RapidShot's own present timestamps would
 have given it an advantage no other library could match, so they are not used.
 
 [`benchmarks/section7-ingestion-machineB.json`](benchmarks/section7-ingestion-machineB.json),
-recorded 2026-09-10 — Machine B, Intel iGPU capture with an RTX 4060 doing the
-CUDA work, 2560×1600 at 165 Hz, 5 s per path:
+recorded 2026-09-11 — Machine B, Intel iGPU capture with an RTX 4060 doing the
+CUDA work, 2560×1600 at 165 Hz. **Medians across 3 passes, 8 s per path**; every
+path was verified to produce the correct tensor before it was timed:
 
 | | unique frames/s | pixel age p50 / p95 | CPU per frame |
 | --- | --- | --- | --- |
-| mss | 23.8 | 61.9 / 72.9 ms | 30.1 ms |
-| DXcam (DXGI) | 76.3 | 41.1 / 46.3 ms | 15.6 ms |
-| DXcam (WGC) | 68.0 | 46.5 / 55.9 ms | 17.8 ms |
-| RapidShot `grab()` | **100.4** | 37.6 / 42.8 ms | 12.0 ms |
-| RapidShot `grab()`, `nvidia_gpu=True` | 93.3 | 38.3 / 43.9 ms | 7.8 ms |
-| RapidShot cross-adapter | 81.0 | 35.0 / 39.0 ms | **6.1 ms** |
-| RapidShot cross-adapter, async | 79.5 | 35.3 / 40.3 ms | 6.4 ms |
-| RapidShot cross-adapter, GPU-side wait | 82.0 | **33.9 / 37.6 ms** | 9.5 ms |
+| mss | 33.0 | 57.6 / 60.7 ms | 15.3 ms |
+| DXcam (DXGI) | 108.2 | 36.6 / 39.6 ms | 8.9 ms |
+| DXcam (WGC) | 106.0 | 40.7 / 45.1 ms | 8.7 ms |
+| RapidShot `grab()` | **140.5** | **33.6 / 36.1 ms** | 7.7 ms |
+| RapidShot `grab()`, `nvidia_gpu=True` | 128.8 | 34.4 / 36.6 ms | **4.4 ms** |
+| RapidShot cross-adapter | 80.2 | 35.1 / 40.2 ms | 4.9 ms |
+| RapidShot cross-adapter, async | 80.8 | 34.6 / 40.3 ms | 5.0 ms |
+| RapidShot cross-adapter, GPU-side wait | 81.4 | 36.0 / 37.0 ms | 11.0 ms |
 
-**Different paths win different columns.** `grab()` returns the most unique
-frames — 32% more than DXcam. The cross-adapter paths return the youngest pixels
-and cost the least CPU: 6.1 ms a frame, 2.5x cheaper than DXcam, with no
-host-to-device copy at all. No single configuration wins every column, so pick
-by what your pipeline is short of. [Hybrid GPU laptops](#hybrid-gpu-laptops)
-covers the cross-adapter path.
+**`grab()` and `nvidia_gpu=True` beat DXcam on every column, on every pass.**
+`grab()` returns **30% more unique frames** with pixels **8% younger**;
+`nvidia_gpu=True` does it at **half DXcam's CPU**. Each one's worst pass still
+beats DXcam's best.
+
+**The cross-adapter paths are a trade, not a win.** They are capped at about 80
+frames a second on this laptop — 25% fewer than DXcam — most likely by the 16 MB
+copy each frame makes through system memory, since all three variants hit the
+same ceiling. In return the blocking and async variants
+cost 45% less CPU than DXcam with no host-to-device copy, and still return
+younger pixels. The GPU-side-wait variant gains nothing here and costs more CPU
+than DXcam. [Hybrid GPU laptops](#hybrid-gpu-laptops) covers the cross-adapter
+path.
+
+This replaces a single 5-second pass from the day before, which had the
+cross-adapter paths matching DXcam's frame rate. They reproduced within 2%; the
+paths that read frames back to the CPU all ran 38–56% faster in the second
+session, for reasons not established. That is why every figure here is a median
+of three.
 
 Read it with these caveats:
 
 - **One machine, and a hybrid one.** The direct single-adapter GPU path could
   not run here; on a machine whose NVIDIA GPU drives the display it is expected
   to beat every row above, and it has not been measured.
-- **Every path drops source frames.** The source presented at a median 164.5/s
+- **Every path drops source frames.** The source presented at a median 165/s
   and no path keeps up, so these are throughput and latency under load — not a
-  best case.
+  best case. It dipped briefly below `grab()`'s rate, so that row's frame rate
+  is, if anything, understated.
 - **Age starts at `Present()` submission**, so it includes the compositor's
   queue but not scan-out to the panel.
 - **This stops at the tensor.** The next table carries the frame through a
@@ -989,7 +1006,7 @@ still ahead of DXcam's best.
 At the medians: up to **20% more frames**, pixels up to **3.9 ms (9%) younger**
 when the model finishes, and up to **a third less CPU** per frame.
 
-The lead is smaller than at the tensor (20% more frames here, 32% there), which
+The lead is smaller than at the tensor (20% more frames here, 30% there), which
 is expected: this loop runs capture and inference back to back, so YOLO11n's
 4–5 ms per frame paces every path alike. RapidShot's own paths finish within
 1.3 ms of each other, inside their pass-to-pass spread — pick between them on

@@ -33,10 +33,12 @@ rebuild.
 
 **The first measurement of what the GPU work is for.** Screen pixels to a
 model-ready CUDA tensor, every library timed against one clock by decoding a
-frame ID out of the captured pixels. On a hybrid 2560x1600 laptop RapidShot
-returns 32% more unique frames per second than DXcam, the youngest pixels, and
-the lowest CPU per frame -- having lost the capture-only frame-rate comparison
-to it. Carried on through a trained YOLO11n on the RTX 4060, the lead narrows
+frame ID out of the captured pixels. On a hybrid 2560x1600 laptop, medians of
+three passes: `grab()` returns 30% more unique frames than DXcam with pixels 8%
+younger, and `nvidia_gpu=True` does it at half DXcam's CPU -- having lost the
+capture-only frame-rate comparison to it. The cross-adapter path is a trade on
+that hardware: 45% less CPU, but capped near 80 frames a second, fewer than
+DXcam. Carried on through a trained YOLO11n on the RTX 4060, the lead narrows
 but holds: every RapidShot path beat DXcam on every one of three passes, with up
 to 20% more frames, pixels up to 9% younger when inference completes, and up to
 a third less CPU per frame. One machine; ROADMAP section 7.0 carries the
@@ -256,8 +258,8 @@ returned a view of a pooled buffer that the next capture overwrote.
   `section7.py --category agent` exists; and it gave the inference table's
   stand-in model as the harness default after the fallback had been removed.
   The list now matches the recordings, the call-duration caveats sit with the
-  tables they describe, and the source rate is given as the recorded median
-  (164.5/s) rather than a single figure.
+  tables they describe, and the source rate is given as a recorded median
+  rather than a single figure.
 
 - **The README's CUDA loop could never run its own `None` check.** It sat
   inside `with camera.grab_frame() as frame:`, but `grab_frame()` returns
@@ -368,12 +370,21 @@ returned a view of a pooled buffer that the next capture overwrote.
   could match. Run through `benchmarks/section7.py`; recorded in
   `benchmarks/section7-ingestion-machineB.json`.
 
-  Machine B, 2560x1600 at 165 Hz, pixels to a `(1, 3, 640, 640)` FP32 tensor on
-  CUDA: RapidShot returns **100.4** unique frames per second against DXcam's
-  76.3 on DXGI and 68.0 on WGC, the lowest pixel age (**33.95 ms** p50 through
-  the GPU-side semaphore wait, against DXcam's 41.08), and the lowest CPU per
-  frame (**6.12 ms** cross-adapter, against 15.58). Every path drops source
-  frames at 165 Hz; RapidShot's CPU path drops the fewest.
+  Machine B, 2560x1600 at 165 Hz, pixels to a `(1, 3, 640, 640)` FP16 tensor on
+  CUDA, medians across 3 passes of 8 s per path. `grab()` returns **140.5**
+  unique frames per second against DXcam's 108.2 (+30%) with pixels **3.0 ms
+  (8%) younger**, and `nvidia_gpu=True` returns 128.8 at **4.4 ms of CPU per
+  frame against 8.9**; both beat DXcam on frames, age and CPU on every pass.
+  The cross-adapter paths are capped near **80 frames a second**, 25% fewer
+  than DXcam, while costing 45% less CPU and still returning younger pixels;
+  the GPU-side semaphore variant gains no latency there and costs more CPU than
+  DXcam.
+
+  A single 5 s pass the day before had the cross-adapter paths level with
+  DXcam and the semaphore path as the lowest-latency one. The cross-adapter
+  paths reproduced within 2%; everything reading frames back to the CPU ran
+  38-56% faster in the second session, for reasons not established. The 3-pass
+  recording replaces it, and the claims that did not survive were withdrawn.
 
 - **Call duration from capture to tensor, and through inference**
   (`benchmarks/ai_ingestion.py`, `benchmarks/ai_pipeline.py`). Every path is
@@ -400,7 +411,7 @@ returned a view of a pooled buffer that the next capture overwrote.
   worst pass still beats DXcam's best. Against DXcam's WGC backend and mss the
   frame and age leads hold on every pass too; on CPU one pair's pass ranges
   overlap, and the medians still favour RapidShot. The lead is smaller than at
-  the tensor (20% more frames, against 32%) because the loop is synchronous and
+  the tensor (20% more frames, against 30%) because the loop is synchronous and
   the model's 4-5 ms paces every path. RapidShot's own paths finish within
   1.3 ms of each other, inside their spread.
 
