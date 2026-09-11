@@ -49,6 +49,60 @@ returned a view of a pooled buffer that the next capture overwrote.
 
 ### Fixed
 
+- **A failing timer wait looked like a normal tick.** `util/timer.py` declared
+  none of its Windows functions, so ctypes read `WaitForSingleObject`'s DWORD
+  return as a signed 32-bit int: `WAIT_FAILED` is `0xFFFFFFFF`, which comes
+  back as `-1`, so the capture thread's `res == WAIT_FAILED` check could never
+  be true. `CreateWaitableTimerExW` returns a pointer-sized HANDLE that the
+  same default would truncate. Both are now declared, on a privately opened
+  `kernel32` rather than `ctypes.windll`, whose per-DLL cache is shared with
+  every other library in the process -- `util/io.py` was setting `argtypes` on
+  that shared object on every call, and now declares its functions once on its
+  own handles. The dead `get_monitor_name_by_handle` is gone.
+
+- **`IDXGIOutputDuplication::GetDesc` was declared without its parameter**, so
+  calling it would have let DXGI write a 36-byte `DXGI_OUTDUPL_DESC` through
+  whatever the argument register happened to hold. The vtable slot was the
+  right size, so nothing else was affected, and nothing calls it yet -- which
+  is the only reason this never fired. `DXGI_OUTDUPL_DESC`, `DXGI_MODE_DESC`
+  and `DXGI_RATIONAL` are now declared and the call works: verified live,
+  returning 2560x1600 at 165 Hz for this display.
+
+- **`grab(region=...)` allocated a staging buffer per frame** whenever the
+  region's shape did not match the pool's. The allocation is cheap but filling
+  it is not: every page faults on first touch, measured at 0.15 ms for a
+  400x400 region and 1.9 ms at 2560x1600 -- 77-94% of the cost of writing the
+  buffer at all, the same effect `pool_output` exists to avoid. The buffer is
+  now reused across grabs, but **only for converting colour modes**, where it
+  is a pure intermediate. BGRA does no conversion, so that buffer *is* the
+  frame handed back, and reusing it would give successive callers the same
+  memory; BGRA keeps allocating.
+
+- **Library warnings went to stdout.** `processor/base.py` and
+  `memory_pool.py` used `print()` for stale-dependency warnings, backend
+  fallbacks and pool errors, which no application can silence or route. They
+  use the module logger now, and a test parses the package with `ast` to keep
+  `print()` out of it.
+
+- **`Output.__post_init__` claimed process-wide DPI awareness silently**, on
+  every `Output` constructed, discarding the result. RapidShot does need it --
+  a DPI-unaware process is fed virtualised desktop coordinates, which would
+  disagree with the size of the texture Desktop Duplication hands back -- but
+  it is a process-wide setting that Windows allows to be set once, and
+  claiming it is the host application's decision. It is now attempted once per
+  process, and says what happened: a host that has already set a different
+  awareness gets a warning naming the consequence instead of silently wrong
+  coordinates on a scaled display. A Python process is already per-monitor
+  aware from `python.exe`'s manifest, so this has always been a no-op there;
+  it matters for an embedded interpreter.
+
+- **`examples/verify_cross_adapter.py` described a check it no longer makes.**
+  Its docstring said the comparison was against the CPU capture path, and that
+  it took two CPU frames per attempt and compared only when they matched. It
+  actually compares the destination readback against a source-side readback
+  from the same command list, and uses a CPU capture only for a mean-colour
+  sanity check it prints rather than asserts. The docstring now says that.
+
 - **Every COM pointer was released twice.** `Device.release()`,
   `StageSurface.release()` and `Duplicator.release()` each called `.Release()`
   on a comtypes pointer and then dropped it -- but comtypes issues `Release`
