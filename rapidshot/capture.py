@@ -517,12 +517,23 @@ class ScreenCapture:
                 f"Rotation mismatch: capture reports {rotation_angle} but output is {output.rotation_angle}"
             )
 
+        # `region` is in desktop coordinates, which follow the rotation; the
+        # duplicated texture is in the panel's native orientation and is
+        # `surface_size` big. At 90/270 the two are transposed, so each formula
+        # must reverse an axis by that axis's own extent: at 90 the texture's
+        # rows run along the desktop's width (= surface_height), at 270 its
+        # columns run along the desktop's height (= surface_width).
+        #
+        # These used to subtract the other dimension. On any non-square panel
+        # a full-screen region then mapped outside the texture -- 1080x1920
+        # desktop at 270 gave left = -840 -- and CopySubresourceRegion silently
+        # skipped the copy, handing back a stale frame.
         surface_width, surface_height = output.surface_size
 
         if rotation_angle == 0:
             return (left, top, right, bottom)
         if rotation_angle == 90:
-            return (top, surface_width - right, bottom, surface_width - left)
+            return (top, surface_height - right, bottom, surface_height - left)
         if rotation_angle == 180:
             return (
                 surface_width - right,
@@ -532,9 +543,9 @@ class ScreenCapture:
             )
         if rotation_angle == 270:
             return (
-                surface_height - bottom,
+                surface_width - bottom,
                 left,
-                surface_height - top,
+                surface_width - top,
                 right,
             )
 
