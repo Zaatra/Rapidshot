@@ -5,17 +5,23 @@ session, and a synthetic texture cannot be used either — D3D11 refuses
 SHARED_NTHANDLE without SHARED_KEYEDMUTEX, and a keyed-mutex resource reads as
 zeros until acquired, so only a genuinely duplicated surface exercises the path.
 
-The check is against the CPU capture path, which is independent of every line of
-D3D12 involved in the transfer. "The copy was submitted without error" is not
-evidence; a transfer that silently delivers zeros, or a stale frame, or rows
-shifted by the pitch padding, would pass that and fail this.
+"The copy was submitted without error" is not evidence. A transfer that silently
+delivers zeros, or a stale frame, or rows shifted by the pitch padding, would
+pass that and fail this.
 
-Desktop Duplication only reports *changed* content, so two captures moments
-apart are not guaranteed identical. Rather than assume the screen is still, the
-script proves it per attempt: it takes two CPU frames, and only compares against
-the transfer when those two match. A blinking cursor alone is enough to spoil an
-attempt, so it retries; an exact match over megabytes cannot happen by accident,
-so the first success is conclusive.
+The check compares what arrived on the destination adapter against a readback
+of the source texture. Both are produced by *one* command list, so both see
+identical source content — submitting them separately does not work, because
+the duplicated surface is live and around 2000 bytes in one screen region
+changed between two copies a millisecond apart. That is what makes an exact
+comparison possible at all, and an exact match over megabytes cannot happen by
+accident. Five frames are checked; any mismatch fails immediately.
+
+That leaves one thing the comparison cannot tell you: both readbacks could
+agree on a plausible pattern that is not the desktop. So the mean BGRA of the
+transferred frame is printed next to the mean of an ordinary CPU capture, which
+shares no D3D12 code with the transfer. They are different frames taken moments
+apart, so this is a sanity check to read, not an assertion.
 
     python examples/verify_cross_adapter.py
 """
