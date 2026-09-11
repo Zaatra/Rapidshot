@@ -49,6 +49,40 @@ returned a view of a pooled buffer that the next capture overwrote.
 
 ### Fixed
 
+- **Every COM pointer was released twice.** `Device.release()`,
+  `StageSurface.release()` and `Duplicator.release()` each called `.Release()`
+  on a comtypes pointer and then dropped it -- but comtypes issues `Release`
+  itself when the Python object goes away, so one reference produced two
+  decrements. Measured on this machine against a real D3D11 device: an explicit
+  `Release()` followed by dropping the pointer took the refcount down by two,
+  dropping it alone by one, and `Device.release()` as a whole moved it by three
+  where two is correct. Over-releasing frees the object while other holders
+  still have valid pointers, so what happens next depends on who touches it
+  first -- which is why this survived. The duplicator had the same fault on the
+  intermediate `IDXGIResource` in `update_frame()`, where it corrupted the
+  desktop surface's refcount outright; that one was fixed in 2.4.0, this is the
+  rest of them. Dropping the reference is now the release. Verified live: 25
+  create/grab/release cycles left the process handle count flat.
+
+- **The factory could be built more than once.** `get_factory()` and the
+  `Singleton` metaclass both tested for an existing instance and then created
+  one, with nothing in between. Constructing `RapidshotFactory` enumerates DXGI
+  adapters and opens a D3D11 device per adapter, so the losing thread's devices
+  stayed open: with eight threads calling `create()` at once, eight factories
+  were built and seven discarded. Both are now double-checked under a lock, and
+  `reset()` holds it across the teardown so a concurrent `get_factory()` cannot
+  be handed the factory being reset.
+
+- **`Frame.release()` is now serialised.** Two threads could both pass the
+  released check, run every drain twice and hand the same DXGI frame back
+  twice. This is a real race in the language, but not one that could be
+  provoked here: 24,000 concurrent releases with the GIL switch interval at a
+  nanosecond produced no double release, because CPython's swap-and-take made
+  the hand-off effectively atomic. The lock makes it correct by construction
+  rather than by accident of the GIL -- which is what a free-threaded build
+  removes. It costs 0.68 us per construct-and-release, against the 7.6 ms CPU
+  path this type exists to avoid.
+
 - **`stop()` tidied up after a capture thread that was still running.** It
   waited ten seconds for the thread and then carried on regardless: closing the
   timer handle that thread closes again on its way out -- a second
