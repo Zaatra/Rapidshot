@@ -157,3 +157,12 @@ def test_dll_directory_handles_are_retained(tmp_path, monkeypatch):
 def test_inference_accepts_the_published_model_shape(shape, accepted):
     import ai_pipeline
     assert ai_pipeline.accepts_input_shape(shape) is accepted
+
+
+def test_symbolic_axes_are_pinned_in_the_session_not_the_file():
+    import ai_pipeline
+    assert ai_pipeline.symbolic_overrides(["batch", 3, "height", "width"]) == {
+        "batch": 1, "height": 640, "width": 640}
+    assert ai_pipeline.symbolic_overrides([1, 3, 640, 640]) == {}
+    # An unnamed axis cannot be overridden by name; it is left to ORT.
+    assert ai_pipeline.symbolic_overrides([None, 3, "h", "w"]) == {"h": 640, "w": 640}

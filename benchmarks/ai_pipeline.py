@@ -41,19 +41,61 @@ def accepts_input_shape(shape):
     return all(not isinstance(d, int) or d == want for d, want in zip(shape, INPUT_SHAPE))
 
 
+def symbolic_overrides(shape):
+    """Map each named symbolic input axis to the size this benchmark binds.
+
+    Given to ONNX Runtime as free-dimension overrides, so the *session* treats
+    the axes as fixed while the file stays byte-identical to the published one.
+    Without them ORT keeps the shape arithmetic for dynamic axes on the CPU,
+    and this harness refuses CPU fallback so no model can run partly on the CPU
+    and have that counted as GPU inference time.
+    """
+    return {d: want for d, want in zip(shape, INPUT_SHAPE) if isinstance(d, str) and d}
+
+
+def declared_input_shape(model):
+    """The first graph input's declared shape: ints, axis names, or None."""
+    import onnx
+    graph = onnx.load(str(model), load_external_data=False).graph
+    initializers = {i.name for i in graph.initializer}
+    inputs = [i for i in graph.input if i.name not in initializers]
+    if len(inputs) != 1:
+        return None
+    return [d.dim_param or (d.dim_value if d.HasField("dim_value") else None)
+            for d in inputs[0].type.tensor_type.shape.dim]
+
+
 class Inference:
-    def __init__(self, model, cp, np):
+    def __init__(self, model, cp, np, allow_cpu_nodes=False):
+        """ONNX Runtime on CUDA, bound to CuPy's stream.
+
+        By default every node must be placed on CUDA: session creation fails
+        otherwise, so no model can run partly on the CPU and have that counted
+        as GPU inference. ``allow_cpu_nodes`` relaxes that for a model ORT's
+        CUDA provider cannot fully place -- the published yolo11n.onnx is
+        opset 22, which has no CUDA MaxPool kernel in ORT 1.30 -- and callers
+        must record that they used it.
+        """
         enable_cuda_dlls()
         import onnxruntime as ort
         self.cp, self.np = cp, np
+        self.allow_cpu_nodes = bool(allow_cpu_nodes)
         options = ort.SessionOptions()
         options.log_severity_level = 2
-        options.add_session_config_entry("session.disable_cpu_ep_fallback", "1")
+        if not self.allow_cpu_nodes:
+            options.add_session_config_entry("session.disable_cpu_ep_fallback", "1")
+        self.overrides = symbolic_overrides(declared_input_shape(model) or [])
+        for name, size in self.overrides.items():
+            options.add_free_dimension_override_by_name(name, size)
         self.session = ort.InferenceSession(str(model), options, providers=[
             ("CUDAExecutionProvider", {"device_id": 0,
                                        "user_compute_stream": str(cp.cuda.get_current_stream().ptr)})])
-        if self.session.get_providers() != ["CUDAExecutionProvider"]:
-            raise RuntimeError(f"expected CUDA-only execution, got {self.session.get_providers()}")
+        # ORT always lists CPUExecutionProvider as registered, even when every
+        # node is on CUDA, so the provider list cannot prove placement -- the
+        # disabled fallback above is what does. This only rejects a session
+        # where CUDA failed to load at all.
+        if self.session.get_providers()[:1] != ["CUDAExecutionProvider"]:
+            raise RuntimeError(f"CUDA provider not loaded: {self.session.get_providers()}")
         inputs = self.session.get_inputs()
         if len(inputs) != 1 or not accepts_input_shape(inputs[0].shape):
             raise ValueError("model must have one input that accepts 1x3x640x640, "

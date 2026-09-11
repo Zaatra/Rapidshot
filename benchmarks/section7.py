@@ -115,7 +115,9 @@ def worker(args):
             if sha256(args.model) != args.model_sha256:
                 raise ValueError("model hash mismatch")
             stage("inference-starting")
-            infer = Inference(args.model, cp, np)
+            infer = Inference(args.model, cp, np, allow_cpu_nodes=args.allow_cpu_nodes)
+            result["model_input_overrides"] = infer.overrides
+            result["cpu_nodes_allowed"] = infer.allow_cpu_nodes
         stage("adapter-starting", path=args.worker)
         adapter = Adapter(args.worker, cp, np, verify=args.verify, agent=args.category == "agent")
 
@@ -279,6 +281,9 @@ def main(category="ingestion", argv=None):
     parser.add_argument("--height", type=int)
     parser.add_argument("--model", type=Path)
     parser.add_argument("--model-sha256")
+    parser.add_argument("--allow-cpu-nodes", action="store_true",
+                        help="let ONNX Runtime place nodes it cannot run on CUDA on the CPU; "
+                             "recorded in every result")
     parser.add_argument("--codec", choices=("png", "jpeg"), default="png")
     parser.add_argument("--quality", type=int, default=90)
     parser.add_argument("--present-log", type=Path)
@@ -325,7 +330,8 @@ def main(category="ingestion", argv=None):
         if args.motion_fps > mode["refresh_hz"] + 1:
             raise ValueError("requested cadence exceeds current physical refresh")
         if args.model:
-            payload["model"] = {"path": str(args.model.resolve()), "sha256": sha256(args.model)}
+            payload["model"] = {"path": str(args.model.resolve()), "sha256": sha256(args.model),
+                                "cpu_nodes_allowed": args.allow_cpu_nodes}
             if payload["model"]["sha256"] != args.model_sha256:
                 raise ValueError("model hash mismatch")
         guard = HealthGuard(logs)
@@ -338,6 +344,8 @@ def main(category="ingestion", argv=None):
                 "--present-log", str(motion.present_log), "--codec", args.codec, "--quality", str(args.quality)]
             if args.model:
                 command += ["--model", str(args.model.resolve()), "--model-sha256", args.model_sha256]
+            if args.allow_cpu_nodes:
+                command.append("--allow-cpu-nodes")
             if args.verify:
                 command.append("--verify")
             row = spawn(path, args.seconds, args.warmup, args.verify, logs=logs, motion=motion,
