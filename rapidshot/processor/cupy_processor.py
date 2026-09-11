@@ -305,16 +305,28 @@ class CupyProcessor:
             if rotation_angle != 0:
                 k = (rotation_angle // 90) % 4
                 if k != 0:
-                    rotated_array = self.cp.rot90(current_array, k=k)
-                    
-                    if rotated_array.shape[0] != current_array.shape[0] or \
-                       rotated_array.shape[1] != current_array.shape[1]:
-                        current_array = rotated_array
-                        is_still_pooled_buffer = False
-                    elif is_still_pooled_buffer:
-                        current_array[:] = rotated_array
-                    else: # Shape is same, but current_array is already a new buffer
-                        current_array = rotated_array 
+                    # `rot90` returns a *view*, so neither branch this used to
+                    # take was safe on a rotated display.
+                    #
+                    # At 180 degrees the shape is unchanged, so the pooled
+                    # buffer was assigned from a view of itself -- an
+                    # overlapping device-to-device copy. The elementwise kernel
+                    # reads and writes that memory at the same time, and the
+                    # frame comes back torn.
+                    #
+                    # At 90 and 270 the shape differs, so the view was returned
+                    # with the pooled flag cleared. `_grab()` reads that flag as
+                    # "the buffer is free", checks it back in, and the caller is
+                    # left holding a view of storage the next capture
+                    # overwrites.
+                    #
+                    # Copy, as the NumPy path does: one allocation that owns its
+                    # storage and aliases nothing. `.copy()` rather than
+                    # `ascontiguousarray`, which hands back its argument
+                    # unchanged when the view is already contiguous -- true of a
+                    # 1x1 region, where both flips are no-ops.
+                    current_array = self.cp.rot90(current_array, k=k).copy()
+                    is_still_pooled_buffer = False
 
             return current_array, is_still_pooled_buffer
 
