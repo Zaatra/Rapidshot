@@ -49,6 +49,28 @@ returned a view of a pooled buffer that the next capture overwrote.
 
 ### Fixed
 
+- **`native.probe_onnxruntime()` no longer loads a DLL by bare name.** With no
+  argument it passed `"onnxruntime.dll"` to `LoadLibraryW`, which walks the DLL
+  search path. On Windows 11 that found the OS's own System32 copy (1.17), not
+  the installed package's, and printed a line per unsupported API version; on
+  machines without that copy the search reaches the working directory and
+  `PATH`, where a planted DLL would run. `capabilities()` and `diagnose()` call
+  it, so any diagnostic did that search. It now probes the DLL shipped with the
+  installed `onnxruntime` package, loads nothing if there is none, and only
+  loads an explicit path that names an existing file, resolved to an absolute
+  one. Verified live: the report now shows 1.30.0 from the package.
+
+- **`shot(region=...)` changed the camera's region for good.** It validated the
+  region with the method that also assigns it, so a one-off shot of a corner
+  became the region every later `grab()` and `start()` captured. `shot()` now
+  validates without adopting it, as `grab()` already did.
+
+- **`start(delay=...)` documented milliseconds and slept seconds.**
+  `time.sleep(delay)` takes seconds, so `delay=500` meant as half a second
+  waited over eight minutes. The code is unchanged -- seconds is what it always
+  did, what DXcam means, and what the DXcam shim passes through -- and the
+  docstring now says so. A negative or non-numeric delay raises `ValueError`.
+
 - **Single-shot capture raced the capture thread.** `grab()` was meant to
   redirect to `get_latest_frame()` while `start()` ran, but the flag it tested,
   `continuous_mode`, was never set anywhere -- so it called `AcquireNextFrame`
