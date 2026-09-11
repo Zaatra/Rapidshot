@@ -11,4 +11,4 @@ file rather than importing it -- so the version stays readable at build time on
 a machine where `import rapidshot` would fail for want of Windows COM.
 """
 
-__version__ = "2.4.0"
+__version__ = "2.5.0"

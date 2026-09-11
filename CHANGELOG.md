@@ -10,7 +10,53 @@ each release can be traced back to the plan it implements.
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-09-11
+
+**Everything that made RapidShot worth choosing, without the toolchain.** 2.4.0
+made the hybrid path work end to end; this release makes it reachable. The GPU
+tensor, cross-adapter transfer and AVX2 kernels -- every figure in ROADMAP
+section 3 that justifies choosing this library -- sat behind a Rust toolchain
+and the MSVC build tools, which most users will never install. Now:
+
+- `pip install rapidshot[native]` -- one prebuilt `abi3` wheel for Python 3.9
+  onward, no Rust.
+- `import rapidshot.dxcam_compat as dxcam` -- an existing DXcam project
+  switches by changing one import.
+- `rapidshot.diagnose()` -- one command that answers most "it does not work"
+  reports.
+
+**Recovery you can observe.** Capture has long survived mode changes, monitors
+coming and going and device resets, but never said so. `camera.generation`,
+`recovery_count` and `last_recovery_reason` now do, and every frame is stamped
+with the generation it came from, so a cached preprocessor knows when to
+rebuild.
+
+**The first measurement of what the GPU work is for.** Screen pixels to a
+model-ready CUDA tensor, every library timed against one clock by decoding a
+frame ID out of the captured pixels. On a hybrid 2560x1600 laptop RapidShot
+returns 32% more unique frames per second than DXcam, the youngest pixels, and
+the lowest CPU per frame -- having lost the capture-only frame-rate comparison
+to it. One machine; ROADMAP section 7.0 carries the caveats.
+
+**A silent-corruption fix for anyone on NumPy 2.** `np.array(frame, copy=True)`
+returned a view of a pooled buffer that the next capture overwrote.
+
 ### Fixed
+
+- **`np.array(frame, copy=True)` returned a view of a pooled buffer.**
+  `PooledBuffer.__array__` accepted NumPy's `copy` argument and ignored it.
+  NumPy 2 forwards `copy` and trusts the answer, so an explicit copy request
+  handed back a view of a buffer the pool was about to reuse: the caller held
+  what looked like its own array, the next capture overwrote it, and nothing
+  raised -- exactly the failure pooling is documented to prevent. Verified
+  aliasing on numpy 2.5.1.
+
+  It predates everything else in this release and affects anyone who has
+  written `np.array(frame, copy=True)` against a pooled buffer since NumPy 2.
+  `frame.copy()` and `np.asarray(frame).copy()` were always correct. Found by
+  the DXcam compatibility layer's tests, whose whole safety story is copying a
+  frame out before releasing it. Regression tests cover the copy, the
+  zero-copy default and dtype conversion.
 
 - **The release performance gate had stopped gating anything.**
   `RELEASING.md` step 4 named `benchmarks/baseline.json`, which is Machine A.
@@ -70,6 +116,80 @@ each release can be traced back to the plan it implements.
   resolves to nothing until one is, and it is deliberately kept out of `all`
   until then so `pip install rapidshot[all]` does not start failing.
 
+- **`rapidshot.dxcam_compat`: DXcam code runs by changing one import.**
+  `import rapidshot.dxcam_compat as dxcam` provides `create()`,
+  `device_info()`, `output_info()`, `reset()`, `clean_up()`, and a camera with
+  DXcam's methods and the attributes DXcam code reads.
+
+  `grab()` returns a plain `ndarray`, which costs one copy per frame, on
+  purpose: DXcam callers never release a frame, and a pooled buffer must be
+  released, so the shim copies out and releases at once. `grab_view()` and
+  `get_latest_frame_view()` are genuinely zero-copy, because DXcam's "valid
+  until the next grab" contract is exactly a pooled buffer's lifetime -- and
+  reading a retired view raises `BufferReleasedError` rather than showing
+  another frame's pixels, which is stricter than DXcam. `camera.rapidshot_camera`
+  exposes the camera underneath, so a project can migrate one call site at a
+  time.
+
+- **`rapidshot.capabilities()` and `rapidshot.diagnose()`.** One report --
+  version, where the native extension was loaded from, adapter topology and
+  whether it is hybrid, what the extension can do here, optional dependency
+  versions -- in place of six scattered probes a user had to run and paste in
+  the right order. `capabilities()` returns a dict; `diagnose()` renders it for
+  an issue report.
+
+  Neither raises. Each section is independent and reports its own failure,
+  because the machine where this matters most is the one where something is
+  already broken. The cross-adapter probe is opt-in (`probe_gpu=True`): it
+  creates D3D devices and allocates a shared heap, and a diagnostic should not
+  be able to destabilise the machine it is diagnosing.
+
+- **Recovery is observable, not only survivable.** The rebuild machinery --
+  bounded retries, backoff -- already existed, but nothing told a caller it had
+  run. A consumer holding a `GpuPreprocessor12` or `CrossAdapterTransfer` built
+  from an earlier frame had no signal that the duplicator underneath had been
+  replaced and might now differ in size, rotation or format.
+
+  `camera.generation` and `camera.recovery_count` count successful rebuilds,
+  `camera.last_recovery_reason` says why the latest one was scheduled, and all
+  seven rebuild triggers record a cause. The generation moves only on success,
+  so a failed attempt that will be retried does not invalidate anyone's cache
+  for nothing.
+
+- **`Frame` gains `sequence`, `generation`, `changed_fraction`, `age_ms` and
+  `cursor`.** `generation` pins each frame to one side of a rebuild, and
+  `sequence` identifies it for the camera's whole life, continuing across
+  recoveries.
+
+  `changed_fraction` unions the dirty rects rather than summing them. Drivers
+  do report overlapping regions, and a summed area can exceed the frame --
+  sending a consumer that thresholds on "more than 90% changed" down the
+  full-frame path for a frame that barely moved. An empty list reads as `1.0`,
+  because no rects is no information.
+
+  `age_ms` is measured from the present timestamp, so it is how old the pixels
+  are rather than how long a call took. `cursor` is a `CursorInfo` snapshot --
+  position, hotspot, raw shape and its encoding -- where only visibility was
+  surfaced before, and anything more meant the raw COM structures from
+  `grab_cursor()`.
+
+- **`rapidshot.profiling.Profiler`.** Stage timings and frame health from a
+  capture loop, as `report()` for a human, `summary()` for asserting on, and
+  `json()` for storing beside a baseline. It reports percentiles and a minimum,
+  never a mean -- background load can only make a sample slower, so the
+  minimum is the least contaminated estimate and the tail is what a real-time
+  consumer feels. Any stage under 30 samples is labelled `low_confidence`. It
+  also records `coalesced_updates_missed` and mid-run recoveries, because a
+  loop can look fast while dropping most of what it was meant to capture, and
+  wall clock alone cannot tell the two apart.
+
+- **`CrossAdapterTransfer` exposes what the extension already exported:**
+  `transfer_async_with_reference()` with `read_back_source()`,
+  `probe_transfer_phases()`, and `submission_quarantined`. The Python wrapper
+  listed its methods explicitly with no passthrough, so an async transfer's
+  pixels could not be verified from Python at all.
+  `transfer_async_with_reference()` defers the frame's release until its fence
+  completes, as `transfer_async()` does.
 
 - **The version number is declared once**, in `rapidshot/_version.py`.
   `pyproject.toml` reads it through `[tool.setuptools.dynamic]`, `setup.py`
@@ -99,6 +219,26 @@ each release can be traced back to the plan it implements.
   the kind of invisible coupling this suite exists to remove.
 
 ### Documentation
+
+- **The 2.5 APIs are in the README.** None of `capabilities()` /
+  `diagnose()`, the DXcam shim, the profiler, observable recovery or the new
+  `Frame` fields appeared there. Each now has a section or a row, with the
+  behaviour that matters when using it: the shim's one copy per frame and why
+  `grab_view()` avoids it, the generation check that decides when to rebuild a
+  cached preprocessor, and why the profiler will not report a mean.
+
+- **The README's CUDA loop could never run its own `None` check.** It sat
+  inside `with camera.grab_frame() as frame:`, but `grab_frame()` returns
+  `None` when nothing changed and `with None` raises `TypeError`, so the loop
+  crashed on the first still frame. The examples now check before the `with`,
+  and the GPU-resident section says why.
+
+- **ROADMAP sections 7.0 and 7.1 record what was measured and delivered**,
+  including one correction made in the open: an earlier revision claimed no
+  `cuImportExternalSemaphore` glue existed and made building it the top
+  follow-up, when `tests/test_cross_adapter.py` already had working producer
+  and consumer implementations and section 6.1 had verified the mechanism a
+  fortnight earlier.
 
 - **`ROADMAP.md` section 7 rewritten as a staged 2.5 → 3.0 plan.** It was a flat
   bullet list of "later stages" with no ordering rationale, which is how a
@@ -186,6 +326,49 @@ each release can be traced back to the plan it implements.
   a `pip install` cannot currently reach.
 
 ### Benchmarks
+
+- **Pixel age, measured against one clock.** `native/src/bin/latency_source.rs`
+  is a D3D11 source that encodes an incrementing frame ID into the image and
+  records `frame_id -> QPC` at every `Present()`. Each path decodes the ID from
+  what it captured, so latency is how old the pixels were -- not how long a
+  call took -- and every library is timed on the same clock. `Frame`'s own
+  present timestamp would have given RapidShot an advantage no other library
+  could match. Run through `benchmarks/section7.py`; recorded in
+  `benchmarks/section7-ingestion-machineB.json`.
+
+  Machine B, 2560x1600 at 165 Hz, pixels to a `(1, 3, 640, 640)` FP32 tensor on
+  CUDA: RapidShot returns **100.4** unique frames per second against DXcam's
+  76.3 on DXGI and 68.0 on WGC, the lowest pixel age (**33.95 ms** p50 through
+  the GPU-side semaphore wait, against DXcam's 41.08), and the lowest CPU per
+  frame (**6.12 ms** cross-adapter, against 15.58). Every path drops source
+  frames at 165 Hz; RapidShot's CPU path drops the fewest.
+
+- **Call duration from capture to tensor, and through inference**
+  (`benchmarks/ai_ingestion.py`, `benchmarks/ai_pipeline.py`). Every path is
+  verified against a float64 NumPy reference taken from the same frame, and the
+  GPU paths feed ONNX Runtime through `io_binding` so they are not charged a
+  round trip they exist to avoid. Capture is **80-96% of the end-to-end
+  budget**, which settles that capture-path work is worth doing. Cross-adapter
+  costs 0.45x DXcam's CPU per frame and moves zero bytes host-to-device, at
+  2.7 ms more latency than RapidShot's CPU path; `transfer_async()` does not
+  close that gap, as section 6.1 predicted.
+
+  These are call durations, so they are lower bounds on present-to-inference
+  latency, and the inference figures use a FLOP-calibrated stand-in rather than
+  a trained model. `ai_pipeline.py` now refuses to run without `--model` and
+  `--model-sha256`, and `benchmarks/prepare_model.py` exports pinned YOLO11n
+  weights with a recorded hash for the re-run.
+
+- **Two apparatus bugs found on the way, both of which flattered or hid a
+  result.** The motion source defaulted to 60 fps on a 165 Hz panel, so every
+  path reported about 60 unique frames a second and looked like a tie;
+  `section7.py` now follows the display's physical refresh and prints the
+  achieved rate. And to make every path emit a bit-identical tensor, the CPU
+  arms ran an exact rational resize costing 76-86 ms in NumPy against 0.72 ms
+  for the `cv2` call a real caller writes -- charging mss, DXcam and RapidShot's
+  own CPU path roughly seventy times their true conversion cost, in the GPU
+  paths' favour. Each backend now uses its idiomatic resize, within 1/255 of
+  the exact reference every path is still verified against.
 
 - **Each library now competes in its best configuration, not its default.**
   `compare_libraries.py` measured RapidShot with its native kernels against
