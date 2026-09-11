@@ -326,12 +326,39 @@ class RapidshotFactory(metaclass=Singleton):
         # Reusing the first instance would silently make the second call's
         # preference inert.
         instance_key = (device_idx, output_idx, bool(prefer_integrated))
+        # Everything else the caller chose, as requested -- recorded before the
+        # CuPy fallback below can rewrite nvidia_gpu, so the same request always
+        # compares equal. The key above picks the output; this decides whether
+        # the camera already on it is the one being asked for.
+        requested = {
+            "region": tuple(region) if region is not None else None,
+            "output_color": output_color,
+            "nvidia_gpu": bool(nvidia_gpu),
+            "max_buffer_len": max_buffer_len,
+            "pool_output": bool(pool_output),
+            "timeout_ms": timeout_ms,
+            "pool_size_frames": pool_size_frames,
+        }
         existing = self._screencapture_instances.get(instance_key)
         # A released camera stays in this weak cache for as long as anything
         # still references it -- including the variable about to be rebound in
         # `camera.release(); camera = rapidshot.create()`. Returning it would
         # hand back a camera that silently yields None forever.
         if existing is not None and not getattr(existing, "released", False):
+            built_with = getattr(existing, "_factory_config", None)
+            if built_with is not None and built_with != requested:
+                # Returning it anyway handed the caller frames in the wrong
+                # format, region or processor, with nothing to say so.
+                differing = ", ".join(
+                    f"{name}={built_with.get(name)!r} (asked for {value!r})"
+                    for name, value in requested.items()
+                    if built_with.get(name) != value)
+                raise ConfigurationError(
+                    f"A camera for device {device_idx}, output {output_idx} "
+                    f"already exists with different settings: {differing}. "
+                    "RapidShot keeps one camera per output; call release() on "
+                    "the existing camera before creating one with other settings."
+                )
             logger.info(f"Found existing ScreenCapture instance for Device {device_idx}--Output {output_idx}")
             return existing
 
@@ -361,8 +388,9 @@ class RapidshotFactory(metaclass=Singleton):
                 timeout_ms=timeout_ms,
                 pool_size_frames=pool_size_frames,
             )
+            screencapture._factory_config = requested
             self._screencapture_instances[instance_key] = screencapture
-            
+
             # Small delay to ensure initialization is complete
             time.sleep(0.1)
             logger.info(f"Created new ScreenCapture instance for Device {device_idx}--Output {output_idx}")

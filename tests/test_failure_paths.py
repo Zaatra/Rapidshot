@@ -723,6 +723,91 @@ def test_create_does_not_return_a_released_camera(monkeypatch):
     assert factory.create(output_idx=0) is replacement
 
 
+def _fake_factory(monkeypatch):
+    """A factory over one fake output whose cameras are plain objects."""
+    import weakref
+    import rapidshot
+
+    class Output:
+        devicename = "DISPLAY1"
+
+        def update_desc(self):
+            pass
+
+    class Capture:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.released = False
+
+        def release(self):
+            self.released = True
+
+    device = type("Device", (), {"desc": type("Desc", (), {"Description": "GPU"})()})()
+    factory = object.__new__(rapidshot.RapidshotFactory)
+    factory.devices = [device]
+    factory.outputs = [[Output()]]
+    factory.all_devices = [device]
+    factory.output_metadata = {"DISPLAY1": (None, True)}
+    factory._screencapture_instances = weakref.WeakValueDictionary()
+    monkeypatch.setattr(rapidshot, "ScreenCapture", Capture)
+    monkeypatch.setattr(rapidshot.time, "sleep", lambda _seconds: None)
+    return factory
+
+
+@pytest.mark.parametrize("change", [
+    {"output_color": "BGRA"},
+    {"region": (0, 0, 100, 100)},
+    {"nvidia_gpu": True},
+    {"pool_output": False},
+    {"timeout_ms": 0},
+    {"max_buffer_len": 8},
+    {"pool_size_frames": 2},
+])
+def test_create_refuses_to_return_a_camera_built_with_other_settings(monkeypatch, change):
+    """The cache is keyed by output; the settings must match too.
+
+    It used to be keyed by (device, output, prefer_integrated) alone, so
+    `create(output_color="BGRA")` after an RGB camera on the same output got
+    the RGB camera back -- wrong channel count, and nothing said so.
+    """
+    import rapidshot
+
+    factory = _fake_factory(monkeypatch)
+    camera = factory.create(output_idx=0)
+    with pytest.raises(rapidshot.ConfigurationError) as err:
+        factory.create(output_idx=0, **change)
+    (name,) = change
+    assert name in str(err.value) and "release()" in str(err.value)
+    assert factory.create(output_idx=0) is camera, "matching settings still share"
+
+
+def test_settings_can_change_once_the_camera_is_released(monkeypatch):
+    factory = _fake_factory(monkeypatch)
+    rgb = factory.create(output_idx=0, output_color="RGB")
+    rgb.release()
+    bgra = factory.create(output_idx=0, output_color="BGRA")
+    assert bgra is not rgb
+    assert bgra.kwargs["output_color"] == "BGRA"
+
+
+def test_a_repeat_request_matches_even_after_the_cupy_fallback(monkeypatch):
+    """nvidia_gpu is compared as requested, not as the fallback rewrote it."""
+    import builtins
+
+    factory = _fake_factory(monkeypatch)
+    real_import = builtins.__import__
+
+    def no_cupy(name, *args, **kwargs):
+        if name == "cupy":
+            raise ImportError("no cupy here")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_cupy)
+    first = factory.create(output_idx=0, nvidia_gpu=True)
+    assert first.kwargs["nvidia_gpu"] is False          # fell back
+    assert factory.create(output_idx=0, nvidia_gpu=True) is first
+
+
 def test_a_successful_adapter_moves_to_the_front(monkeypatch):
     """Winner first on the next rebuild -- reordering only, never removing."""
     import rapidshot.capture as capture_module
