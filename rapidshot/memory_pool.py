@@ -1,6 +1,10 @@
 import collections
+import logging
 import threading
 import numpy as np
+
+logger = logging.getLogger(__name__)
+
 
 # Custom Exception
 class PoolExhaustedError(RuntimeError):
@@ -138,7 +142,7 @@ class BaseMemoryPool:
         """
         if self._initialized:
             # Or raise an error, or allow re-initialization with cleanup
-            print("Pool is already initialized.") 
+            logger.debug("Pool is already initialized.")
             return
 
         with self._lock: # Ensure thread safety during initialization
@@ -154,7 +158,7 @@ class BaseMemoryPool:
                 except Exception as e:
                     # Handle partial initialization failure?
                     # For now, let it propagate, or log and stop.
-                    print(f"Error creating a buffer during pool initialization: {e}")
+                    logger.error(f"Error creating a buffer during pool initialization: {e}")
                     # Potentially clean up already created buffers if needed.
                     self._buffers.clear()
                     self._available_buffers.clear()
@@ -248,7 +252,7 @@ class BaseMemoryPool:
         """
         if not self._initialized:
             # Cannot release buffers if pool wasn't even initialized with them
-            print("Pool not initialized, cannot release buffers.")
+            logger.warning("Pool not initialized, cannot release buffers.")
             return
 
         with self._lock:
@@ -260,7 +264,7 @@ class BaseMemoryPool:
             # Sanity check
             if len(self._available_buffers) != self.num_buffers:
                 # This might indicate an issue if some buffers were lost or duplicated
-                print(f"Warning: After release_all_buffers, available count ({len(self._available_buffers)}) "
+                logger.warning(f"After release_all_buffers, available count ({len(self._available_buffers)}) "
                       f"does not match total buffers ({self.num_buffers}).")
 
 

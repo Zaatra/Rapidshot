@@ -1,6 +1,9 @@
 import enum
+import logging
 import re
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def version_below(version: str, minimum: str) -> bool:
@@ -129,14 +132,16 @@ class Processor:
             import numpy as np
             version = np.__version__
             if version_below(version, "1.20.0"):
-                print(f"Warning: Using NumPy version {version}. Version 1.20.0 or higher is recommended.")
+                logger.warning(
+                    f"Using NumPy {version}; 1.20.0 or higher is recommended.")
         except ImportError:
             pass
             
         try:
             from PIL import Image, __version__ as pil_version
             if version_below(pil_version, "9.0.0"):
-                print(f"Warning: Using PIL version {pil_version}. Version 9.0.0 or higher is recommended.")
+                logger.warning(
+                    f"Using Pillow {pil_version}; 9.0.0 or higher is recommended.")
         except (ImportError, AttributeError):
             pass
             
@@ -144,7 +149,8 @@ class Processor:
             import cv2  # type: ignore[import-not-found]
             version = cv2.__version__
             if version_below(version, "4.5.0"):
-                print(f"Warning: Using OpenCV version {version}. Version 4.5.0 or higher is recommended.")
+                logger.warning(
+                    f"Using OpenCV {version}; 4.5.0 or higher is recommended.")
         except ImportError:
             pass
 
@@ -248,7 +254,7 @@ class Processor:
                 from rapidshot.processor.numpy_processor import NumpyProcessor
                 return NumpyProcessor(self.color_mode)
             except ImportError:
-                print("NumPy backend not available, falling back to PIL")
+                logger.warning("NumPy backend not available, falling back to PIL")
                 backend = ProcessorBackends.PIL
                 self._active_backend_type = backend
         
@@ -257,7 +263,7 @@ class Processor:
                 from rapidshot.processor.cupy_processor import CupyProcessor
                 return CupyProcessor(self.color_mode)
             except ImportError:
-                print("CuPy backend not available, falling back to NumPy")
+                logger.warning("CuPy backend not available, falling back to NumPy")
                 from rapidshot.processor.numpy_processor import NumpyProcessor
                 backend = ProcessorBackends.NUMPY
                 self._active_backend_type = backend
