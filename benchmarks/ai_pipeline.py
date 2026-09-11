@@ -24,6 +24,23 @@ def enable_cuda_dlls():
     return found
 
 
+INPUT_SHAPE = (1, 3, 640, 640)
+
+
+def accepts_input_shape(shape):
+    """True if a model input declared as ``shape`` can take a 1x3x640x640 tensor.
+
+    Symbolic dimensions are accepted. The official Ultralytics ``yolo11n.onnx``
+    declares ``['batch', 3, 'height', 'width']``, and rewriting the file to pin
+    them would mean benchmarking something other than the published model --
+    which is the whole reason for using it. Any concrete dimension must still
+    match, and the tensor bound at run time is always exactly 1x3x640x640.
+    """
+    if shape is None or len(shape) != len(INPUT_SHAPE):
+        return False
+    return all(not isinstance(d, int) or d == want for d, want in zip(shape, INPUT_SHAPE))
+
+
 class Inference:
     def __init__(self, model, cp, np):
         enable_cuda_dlls()
@@ -38,8 +55,9 @@ class Inference:
         if self.session.get_providers() != ["CUDAExecutionProvider"]:
             raise RuntimeError(f"expected CUDA-only execution, got {self.session.get_providers()}")
         inputs = self.session.get_inputs()
-        if len(inputs) != 1 or inputs[0].shape != [1, 3, 640, 640]:
-            raise ValueError("model must have one fixed 1x3x640x640 input")
+        if len(inputs) != 1 or not accepts_input_shape(inputs[0].shape):
+            raise ValueError("model must have one input that accepts 1x3x640x640, "
+                             f"declared {[i.shape for i in inputs]}")
         self.input = inputs[0]
         if self.input.type not in ("tensor(float)", "tensor(float16)"):
             raise ValueError(f"unsupported model input {self.input.type}")

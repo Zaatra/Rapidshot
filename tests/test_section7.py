@@ -143,3 +143,17 @@ def test_dll_directory_handles_are_retained(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", "")
     assert ai_pipeline.enable_cuda_dlls() == [str(target)]
     assert ai_pipeline._DLL_HANDLES == [handle]
+
+
+@pytest.mark.parametrize("shape, accepted", [
+    (["batch", 3, "height", "width"], True),   # official Ultralytics yolo11n.onnx
+    ([1, 3, 640, 640], True),                  # a pinned export
+    ([None, 3, None, None], True),             # unnamed symbolic axes
+    ([1, 3, 320, 320], False),                 # concrete and wrong
+    (["batch", 1, "height", "width"], False),  # wrong channel count
+    ([1, 3, 640], False),
+    (None, False),
+])
+def test_inference_accepts_the_published_model_shape(shape, accepted):
+    import ai_pipeline
+    assert ai_pipeline.accepts_input_shape(shape) is accepted
