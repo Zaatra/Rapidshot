@@ -49,6 +49,32 @@ returned a view of a pooled buffer that the next capture overwrote.
 
 ### Fixed
 
+- **`stop()` tidied up after a capture thread that was still running.** It
+  waited ten seconds for the thread and then carried on regardless: closing the
+  timer handle that thread closes again on its way out -- a second
+  `CloseHandle` on a handle Windows may already have reissued to something
+  unrelated -- and setting the frame queue to `None` underneath a thread still
+  appending to it, which faults it into the catch-all that marks the camera
+  permanently failed. The same double close happened whenever `stop()` was
+  called *from* the capture thread, where the join is skipped entirely.
+  `stop()` now leaves both to the thread in those cases and returns `False`
+  rather than `None`, `start()` refuses to launch a second thread alongside a
+  surviving one, and `release()` says out loud that it is tearing down
+  resources still in use. Verified live: a capture thread wedged behind the
+  duplication lock left the timer handle and queue untouched, refused a
+  restart, and exited cleanly once unblocked.
+
+- **Queued frames survived a mid-capture rebuild.** `_initialize_resources()`
+  cleared the continuous-mode queue only when `continuous_mode` was True -- a
+  flag nothing has ever set, so the block never ran -- and did it after the
+  pool those buffers belong to had already been destroyed, so the check-ins
+  would have been refused and the buffers dropped rather than recycled. Frames
+  captured before a display change therefore stayed queued, and
+  `get_latest_frame()` handed them out as current. The drain now happens before
+  the pool is destroyed, is shared with `stop()` and `_rebuild_frame_buffer()`,
+  and no longer consults the dead flag, which is removed. Verified live on a
+  real rebuild: every check-in preceded the pool's destruction.
+
 - **`get_latest_frame()` handed back memory the pool could recycle.** It
   returned the newest queued buffer's array without taking the frame out of the
   queue, so the producer stayed free to evict that entry and release it, and

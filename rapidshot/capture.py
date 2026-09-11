@@ -54,6 +54,11 @@ except ImportError:
     CUPY_AVAILABLE = False
 
 class ScreenCapture:
+    #: How long stop() waits for the capture thread before giving up on it.
+    #: An abandoned thread still owns its timer handle and the frame queue, so
+    #: this is also the point past which stop() stops tidying up after it.
+    _stop_join_timeout_s = 10.0
+
     def __init__(
         self,
         output: Output,
@@ -173,7 +178,6 @@ class ScreenCapture:
         self.shot_w = 0
         self.shot_h = 0
         self.max_buffer_len = max_buffer_len
-        self.continuous_mode = False
         self.buffer = False
         self._buffer_lock = Lock() 
         self.cursor = False
@@ -412,6 +416,17 @@ class ScreenCapture:
 
             # Re-initialize Memory Pool
             if self.memory_pool: # Destroy existing pool before creating a new one
+                # Queued frames go back *first*. They are sized for the old
+                # resolution and belong to the pool about to be destroyed, and a
+                # wrapper that outlives its pool releases into a dead one, which
+                # refuses the check-in and drops the buffer instead.
+                #
+                # This used to happen after the new pool was already in place,
+                # and only when `continuous_mode` was True -- a flag nothing
+                # ever set. So it never ran: frames from before the display
+                # change stayed queued, and get_latest_frame() handed them out
+                # as though they were current.
+                self._drain_frame_queue()
                 logger.debug("Destroying existing memory pool before re-initialization.")
                 self.memory_pool.destroy_pool()
             
@@ -426,20 +441,6 @@ class ScreenCapture:
             else:
                 self.memory_pool = NumpyMemoryPool(buffer_shape, dtype, pool_size_frames)
             
-            # If continuous capture was running, its buffer needs to be reset
-            if self.is_capturing and self.continuous_mode:
-                if self._pooled_frames_deque is not None:
-                    logger.debug("Clearing continuous mode frame deque due to re-initialization.")
-                    # Buffers must go back to the old pool before it is destroyed,
-                    # otherwise their release() targets a pool that no longer exists.
-                    with self._capture_lock:
-                        stale_frames = list(self._pooled_frames_deque)
-                        self._pooled_frames_deque = collections.deque(maxlen=self.max_buffer_len)
-                    for frame in stale_frames:
-                        self._discard_frame(frame)
-                self._frame_available_event.clear()
-
-
             self._is_initialized = True
             self._needs_reinit = False # Successfully re-initialized (or initialized)
             if is_reinit: # Only reset attempts if this was a re-initialization
@@ -1503,6 +1504,8 @@ class ScreenCapture:
 
         Raises:
             ValueError: If delay is negative or not a number.
+            RuntimeError: If a previous capture thread that ``stop()`` gave up
+                on is still running.
         """
         # This said milliseconds while time.sleep() takes seconds, so
         # delay=500 meant to be half a second waited over eight minutes.
@@ -1515,6 +1518,19 @@ class ScreenCapture:
         if self.is_capturing:
             logger.debug("start() called while capture is already active; ignoring request.")
             return
+
+        # A thread stop() gave up on is still holding the duplicator and still
+        # writing into the pool. Starting a second one would put two threads on
+        # one duplication, which is the race _refuse_while_capturing() exists to
+        # prevent -- and this path reaches it with is_capturing already False.
+        previous = getattr(self, '_capture_thread', None)
+        if previous is not None and previous.is_alive():
+            raise RuntimeError(
+                "The previous capture thread has not exited yet, so a second "
+                "one would compete with it for the duplicator. This follows a "
+                f"stop() that gave up after {self._stop_join_timeout_s}s; the "
+                "camera cannot capture again until that thread ends."
+            )
 
         if delay != 0:
             time.sleep(delay)
@@ -1544,18 +1560,56 @@ class ScreenCapture:
     def stop(self):
         """
         Stop capturing frames.
+
+        Returns:
+            True once the capture thread has finished. False if it was still
+            running when the wait ran out, or if ``stop()`` was called from the
+            capture thread itself. In both of those cases the thread is still
+            on its way out and owns its own cleanup, so this leaves the timer
+            handle and the frame queue alone.
         """
+        thread_finished = True
+
         if getattr(self, 'is_capturing', False):
             self._stop_capture_event.set() # Use renamed event
-            if getattr(self, '_capture_thread', None) is not None:
-                if current_thread() is not self._capture_thread:
-                    self._capture_thread.join(timeout=10) # Wait for thread to finish
-                self._capture_thread = None
+            thread = getattr(self, '_capture_thread', None)
+            if thread is not None:
+                if current_thread() is thread:
+                    # stop() from inside the capture thread. It is about to
+                    # unwind into the cleanup at the end of
+                    # _capture_thread_func, so its resources are not ours.
+                    thread_finished = False
+                else:
+                    thread.join(timeout=self._stop_join_timeout_s)
+                    if thread.is_alive():
+                        thread_finished = False
+                        logger.error(
+                            "Capture thread did not stop within "
+                            f"{self._stop_join_timeout_s}s and is still running. "
+                            "Its timer handle and queued frames are left to it; "
+                            "start() will refuse until it exits."
+                        )
+                    else:
+                        self._capture_thread = None
 
         self.is_capturing = False
         self._frame_count = 0
         self._frame_available_event.clear()
         # self._stop_capture_event is already set, clear if restartable, but usually not needed
+
+        if not thread_finished:
+            # Everything below belongs to a thread that is still running.
+            #
+            # The timer handle is created and closed inside the capture thread;
+            # closing it here as well is a second CloseHandle on a handle
+            # Windows may already have reissued to something unrelated -- and
+            # this used to happen on both the abandoned path and the
+            # stop-from-the-capture-thread path.
+            #
+            # Emptying the queue is no safer: the thread appends to it, and
+            # setting it to None underneath faults the thread into the
+            # catch-all that marks the camera permanently failed.
+            return False
 
         if self._timer_handle:
             try:
@@ -1568,19 +1622,12 @@ class ScreenCapture:
                 except Exception as close_error:
                     logger.warning(f"Failed to close timer handle during stop(): {close_error}")
                 self._timer_handle = None
-        
+
         # Phase 4/5: Release any remaining buffers in the deque
-        if hasattr(self, '_pooled_frames_deque') and self._pooled_frames_deque is not None:
-            with self._capture_lock:
-                # Copy then clear under the lock; the actual pool check-ins
-                # happen outside it so a slow pool cannot block the producer.
-                temp_deque_copy = list(self._pooled_frames_deque)
-                self._pooled_frames_deque.clear()
-                self._last_dup_source = None
-            for buffer_wrapper in temp_deque_copy:
-                self._discard_frame(buffer_wrapper)
-            self._pooled_frames_deque = None
-        
+        self._drain_frame_queue()
+        self._pooled_frames_deque = None
+        return True
+
     def get_latest_frame(self, as_numpy: bool = True):
         """
         Get the latest captured frame, as an array that is the caller's to keep.
@@ -1815,6 +1862,31 @@ class ScreenCapture:
         else:
             logger.info(f"ScreenCapture continuous mode stopped. No frames captured or capture time was zero.")
 
+    def _drain_frame_queue(self) -> None:
+        """Return every queued frame to its pool and empty the queue.
+
+        Call this before destroying the pool those buffers came from: a
+        wrapper outliving its pool releases into a dead one, which refuses the
+        check-in, so the buffer is dropped rather than recycled.
+
+        Safe to call when there is no queue -- outside continuous mode there is
+        nothing to drain.
+        """
+        queue = getattr(self, "_pooled_frames_deque", None)
+        if queue is None:
+            self._last_dup_source = None
+            return
+
+        with self._capture_lock:
+            # Copy then clear under the lock; the pool check-ins happen outside
+            # it so a slow pool cannot block the producer.
+            stale_frames = list(queue)
+            queue.clear()
+            self._last_dup_source = None
+        for frame in stale_frames:
+            self._discard_frame(frame)
+        self._frame_available_event.clear()
+
     @staticmethod
     def _discard_frame(frame) -> None:
         """
@@ -1856,14 +1928,7 @@ class ScreenCapture:
 
         # Return queued buffers to the pool before it is torn down, otherwise
         # the wrappers outlive their pool and their release() targets a dead one.
-        with self._capture_lock:
-            stale_buffers = list(self._pooled_frames_deque or ())
-            if self._pooled_frames_deque is not None:
-                self._pooled_frames_deque.clear()
-            self._last_dup_source = None
-        for buffer_wrapper in stale_buffers:
-            self._discard_frame(buffer_wrapper)
-        self._frame_available_event.clear()
+        self._drain_frame_queue()
 
         pool_size = self._init_args.get("pool_size_frames", 10)
         if self.memory_pool is not None:
@@ -1942,7 +2007,15 @@ class ScreenCapture:
         locked = False
         try:
             if hasattr(self, 'is_capturing') and self.is_capturing: # Check is_capturing before calling stop
-                self.stop()
+                if not self.stop():
+                    # Say so once, here: the teardown below frees the
+                    # duplicator, stage surface and pool that the surviving
+                    # thread is still using. Releasing anyway remains the right
+                    # call -- the alternative is a release() that never returns
+                    # -- but it is not a clean one.
+                    logger.warning(
+                        "release(): the capture thread is still running. "
+                        "Tearing down resources it is still using.")
 
             # Tear down only once no grab is mid-copy on another thread. Bounded,
             # because stop() gives up on a capture thread after 10 s and that
