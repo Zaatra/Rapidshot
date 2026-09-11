@@ -326,9 +326,14 @@ class RapidshotFactory(metaclass=Singleton):
         # Reusing the first instance would silently make the second call's
         # preference inert.
         instance_key = (device_idx, output_idx, bool(prefer_integrated))
-        if instance_key in self._screencapture_instances:
+        existing = self._screencapture_instances.get(instance_key)
+        # A released camera stays in this weak cache for as long as anything
+        # still references it -- including the variable about to be rebound in
+        # `camera.release(); camera = rapidshot.create()`. Returning it would
+        # hand back a camera that silently yields None forever.
+        if existing is not None and not getattr(existing, "released", False):
             logger.info(f"Found existing ScreenCapture instance for Device {device_idx}--Output {output_idx}")
-            return self._screencapture_instances[instance_key]
+            return existing
 
         try:
             output = self.outputs[device_idx][output_idx]

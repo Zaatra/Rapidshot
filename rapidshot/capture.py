@@ -170,6 +170,7 @@ class ScreenCapture:
         # Phase 2: Re-initialization state variables
         self._is_initialized = False
         self._needs_reinit = False
+        self._released = False
         # Recovery is observable, not just survivable. A consumer caching
         # anything derived from a frame -- a GPU preprocessor, a cross-adapter
         # transfer, a resize table -- needs to know the duplicator underneath it
@@ -1773,10 +1774,19 @@ class ScreenCapture:
 
         self.shot_w, self.shot_h = r - l, b - t
 
+    @property
+    def released(self) -> bool:
+        """True once :meth:`release` has run. A released camera never captures
+        again; :func:`rapidshot.create` builds a new one rather than return it."""
+        return getattr(self, "_released", False)
+
     def release(self):
         """
         Release all resources.
         """
+        # Set first, so a teardown that raises part-way still marks the camera
+        # as unusable rather than leaving the factory to hand it out again.
+        self._released = True
         try:
             if hasattr(self, 'is_capturing') and self.is_capturing: # Check is_capturing before calling stop
                 self.stop()

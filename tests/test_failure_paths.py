@@ -679,6 +679,50 @@ def test_capture_cache_separates_adapter_preferences(monkeypatch):
     assert factory.create(output_idx=0, prefer_integrated=True) is integrated_first
 
 
+def test_create_does_not_return_a_released_camera(monkeypatch):
+    """`camera.release(); camera = rapidshot.create()` must get a new camera.
+
+    The factory caches cameras weakly, so a released one stays in the cache
+    while anything references it -- and in that idiom the old object is still
+    bound when create() runs. It used to be returned, and since a released
+    camera never captures again, every grab() yielded None with no error.
+    """
+    import weakref
+    import rapidshot
+
+    class Output:
+        devicename = "DISPLAY1"
+
+        def update_desc(self):
+            pass
+
+    class Capture:
+        def __init__(self, **kwargs):
+            self.released = False
+
+        def release(self):
+            self.released = True
+
+    device = type("Device", (), {"desc": type("Desc", (), {"Description": "GPU"})()})()
+    factory = object.__new__(rapidshot.RapidshotFactory)
+    factory.devices = [device]
+    factory.outputs = [[Output()]]
+    factory.all_devices = [device]
+    factory.output_metadata = {"DISPLAY1": (None, True)}
+    factory._screencapture_instances = weakref.WeakValueDictionary()
+    monkeypatch.setattr(rapidshot, "ScreenCapture", Capture)
+    monkeypatch.setattr(rapidshot.time, "sleep", lambda _seconds: None)
+
+    camera = factory.create(output_idx=0)
+    assert factory.create(output_idx=0) is camera, "a live camera is still shared"
+
+    camera.release()
+    replacement = factory.create(output_idx=0)
+    assert replacement is not camera
+    assert replacement.released is False
+    assert factory.create(output_idx=0) is replacement
+
+
 def test_a_successful_adapter_moves_to_the_front(monkeypatch):
     """Winner first on the next rebuild -- reordering only, never removing."""
     import rapidshot.capture as capture_module
