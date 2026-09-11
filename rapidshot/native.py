@@ -439,18 +439,41 @@ def probe_onnxruntime(dll_path: Optional[str] = None) -> Dict[str, Any]:
     Loads ``onnxruntime.dll`` at runtime rather than linking against it, so ORT
     stays an optional dependency.
 
-    **Pass an explicit path.** Resolving by name uses the DLL search path, which
-    frequently finds an unrelated ONNX Runtime installed by some other
-    application — on this machine that resolves to 1.17.1 while the Python
-    package ships 1.24.4. Since the C API's struct layout is version-dependent,
-    silently binding to the wrong runtime is a real hazard. Locate the DLL via
-    ``onnxruntime.__file__`` instead.
+    **Never loads by name.** With no ``dll_path`` this probes the DLL that
+    ships with the installed ``onnxruntime`` Python package
+    (:func:`onnxruntime_dll_path`), and reports ``loaded: False`` without
+    loading anything if that package is absent. A given path must name an
+    existing file, and is resolved to an absolute one before it is loaded.
+
+    It used to pass the bare name ``onnxruntime.dll`` to ``LoadLibraryW``,
+    which walks the DLL search path. That finds whatever ONNX Runtime comes
+    first -- on Windows 11 usually the copy the OS ships in System32 (1.17),
+    not the package's -- and, where no such copy exists, carries on into the
+    working directory and ``PATH``, where a planted DLL would run. Since
+    :func:`rapidshot.capabilities` and :func:`rapidshot.diagnose` call this,
+    that search happened whenever someone asked for a diagnostic.
 
     Returns:
         ``loaded``, ``version``, ``max_api_version`` and
         ``supported_api_versions``; on failure, ``error`` and a ``hint``.
     """
-    return dict(require().probe_onnxruntime(dll_path))
+    from pathlib import Path
+
+    if dll_path is None:
+        dll_path = onnxruntime_dll_path()
+        if dll_path is None:
+            return {"dll": None, "loaded": False,
+                    "error": "the onnxruntime Python package is not installed",
+                    "hint": "Install onnxruntime (or onnxruntime-gpu / "
+                            "onnxruntime-directml), or pass the full path of "
+                            "an onnxruntime.dll."}
+    resolved = Path(dll_path).resolve()
+    if not resolved.is_file():
+        return {"dll": str(dll_path), "loaded": False,
+                "error": f"no such file: {resolved}",
+                "hint": "Pass the full path of an existing onnxruntime.dll; "
+                        "loading by bare name is not supported."}
+    return dict(require().probe_onnxruntime(str(resolved)))
 
 
 def onnxruntime_dll_path() -> Optional[str]:
