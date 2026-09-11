@@ -1,7 +1,7 @@
 import time
 import ctypes
 from typing import Tuple, Optional, Union, List, Any
-from threading import Thread, Event, Lock, current_thread
+from threading import Thread, Event, Lock, RLock, current_thread
 import comtypes  # type: ignore[import-untyped]
 import numpy as np
 import logging
@@ -140,8 +140,15 @@ class ScreenCapture:
         # give a clear error instead of an opaque DXGI_ERROR_INVALID_CALL.
         self._live_frame = None
         self.is_capturing = False
-        self._capture_thread = None 
-        self._capture_lock = Lock() 
+        self._capture_thread = None
+        self._capture_lock = Lock()
+        # Serialises every use of the duplicator, staging surface and immediate
+        # context: acquire, copy, map, release, rebuild. `_capture_lock` guards
+        # only the continuous-mode deque, so two threads could otherwise call
+        # AcquireNextFrame on one duplication (DXGI_ERROR_INVALID_CALL), or
+        # have a rebuild null the context mid-copy. Re-entrant because a grab
+        # can trigger a rebuild on the same thread.
+        self._duplication_lock = RLock()
         self._stop_capture_event = Event() 
         self._frame_available_event = Event() 
         
@@ -569,11 +576,7 @@ class ScreenCapture:
         # handler which would swallow this into a None return, hiding a caller
         # bug that stalls capture.
         self._ensure_no_live_frame("grab()")
-
-        # Continuous mode grabbing is handled by __capture thread and get_latest_frame
-        if self.is_capturing and self.continuous_mode:
-             logger.warning("grab() called in continuous mode. Use get_latest_frame() instead.")
-             return self.get_latest_frame() # Or return None, or raise error
+        self._refuse_while_capturing("grab()")
 
         current_region_tuple: Tuple[int, int, int, int]
         if region is None:
@@ -650,6 +653,36 @@ class ScreenCapture:
                 clipped.append((nl - left, nt - top, nr - left, nb - top))
         return clipped
 
+    def _dup_lock(self) -> RLock:
+        """The duplication lock, created on first use if __init__ did not run.
+
+        Test doubles are built with object.__new__ and never see __init__.
+        """
+        lock = self.__dict__.get("_duplication_lock")
+        if lock is None:
+            lock = self._duplication_lock = RLock()
+        return lock
+
+    def _refuse_while_capturing(self, caller: str) -> None:
+        """Single-shot capture is not available while start() is running.
+
+        The capture thread owns the duplicator for as long as it runs. A
+        concurrent grab() would compete with it for frames, and grab_frame()
+        would hold a DXGI frame the thread then cannot acquire past.
+
+        grab() used to be meant to redirect to get_latest_frame() here, but the
+        flag it tested was never set, so it raced the capture thread instead.
+        A clear error is better than a redirect: the latest frame is a plain
+        array with no release(), which code written for grab() would call.
+        """
+        if (getattr(self, "is_capturing", False)
+                and current_thread() is not getattr(self, "_capture_thread", None)):
+            raise RuntimeError(
+                f"{caller} called while continuous capture is running. The "
+                "capture thread owns the duplicator until stop(); read frames "
+                "with get_latest_frame(), or call stop() first."
+            )
+
     def _ensure_no_live_frame(self, caller: str) -> None:
         """
         Refuse to start a capture while a Frame still holds the desktop texture.
@@ -697,14 +730,20 @@ class ScreenCapture:
         Raises:
             RuntimeError: If a previous Frame has not been released yet.
         """
-        from rapidshot.frame import Frame
-
         self._ensure_no_live_frame("grab_frame()")
+        self._refuse_while_capturing("grab_frame()")
 
         if region is None:
             region = self.region
         else:
             region = self._normalize_region(region)
+
+        with self._dup_lock():
+            return self._grab_frame_locked(region)
+
+    def _grab_frame_locked(self, region):
+        """grab_frame() once the duplication lock is held."""
+        from rapidshot.frame import Frame
 
         if self._capture_permanently_failed:
             logger.error(f"Capture permanently failed: {self._last_capture_error_message}")
@@ -874,6 +913,7 @@ class ScreenCapture:
         """
         if image_ptr is None:
             raise ValueError("image_ptr cannot be None")
+        self._refuse_while_capturing("shot()")
 
         if region is None:
             region = self.region
@@ -997,7 +1037,12 @@ class ScreenCapture:
         height = region[3] - region[1]
         return width * height * self.channels
 
-    def _shot(
+    def _shot(self, image_ptr, region, buffer_size=None) -> bool:
+        """shot() under the duplication lock."""
+        with self._dup_lock():
+            return self._shot_locked(image_ptr, region, buffer_size)
+
+    def _shot_locked(
         self,
         image_ptr,
         region: Tuple[int, int, int, int],
@@ -1086,6 +1131,15 @@ class ScreenCapture:
             return False
 
     def _grab(self, region: Optional[Tuple[int, int, int, int]] = None) -> Optional[np.ndarray]:
+        """_grab_locked() under the duplication lock.
+
+        The capture thread and grab() both land here, so this is the one place
+        that has to serialise them.
+        """
+        with self._dup_lock():
+            return self._grab_locked(region)
+
+    def _grab_locked(self, region: Optional[Tuple[int, int, int, int]] = None) -> Optional[np.ndarray]:
         """
         Grab a frame with a specific region with improved error handling.
 
@@ -1313,6 +1367,15 @@ class ScreenCapture:
             return None
 
     def _on_output_change(self) -> bool:
+        """_on_output_change_locked() under the duplication lock.
+
+        A rebuild replaces the duplicator and staging surface, so it must not
+        overlap a grab that is copying out of them.
+        """
+        with self._dup_lock():
+            return self._on_output_change_locked()
+
+    def _on_output_change_locked(self) -> bool:
         """
         Rebuild duplication after a display mode change or access loss.
 
@@ -1798,9 +1861,19 @@ class ScreenCapture:
         # Set first, so a teardown that raises part-way still marks the camera
         # as unusable rather than leaving the factory to hand it out again.
         self._released = True
+        locked = False
         try:
             if hasattr(self, 'is_capturing') and self.is_capturing: # Check is_capturing before calling stop
                 self.stop()
+
+            # Tear down only once no grab is mid-copy on another thread. Bounded,
+            # because stop() gives up on a capture thread after 10 s and that
+            # thread may still hold the lock; waiting forever would turn a hung
+            # thread into a hung release().
+            locked = self._dup_lock().acquire(timeout=5)
+            if not locked:
+                logger.warning("release(): a capture call still holds the duplicator "
+                               "after 5 s; releasing resources anyway.")
 
             # A Frame still holding the desktop texture would keep DXGI's
             # surface pinned past the duplicator's own teardown.
@@ -1823,6 +1896,9 @@ class ScreenCapture:
 
         except Exception as e:
             logger.warning(f"Error during release: {e}")
+        finally:
+            if locked:
+                self._dup_lock().release()
 
     def __del__(self):
         """
