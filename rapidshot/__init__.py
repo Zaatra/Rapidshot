@@ -1,3 +1,4 @@
+import threading
 import weakref
 import time
 from rapidshot.util.logging import get_logger
@@ -85,15 +86,27 @@ class ConfigurationError(RapidshotError):
 class Singleton(type):
     """
     Singleton metaclass to ensure only one instance of RapidshotFactory exists.
+
+    Constructing the factory enumerates DXGI adapters and opens a D3D11 device
+    per adapter, so a check-then-act race here does not merely waste work: two
+    threads calling :func:`create` at once both built a factory, one of them was
+    thrown away, and the devices it had opened stayed open. Reentrant because
+    the constructor runs while the lock is held.
     """
     _instances = {}
+    _lock = threading.RLock()
 
     def __call__(cls, *args, **kwargs):
-        if cls not in cls._instances:
-            cls._instances[cls] = super(Singleton, cls).__call__(*args, **kwargs)
-        else:
-            logger.debug(f"Using existing instance of {cls.__name__}")
-        return cls._instances[cls]
+        instance = cls._instances.get(cls)
+        if instance is None:
+            with cls._lock:
+                instance = cls._instances.get(cls)
+                if instance is None:
+                    instance = super(Singleton, cls).__call__(*args, **kwargs)
+                    cls._instances[cls] = instance
+                    return instance
+        logger.debug(f"Using existing instance of {cls.__name__}")
+        return instance
 
 class RapidshotFactory(metaclass=Singleton):
     """
@@ -464,22 +477,28 @@ class RapidshotFactory(metaclass=Singleton):
 
 # Global factory instance
 __factory = None
+# Guards __factory. Separate from Singleton._lock: this one also covers reset(),
+# which has to clear the global and the instance registry together.
+__factory_lock = threading.RLock()
 
 def get_factory() -> "RapidshotFactory":
     """
     Get the global factory instance, initializing it if necessary.
-    
+
     Returns:
         RapidshotFactory instance
     """
     global __factory
-    if __factory is None:
-        try:
-            __factory = RapidshotFactory()
-        except Exception as e:
-            logger.error(f"Failed to initialize RapidshotFactory: {e}")
-            raise
-    return __factory
+    if __factory is not None:
+        return __factory
+    with __factory_lock:
+        if __factory is None:
+            try:
+                __factory = RapidshotFactory()
+            except Exception as e:
+                logger.error(f"Failed to initialize RapidshotFactory: {e}")
+                raise
+        return __factory
 
 def create(
     device_idx: int = 0,
@@ -566,18 +585,27 @@ def clean_up() -> None:
     """
     Release all created screencapture instances.
     """
-    global __factory
-    if __factory is not None:
-        __factory.clean_up()
+    with __factory_lock:
+        factory = __factory
+    # Outside the lock: releasing cameras is slow, and holding the lock across
+    # it would block every concurrent create() for the duration.
+    if factory is not None:
+        factory.clean_up()
 
 def reset() -> None:
     """
     Reset the library, releasing all resources.
     """
     global __factory
-    if __factory is not None:
-        __factory.reset()
-        __factory = None
+    # Held across the whole teardown, not just the swap. `RapidshotFactory.reset`
+    # also clears `Singleton._instances`, and between clearing the global and
+    # clearing that registry a concurrent get_factory() would be handed back the
+    # very factory being torn down. reset() is not on any hot path, and it calls
+    # nothing that reaches get_factory().
+    with __factory_lock:
+        factory, __factory = __factory, None
+        if factory is not None:
+            factory.reset()
 
 def capabilities(probe_gpu: bool = False) -> Dict[str, Any]:
     """Everything about this machine that decides what RapidShot can do.

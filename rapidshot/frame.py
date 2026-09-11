@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+from threading import RLock
 from typing import Any, List, Optional, Tuple
 
 from rapidshot.util.errors import RapidShotError
@@ -136,7 +137,7 @@ class Frame:
         "_present_time_qpc", "_accumulated_frames", "_protected_content",
         "_cursor_visible", "_width", "_height", "_dirty_rects",
         "_rects_coalesced", "_source_id", "_release_drains",
-        "_release_quarantine", "_sequence", "_generation", "_cursor",
+        "_release_quarantine", "_sequence", "_generation", "_cursor", "_lock",
     )
 
     def __init__(
@@ -156,6 +157,10 @@ class Frame:
         generation: int = 0,
         cursor: "Optional[CursorInfo]" = None,
     ) -> None:
+        # First, so __del__ can rely on it even if a later assignment raises.
+        # Reentrant: __del__ and __exit__ both route through release(), and a
+        # drain callback is arbitrary caller code.
+        self._lock = RLock()
         self._texture = texture
         self._on_release = on_release
         self._released = False
@@ -453,13 +458,19 @@ class Frame:
         `drain` is called at most once, before the surface is released, and
         must be idempotent-safe to call after the work already finished.
 
+        Registering is serialised against :meth:`release`, which takes the
+        drain list away wholesale: without that, a drain registered on one
+        thread while another released could be dropped without ever running,
+        and the surface would go back to DXGI mid-copy.
+
         ``quarantine_on_failure`` is for drains that prove submitted GPU work
         no longer reads this surface. If such a drain fails, releasing would
         invalidate the texture while that work may still be live, so the frame
         remains acquired and release raises :class:`FrameQuarantinedError`.
         Ordinary cleanup callbacks keep the historical log-and-release policy.
         """
-        self._release_drains.append((drain, bool(quarantine_on_failure)))
+        with self._lock:
+            self._release_drains.append((drain, bool(quarantine_on_failure)))
 
     def _quarantine_release(self, reason: str) -> None:
         """Keep this DXGI surface acquired because submitted work is untracked.
@@ -482,40 +493,48 @@ class Frame:
         Until this runs, the next capture cannot acquire a frame. Any drains
         registered by :meth:`defer_release_until` run first -- the surface must
         not go back while a GPU copy is still reading it.
+
+        Serialised, so two threads releasing the same frame cannot both get
+        past the released check. That used to run every drain twice and call
+        ``on_release`` twice, which hands the same DXGI frame back to
+        ``ReleaseFrame`` twice.
         """
-        if self._released:
-            return
-        if self._release_quarantine is not None:
-            raise FrameQuarantinedError(
-                "Frame cannot be released because a GPU submission could not "
-                "be tracked to completion. Capture is intentionally stopped "
-                "to preserve the DXGI surface; restart the process. "
-                f"Native failure: {self._release_quarantine}"
-            )
-        # Before the flag flips: a drain that raises must not leave the frame
-        # marked released while the surface is still held.
-        drains, self._release_drains = self._release_drains, []
-        for drain, quarantine_on_failure in drains:
-            try:
-                drain()
-            except Exception as exc:
-                if quarantine_on_failure:
-                    self._quarantine_release(str(exc))
-                    raise FrameQuarantinedError(
-                        "Frame cannot be released because its asynchronous GPU "
-                        "copy could not be drained. Capture is intentionally "
-                        "stopped to preserve the DXGI surface; restart the "
-                        f"process. Native failure: {exc}"
-                    ) from exc
-                # A generic cleanup failure is not evidence that native GPU
-                # work still references the duplication surface.
-                logger.warning(
-                    "A release drain failed; releasing the surface anyway. "
-                    "A GPU copy may still have been reading it: %s", exc
+        with self._lock:
+            if self._released:
+                return
+            if self._release_quarantine is not None:
+                raise FrameQuarantinedError(
+                    "Frame cannot be released because a GPU submission could not "
+                    "be tracked to completion. Capture is intentionally stopped "
+                    "to preserve the DXGI surface; restart the process. "
+                    f"Native failure: {self._release_quarantine}"
                 )
-        self._released = True
-        self._texture = None
-        on_release, self._on_release = self._on_release, None
+            # Before the flag flips: a drain that raises must not leave the frame
+            # marked released while the surface is still held.
+            drains, self._release_drains = self._release_drains, []
+            for drain, quarantine_on_failure in drains:
+                try:
+                    drain()
+                except Exception as exc:
+                    if quarantine_on_failure:
+                        self._quarantine_release(str(exc))
+                        raise FrameQuarantinedError(
+                            "Frame cannot be released because its asynchronous GPU "
+                            "copy could not be drained. Capture is intentionally "
+                            "stopped to preserve the DXGI surface; restart the "
+                            f"process. Native failure: {exc}"
+                        ) from exc
+                    # A generic cleanup failure is not evidence that native GPU
+                    # work still references the duplication surface.
+                    logger.warning(
+                        "A release drain failed; releasing the surface anyway. "
+                        "A GPU copy may still have been reading it: %s", exc
+                    )
+            self._released = True
+            self._texture = None
+            on_release, self._on_release = self._on_release, None
+        # Outside the lock: on_release re-enters capture, which takes locks of
+        # its own, and holding this one across it would order the two.
         if on_release is not None:
             on_release()
 
