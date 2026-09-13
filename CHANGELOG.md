@@ -403,10 +403,15 @@ returned a view of a pooled buffer that the next capture overwrote.
   Verified by installing both wheels into a clean environment **outside the
   repository**: `rapidshot.native.is_available()` returns True, the AVX2
   swizzle is byte-exact against NumPy, and `probe_cross_adapter()` reports
-  `representative: true` from the Intel iGPU to the RTX 4060. Not yet
-  published -- no `native-v*` tag has been pushed, so the `native` extra
-  resolves to nothing until one is, and it is deliberately kept out of `all`
-  until then so `pip install rapidshot[all]` does not start failing.
+  `representative: true` from the Intel iGPU to the RTX 4060.
+
+  **Published 2026-09-13 as `native-v0.1.0`**, after this release was drafted:
+  PyPI serves `rapidshot_native-0.1.0-cp39-abi3-win_amd64.whl`, verified by
+  installing it from PyPI into a clean environment. It stays out of the `all`
+  extra for now -- adding it only takes effect on a `rapidshot` release, so it
+  rides with the next one. Note the wheel needs **this** release: discovery
+  lives in `rapidshot.native`, which 2.4.0 predates, so the wheel reports
+  `is_available() == False` against the previously published RapidShot.
 
 - **`rapidshot.dxcam_compat`: DXcam code runs by changing one import.**
   `import rapidshot.dxcam_compat as dxcam` provides `create()`,
