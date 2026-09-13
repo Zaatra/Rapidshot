@@ -454,9 +454,22 @@ def environment(motion: bool) -> dict:
     for module in ("numpy", "cv2", "cupy", "dxcam", "bettercam", "mss",
                    "psutil", "comtypes"):
         try:
-            info[module] = __import__(module).__version__
+            imported = __import__(module)
         except Exception as exc:
             info[module] = f"unavailable ({type(exc).__name__})"
+            continue
+        # Present but unversioned is not the same as absent. DXcam 0.3.0 ships
+        # no `__version__`, and reading the attribute straight into the table
+        # recorded it as "unavailable (AttributeError)" in a results file --
+        # next to twenty-four rows of DXcam measurements.
+        version = getattr(imported, "__version__", None)
+        if version is None:
+            try:
+                from importlib.metadata import version as dist_version
+                version = dist_version(module)
+            except Exception:
+                version = "installed, version unknown"
+        info[module] = version
     try:
         import cv2
         info["cv2_threads"] = cv2.getNumThreads()

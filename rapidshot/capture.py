@@ -1420,6 +1420,24 @@ class ScreenCapture:
 
             if can_use_pool and pooled_buffer_wrapper:
                 if is_pooled_buffer_still_valid:
+                    if not self._pool_output:
+                        # `pool_output=False` promises a plain ndarray the
+                        # caller owns and never releases. Every converting mode
+                        # gets one for free, because conversion allocates. BGRA
+                        # converts nothing, so the frame *is* the staging
+                        # buffer -- and this used to hand that buffer over
+                        # anyway, still pooled.
+                        #
+                        # Two failures from one line: the caller got a
+                        # PooledBuffer where the documentation says ndarray,
+                        # and, having been told no release was needed, never
+                        # released it. BGRA has no allocating fallback, so
+                        # capture stopped after exactly pool_size_frames frames
+                        # and returned None from then on, silently.
+                        try:
+                            return self._frame_array(pooled_buffer_wrapper).copy()
+                        finally:
+                            pooled_buffer_wrapper.release()
                     return pooled_buffer_wrapper
                 pooled_buffer_wrapper.release()
                 return final_array

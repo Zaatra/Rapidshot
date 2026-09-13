@@ -281,6 +281,13 @@ then `None`, where `RGB` kept going.
 camera = rapidshot.create(pool_output=False)   # plain ndarrays, as before
 ```
 
+Before 2.5.0 this was only true for the converting modes. `BGRA` converts
+nothing, so its frame *is* the staging buffer, and `pool_output=False` handed
+that buffer over still pooled — an object the documentation said you would not
+get, and which the same sentence told you not to release. Capture then stopped
+after `pool_size_frames` frames and returned `None` from then on, silently.
+`BGRA` now copies out, which is the cost `pool_output=False` opts into.
+
 BGRA already worked this way before 2.0 — it does no conversion, so its staging
 buffer was always returned pooled.
 
