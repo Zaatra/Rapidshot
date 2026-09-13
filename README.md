@@ -1012,9 +1012,31 @@ of three.
 
 Read it with these caveats:
 
-- **One machine, and a hybrid one.** The direct single-adapter GPU path could
-  not run here; on a machine whose NVIDIA GPU drives the display it is expected
-  to beat every row above, and it has not been measured.
+- **One machine.** Every row above was taken with the laptop's MUX in hybrid
+  mode: capture on the Intel iGPU, CUDA on the RTX 4060. The direct
+  single-adapter path cannot run in that mode at all — it fails with
+  `CrossAdapterRequired`, because no CUDA device owns the adapter the frame was
+  captured on.
+
+  **It has since been measured, with the MUX switched to discrete-only** so the
+  NVIDIA card drives the display (2026-09-13, same laptop, 2560x1600). Verified
+  byte-exact first, then timed:
+
+  | | unique frames/s | pixel age p50 | CPU per frame | host-to-device |
+  | --- | --- | --- | --- | --- |
+  | RapidShot direct, single adapter | 89.4 | **31.4 ms** | 6.7 ms | **0 bytes** |
+
+  **The pixels are the youngest measured anywhere on this page** — 2.2 ms ahead
+  of the best hybrid row and 5.2 ms ahead of DXcam — which is what you would
+  expect from the only path that never crosses an adapter.
+
+  Two things stop this being a like-for-like row in the table above, and both
+  matter more than the headline. It is **one 8-second pass, not a median of
+  three**. And it ran in **a different machine configuration**: with the NVIDIA
+  card driving the display, the compositor's present behaviour is not the same,
+  so the frame-rate column cannot be compared across the two modes. 89.4 against
+  `grab()`'s 140.5 is not a regression, it is a different machine. Pixel age and
+  CPU per frame are the columns that travel.
 - **Every path drops source frames.** The source presented at a median 165/s
   and no path keeps up, so these are throughput and latency under load — not a
   best case. It dipped briefly below `grab()`'s rate, so that row's frame rate
