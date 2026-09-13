@@ -34,7 +34,7 @@ What each release delivered, in one line each — `CHANGELOG.md` has the detail:
 
 Two further items cannot be verified from the repository either and should be confirmed in the same pass: **Settings → Security → private vulnerability reporting** must be enabled (or the link in `SECURITY.md` 404s), and branch protection needs *Require review from Code Owners* (or `CODEOWNERS` is only a routing hint).
 
-**Next feature task:** § 6.3 — finish Stage 3 (Frame metadata). It is smaller again as of 2026-09-13: **timestamps are done** (`Frame.timestamp_qpc` and `Frame.timestamp`), **cursor data now reaches `Frame`** (`Frame.cursor` carries a `CursorInfo` with position, hotspot, shape bytes, shape type, size and pitch) with **one piece outstanding — `CursorInfo.position` is still in desktop coordinates**, which § 6.3 requires be translated to frame coordinates like `dirty_rects`, and **`Protocol`-typed interfaces are not started** — there is still no `Protocol` anywhere in the package. So § 6.3 is now two tasks: translate the cursor position, and design the `Protocol` interfaces. § 6.1 is complete: hybrid and headless systems are reported clearly, a captured frame crosses to a second adapter at **0.70–0.98 ms per 1080p frame** verified byte-exact, and the convert-first-or-transfer-first question has been measured and settled in favour of transferring the frame. **§ 6.1's validation on real hybrid hardware is now done** (2026-08-22, Intel→NVIDIA, byte-exact — see above), **and the asynchronous shared fence shipped in 2.4.0**, which was the last piece outstanding there. § 6.1 is closed in both directions: `transfer_async()` submits without blocking, `shared_fence_handle` lets a CUDA consumer wait on the GPU, and `set_consumer_fence()` / `wait_for_consumer()` close the reverse hazard where the producer overwrites a buffer the consumer is still reading.
+**Next feature task:** § 6.3 — finish Stage 3 (Frame metadata). It is smaller again as of 2026-09-13: **timestamps are done** (`Frame.timestamp_qpc` and `Frame.timestamp`), **cursor data now reaches `Frame`** (`Frame.cursor` carries a `CursorInfo` with position, hotspot, shape bytes, shape type, size and pitch) with **one piece outstanding — `CursorInfo.position` is still in desktop coordinates**, which § 6.3 requires be translated to frame coordinates like `dirty_rects`, and **`Protocol`-typed interfaces are not started** — there is still no `Protocol` anywhere in the package. So § 6.3 is now two tasks: translate the cursor position, and design the `Protocol` interfaces. § 6.1 is complete: hybrid and headless systems are reported clearly, a captured frame crosses to a second adapter at **0.70–0.98 ms per 1080p frame** verified byte-exact, and the convert-first-or-transfer-first question **has been re-opened** (2026-09-13): the measurement that settled it in favour of transferring the frame omitted one of that ordering's costs and only tested the most expensive payload, and at 2560x1600 converting first wins at every size — see the box in § 6.1. **§ 6.1's validation on real hybrid hardware is now done** (2026-08-22, Intel→NVIDIA, byte-exact — see above), **and the asynchronous shared fence shipped in 2.4.0**, which was the last piece outstanding there. § 6.1 is closed in both directions: `transfer_async()` submits without blocking, `shared_fence_handle` lets a CUDA consumer wait on the GPU, and `set_consumer_fence()` / `wait_for_consumer()` close the reverse hazard where the producer overwrites a buffer the consumer is still reading.
 
 **Do not start another round of D3D12 synchronisation work without a measurement or a user report asking for it.** That seam has been through feature work, hardware validation, adversarial review, four rounds of fixes, targeted regression tests and a clean final pass. The next thing to do here is nothing; the returns are elsewhere.
 
@@ -527,6 +527,53 @@ So B wins only below 416², **640² is a tie**, and A wins clearly above it. Thr
 - In A the conversion runs on the *consumer's* GPU, which on a hybrid system is the faster one by assumption. These figures therefore understate A.
 - B spends iGPU time on every frame; the iGPU is also driving the display.
 - A matches the principle in § 11: Rapidshot produces frames and does not own its consumers' pipelines. Handing over BGRA leaves the model's preprocessing to the model's owner.
+
+> ### ⚠ Re-opened 2026-09-13 — the measurement above is wrong, and B wins everywhere
+>
+> Two faults, both flattering A, found by review and then measured:
+>
+> 1. **A's destination-side conversion was never counted.** A was timed as the
+>    transfer alone. The first bullet above claims the figures "understate A"
+>    because the consumer's GPU is faster — but omitting one of A's costs
+>    *overstates* A, whatever the speed of the GPU that would pay it. Relative
+>    speed and an uncounted term are different arguments, and that bullet
+>    conflates them.
+> 2. **B was only ever measured carrying FP32** (`out*out*3*4`). A 640-square
+>    frame need not cross as 4.92 MB: FP16 is 2.46 MB, a plain BGRA8 resize
+>    1.64 MB. The cheap representations — the entire point of shrinking before
+>    the bus — were never on the table.
+>
+> It was also measured at 1080p (8.29 MB). **At 2560×1600 the frame is 16.38 MB
+> and A's transfer alone costs 2.65 ms** (`cross_adapter_ordering_v2.py`, two
+> runs, min of 30):
+>
+> | out | payload | MB | convert (iGPU) | transfer | **B total** |
+> | --- | --- | ---: | ---: | ---: | ---: |
+> | 640² | BGRA8 resize | 1.64 | 0.51–0.54 | 0.15 | **0.66–0.69 ms** |
+> | 640² | FP16 NCHW | 2.46 | 0.51–0.54 | 0.17 | **0.68–0.71 ms** |
+> | 640² | FP32 NCHW | 4.92 | 0.51–0.54 | 0.23 | **0.74–0.77 ms** |
+> | 1280² | FP32 NCHW | 19.66 | 0.86–0.92 | 0.96–1.00 | **1.81–1.92 ms** |
+>
+> **B wins at every size and every representation tested — including the FP32
+> the original test used — and the win is unconditional.** B's total beats A's
+> *transfer alone*, so no value of A's unmeasured destination conversion can
+> change the ordering. That is a bound, not an estimate.
+>
+> A's destination conversion still cannot be timed from here: `GpuPreprocessor12`
+> is built from the source texture and runs on that adapter, and nothing in the
+> native API builds one on the destination device. It does not need to be: A is
+> already losing without it.
+>
+> **What this does not establish.** The convert column is the FP32 NCHW path for
+> every row, because that is the only thing `GpuPreprocessor12` emits — so the
+> BGRA8 and FP16 rows are pessimistic on convert and exact on transfer. A
+> resize-only kernel does not exist yet. The § 11 argument for A is untouched by
+> any of this: it is about ownership, not speed, and it is now the *only*
+> argument for A rather than one of four.
+>
+> **Do not treat the 1080p table above as settled.** The original verdict looks
+> like an artifact of one resolution and one missing term. Re-measure before
+> relying on it, and prefer `cross_adapter_ordering_v2.py`.
 
 Remaining work:
 
@@ -1271,6 +1318,12 @@ Before more GPU surface area, make the library boringly dependable and easy to a
 ### 7.2 — 2.6: GPU transform and framework interop
 
 **`GpuConverter` — rank 2, and build it before the encoder.** A reusable colourspace/format layer: `BGRA8 / RGBA8 / R10G10B10A2 / RGBA16F → NV12 / P010 / RGB`. Capture already handles HDR formats through `DuplicateOutput1`. Built once as infrastructure it serves ML, encoding, streaming and recording; buried inside a Stage 7 encoder it serves one of them.
+
+**The existing preprocessor downsamples with nearest-neighbour, and that is not recorded anywhere else.** `native/src/preprocess12.rs` computes `sx = tid.x * SrcWidth / OutWidth` and reads with `Source.Load()`; the root signature declares `NumStaticSamplers: 0`, so no filtering hardware is involved. Scaling 2560x1600 down to 640² drops roughly fifteen of every sixteen pixels rather than averaging them, which aliases exactly the content desktop capture is most often pointed at — small text, thin borders, cursor edges. Nobody has measured what that costs a model's accuracy, and no test would catch it: the output is the right shape, the right range and the right channel order.
+
+Two consequences. A `GpuConverter` should sample through a static sampler (`Texture2D.SampleLevel`) rather than inherit `Load()`. And **any A/B against the current path must state which sampling it used** — substituting bilinear silently changes the work being timed, so a "faster" result could just be a different computation. It also changes the numerical contract `tests/test_gpu_preprocess.py` pins, so it is a new path rather than an edit to the existing one.
+
+Also worth taking from the same review: `GpuPreprocessor12` emits FP32 only. Most production inference runs FP16, so the consumer pays a cast the producer could have avoided — and an FP16 tensor is half the bytes across the bus, which § 6.1's re-opened ordering question now makes load-bearing.
 
 **`GpuTensor` → Torch / CuPy / DLPack — rank 3.** `examples/gpu_tensor_to_cupy.py` proves the path but costs the caller ~60 lines of `ctypes`. Collapse that to `tensor.to_torch()` / `.to_cupy()` / `.to_dlpack()` while keeping GPU residency.
 
