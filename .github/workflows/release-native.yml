@@ -85,10 +85,22 @@ jobs:
       # `rapidshot` is what actually consumes this, and it looks in two places.
       # A wheel that imports on its own but that rapidshot cannot find is a
       # wheel that does nothing for anyone.
+      #
+      # Installed from *this checkout*, not from PyPI. Wheel discovery lives
+      # in `rapidshot.native`, so pulling the last published release tests a
+      # new wheel against old discovery code -- which fails for as long as
+      # the feature is unreleased, i.e. exactly when this check matters. The
+      # first dry run failed that way: a correct 0.1.0 wheel against
+      # rapidshot 2.4.0, whose native.py predates wheel discovery entirely.
+      #
+      # --no-deps keeps pip from reaching PyPI for the same package by
+      # another route. The repository still never reaches sys.path: every
+      # command below runs from RUNNER_TEMP.
       - name: RapidShot must actually pick it up
         shell: pwsh
         run: |
-          & "$env:RUNNER_TEMP\relcheck\Scripts\python.exe" -m pip install --quiet rapidshot
+          & "$env:RUNNER_TEMP\relcheck\Scripts\python.exe" -m pip install --quiet numpy comtypes
+          & "$env:RUNNER_TEMP\relcheck\Scripts\python.exe" -m pip install --quiet --no-deps .
           Push-Location $env:RUNNER_TEMP
           & "$env:RUNNER_TEMP\relcheck\Scripts\python.exe" -c @"
           from rapidshot import native
