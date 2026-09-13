@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import platform
 import statistics
 import subprocess
@@ -624,6 +625,16 @@ def main() -> int:
                     help="launch benchmarks/motion_source.py for the duration "
                          "of the run and stop it afterwards, instead of relying "
                          "on one having been started by hand for long enough")
+    ap.add_argument("--checkpoint", type=Path,
+                    help="append every completed sample here as JSONL and skip "
+                         "samples already in it. Makes a run resumable: this "
+                         "harness holds results in memory until the end, so an "
+                         "interrupted run used to lose everything. On a machine "
+                         "that can fall over mid-run, that is the difference "
+                         "between losing minutes and losing the whole session.")
+    ap.add_argument("--seed", type=int, default=20260913,
+                    help="ordering seed. Cells are run in a shuffled order so "
+                         "a library's position cannot become its result.")
     ap.add_argument("--out", type=Path)
     args = ap.parse_args()
 
@@ -643,8 +654,11 @@ def main() -> int:
         print("  changed frames, so these numbers describe idling, not capture.")
     print()
 
-    rows: List[dict] = []
-    total = len(SCENARIOS) * len(COLOURS) * len(args.libraries) * args.repeats
+    cells = [(scenario, colour, library)
+             for scenario in SCENARIOS
+             for colour in COLOURS
+             for library in args.libraries]
+    total = len(cells) * args.repeats
     motion = None
     if args.with_motion:
         # Startup dominates for short windows, so budget per run rather than
@@ -652,19 +666,63 @@ def main() -> int:
         budget = total * (args.seconds + 3.0) * 1.5
         print(f"  starting motion source for ~{budget:.0f}s")
         motion = launch_motion(budget)
-    done = 0
-    for scenario in SCENARIOS:
-        for colour in COLOURS:
-            for library in args.libraries:
-                samples = []
-                for rep in range(args.repeats):
-                    done += 1
-                    print(f"  [{done}/{total}] {library}/{scenario}/{colour} "
-                          f"rep {rep + 1}", end="\r", flush=True)
-                    samples.append(spawn(library, scenario, colour,
-                                         args.seconds, args.warmup))
-                rows.append(aggregate(samples))
-    print(" " * 70, end="\r")
+    # Each repeat is a full pass over every cell, in a shuffled order.
+    #
+    # Running a cell's repeats back to back, library after library, makes a
+    # library's *position in the run* part of its result: the machine warms up
+    # and clocks drop, so whoever goes last is measured on a slower computer.
+    # That is not hypothetical -- an A/B of this repository on 2026-09-13 moved
+    # by 15% in whichever direction put a version second, which is larger than
+    # most differences anyone would want to report from this table.
+    #
+    # Interleaving spreads that drift across every library instead of letting it
+    # accumulate on the last one, and it makes the per-cell spread honest: the
+    # repeats are now separated by minutes and by other libraries' work, so the
+    # error bar covers drift instead of hiding it.
+    samples_by_cell = {cell: [] for cell in cells}
+
+    # Resume anything a previous run already measured.
+    resumed = 0
+    if args.checkpoint and args.checkpoint.exists():
+        with args.checkpoint.open(encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue        # a line torn in half by a hard stop
+                cell = (record["scenario"], record["colour"], record["library"])
+                if cell in samples_by_cell:
+                    samples_by_cell[cell].append(record["sample"])
+                    resumed += 1
+        if resumed:
+            print(f"  resuming: {resumed} samples already recorded in "
+                  f"{args.checkpoint}")
+
+    done = resumed
+    order = list(cells)
+    rng = random.Random(args.seed)
+    for rep in range(args.repeats):
+        rng.shuffle(order)
+        for cell in order:
+            scenario, colour, library = cell
+            if len(samples_by_cell[cell]) > rep:
+                continue            # this pass of this cell is already recorded
+            done += 1
+            print(f"  [{done}/{total}] pass {rep + 1}: "
+                  f"{library}/{scenario}/{colour}", end=chr(13), flush=True)
+            sample = spawn(library, scenario, colour, args.seconds, args.warmup)
+            samples_by_cell[cell].append(sample)
+            if args.checkpoint:
+                # Flushed per sample. Buffering would reintroduce exactly the
+                # loss this exists to prevent.
+                with args.checkpoint.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps({"scenario": scenario,
+                                         "colour": colour,
+                                         "library": library,
+                                         "sample": sample}) + chr(10))
+                    fh.flush()
+    print(" " * 70, end=chr(13))
+    rows = [aggregate(samples_by_cell[cell]) for cell in cells if samples_by_cell[cell]]
 
     print(table(rows))
     print(f"\n± is the spread across {args.repeats} independent runs of that cell,")
