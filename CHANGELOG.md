@@ -10,26 +10,7 @@ each release can be traced back to the plan it implements.
 
 ## [Unreleased]
 
-### Measured
-
-- **The direct single-adapter GPU path, which had never run.** Every ingestion
-  figure in the README was taken on a hybrid laptop, where the direct path fails
-  with `CrossAdapterRequired` -- no CUDA device owns the adapter the frame was
-  captured on. Re-measured with the MUX in discrete-only mode so the RTX 4060
-  drives the display: verified byte-exact, then **31.4 ms pixel age p50, 6.7 ms
-  CPU per frame, zero host-to-device bytes**. That is the youngest pixel age
-  measured anywhere in this project -- 2.2 ms ahead of the best hybrid path and
-  5.2 ms ahead of DXcam. One 8-second pass in a different machine configuration,
-  so its frame-rate column is not comparable with the hybrid table; pixel age
-  and CPU per frame are.
-
-- **The hybrid ingestion figures reproduced.** A single 8-second pass per path
-  landed within a few percent of the committed medians of three: `grab()` at
-  +37% unique frames over DXcam against the recorded 30%, pixel age 7.4% younger
-  against the recorded 8%, and the cross-adapter path at 59% less CPU against
-  the recorded 45%.
-
-## [2.5.0] - 2026-09-11
+## [2.5.0] - 2026-09-13
 
 **Everything that made RapidShot worth choosing, without the toolchain.** 2.4.0
 made the hybrid path work end to end; this release makes it reachable. The GPU
@@ -638,6 +619,25 @@ returned a view of a pooled buffer that the next capture overwrote.
   first, and names prebuilt native wheels as the larger return -- every figure
   in section 3 that makes this library worth choosing sits behind an extension
   a `pip install` cannot currently reach.
+
+### Measured
+
+- **The direct single-adapter GPU path, which had never run.** Every ingestion
+  figure in the README was taken on a hybrid laptop, where the direct path fails
+  with `CrossAdapterRequired` -- no CUDA device owns the adapter the frame was
+  captured on. Re-measured with the MUX in discrete-only mode so the RTX 4060
+  drives the display: verified byte-exact, then **31.4 ms pixel age p50, 6.7 ms
+  CPU per frame, zero host-to-device bytes**. That is the youngest pixel age
+  measured anywhere in this project -- 2.2 ms ahead of the best hybrid path and
+  5.2 ms ahead of DXcam. One 8-second pass in a different machine configuration,
+  so its frame-rate column is not comparable with the hybrid table; pixel age
+  and CPU per frame are.
+
+- **The hybrid ingestion figures reproduced.** A single 8-second pass per path
+  landed within a few percent of the committed medians of three: `grab()` at
+  +37% unique frames over DXcam against the recorded 30%, pixel age 7.4% younger
+  against the recorded 8%, and the cross-adapter path at 59% less CPU against
+  the recorded 45%.
 
 ### Benchmarks
 
