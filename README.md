@@ -265,9 +265,14 @@ To keep the data, `frame.copy()` or `np.array(frame, copy=True)`.
 > was overwritten by the next capture, with nothing raising. `frame.copy()` and
 > `np.asarray(frame).copy()` were always correct.
 
-Forgetting is not fatal: the pool runs dry and capture falls back to allocating,
-which is slower but always correct. It will never hand you a buffer another
-caller is reading.
+Forgetting is never *corrupting*: the pool will not hand you a buffer another
+caller is still reading. What happens when it runs dry depends on the mode.
+With a conversion — `RGB`, `BGR`, `RGBA`, `GRAY` — capture falls back to
+allocating, which is slower but always correct. `BGRA` does no conversion, so
+the frame you hold *is* the staging buffer, and there is nothing to fall back
+to: once every buffer is out, `grab()` returns `None` until one comes back.
+Measured: 30 unreleased `BGRA` grabs at `pool_size_frames=2` gave 2 frames and
+then `None`, where `RGB` kept going.
 
 **Coming from 1.x**: add `release()`, and wrap in `np.asarray()` where a true
 `ndarray` is required (`isinstance` checks, `Image.fromarray`). Or opt out:

@@ -138,6 +138,7 @@ class Frame:
         "_cursor_visible", "_width", "_height", "_dirty_rects",
         "_rects_coalesced", "_source_id", "_release_drains",
         "_release_quarantine", "_sequence", "_generation", "_cursor", "_lock",
+        "_move_rects",
     )
 
     def __init__(
@@ -151,6 +152,7 @@ class Frame:
         protected_content: bool = False,
         cursor_visible: bool = False,
         dirty_rects: Optional[List[Tuple[int, int, int, int]]] = None,
+        move_rects: Optional[List[Tuple[int, int, int, int, int, int]]] = None,
         rects_coalesced: bool = False,
         source_id: int = 0,
         sequence: int = 0,
@@ -177,6 +179,7 @@ class Frame:
         self._width = region[2] - region[0]
         self._height = region[3] - region[1]
         self._dirty_rects = self._clip_to_region(dirty_rects)
+        self._move_rects = self._clip_move_rects(move_rects)
         self._rects_coalesced = rects_coalesced
         self._source_id = source_id
         self._sequence = sequence
@@ -204,6 +207,32 @@ class Frame:
             nr, nb = min(rr, right), min(rb, bottom)
             if nl < nr and nt < nb:
                 clipped.append((nl - left, nt - top, nr - left, nb - top))
+        return clipped
+
+    def _clip_move_rects(self, move_rects):
+        """Clip move rects to this frame, keeping each source paired with its own
+        destination.
+
+        Clipping through :meth:`_clip_to_region` and zipping the result back
+        against the input does not work: that helper drops rects which miss the
+        region, so the two lists go out of step and a source point gets attached
+        to some other rectangle's destination. Done here in one pass instead.
+
+        Only the destination is translated into frame coordinates. The source
+        point stays in desktop coordinates, because the pixels may have come
+        from somewhere outside this frame's region entirely -- and clamping it
+        would silently claim they came from somewhere they did not.
+        """
+        if move_rects is None:
+            return None
+        left, top, right, bottom = self._region
+        clipped = []
+        for source_x, source_y, rl, rt, rr, rb in move_rects:
+            nl, nt = max(rl, left), max(rt, top)
+            nr, nb = min(rr, right), min(rb, bottom)
+            if nl < nr and nt < nb:
+                clipped.append((source_x, source_y,
+                                nl - left, nt - top, nr - left, nb - top))
         return clipped
 
     # -- GPU resource ------------------------------------------------------
@@ -348,13 +377,36 @@ class Frame:
         return self._generation
 
     @property
+    def move_rects(self) -> Optional[List[Tuple[int, int, int, int, int, int]]]:
+        """Regions the compositor moved rather than redrew.
+
+        Each entry is ``(source_x, source_y, left, top, right, bottom)``: where
+        the pixels came from, in desktop coordinates, and the rectangle they now
+        occupy, in this frame's coordinates. DXGI does not repeat these in
+        :attr:`dirty_rects`, so anything patching a previous frame by dirty rect
+        alone would leave these regions stale.
+
+        Usually empty. Measured on Windows 11 across 3,768 frames of window
+        dragging and page scrolling: zero move rects, with the metadata readable
+        every time. A fully composited desktop has nothing left for a
+        screen-to-screen blit to optimise. None means the metadata could not be
+        read, the same distinction :attr:`dirty_rects` draws.
+        """
+        return self._move_rects
+
+    @property
     def changed_fraction(self) -> Optional[float]:
-        """Fraction of this frame's area covered by dirty rects, 0.0 to 1.0.
+        """Fraction of this frame's area that is new, 0.0 to 1.0.
 
         None when :attr:`dirty_rects` is None -- metadata could not be read, so
         nothing can be inferred. An **empty** rect list gives ``1.0``, not
         ``0.0``: no rects means no information, and the safe reading is that
         everything changed (see :attr:`dirty_rects`).
+
+        Counts :attr:`move_rects` as well. A moved region carries content that
+        was not there in the previous frame, and DXGI reports it *instead of* a
+        dirty rect, so a consumer deciding how much work to do would otherwise
+        be told a scroll changed nothing.
 
         Overlapping rects are counted once. The driver may still have merged
         regions before reporting them, in which case this over-estimates --
@@ -362,14 +414,16 @@ class Frame:
         """
         if self._dirty_rects is None:
             return None
-        if not self._dirty_rects:
+        regions = list(self._dirty_rects)
+        regions.extend(rect[2:] for rect in (self._move_rects or ()))
+        if not regions:
             return 1.0
         total = self._width * self._height
         if total <= 0:
             return 0.0
         # Union by row spans, so overlapping rects are not double counted.
         events = []
-        for left, top, right, bottom in self._dirty_rects:
+        for left, top, right, bottom in regions:
             if right > left and bottom > top:
                 events.append((top, 1, left, right))
                 events.append((bottom, -1, left, right))

@@ -49,6 +49,42 @@ returned a view of a pooled buffer that the next capture overwrote.
 
 ### Fixed
 
+- **Moved regions were invisible to the dirty-rect path.** DXGI reports regions
+  the compositor *moved* -- a scroll, a window drag -- separately from the ones
+  it redrew, and does not repeat them in the dirty rects. `GetFrameMoveRects`
+  was declared but never called, so patching a frame by dirty rect alone could
+  leave a moved region showing the previous contents, and `changed_fraction`
+  reported a scroll as no change at all. Move rects are now read alongside the
+  dirty rects, exposed as `frame.move_rects`, counted in `changed_fraction`,
+  and a frame carrying any of them falls back to converting the whole frame
+  rather than patching.
+
+  **Measured first, as the review asked.** On Windows 11 at 2560x1600, across
+  3,768 frames of window dragging and real page scrolling, DWM reported **zero**
+  move rects, with the metadata readable on every frame -- a fully composited
+  desktop leaves nothing for a screen-to-screen blit to optimise. So the
+  full-convert fallback is correctness insurance for configurations where that
+  is not true, not a path this hardware takes. The extra metadata read costs
+  7.9 us, 0.13% of a 6.05 ms `grab()`.
+
+- **Continuous BGRA capture stopped after `pool_size_frames` frames.** The
+  frame queue was bounded by `max_buffer_len` (64) while backed by a pool of 4,
+  and nothing returned a buffer until the queue reached 64 -- which it could
+  never do. The queue is now bounded by what the pool can spare, leaving one
+  buffer free for the next capture. Other colour modes are unaffected and keep
+  the full `max_buffer_len`: their frames come from the output pool, which falls
+  back to allocating. Verified live with nobody reading at all: 173 frames in
+  three seconds at `pool_size_frames=4` where it previously produced 4 and
+  froze, and 116 at `pool_size_frames=2`.
+
+- **`grab()` on BGRA has no allocating fallback**, which the README claimed it
+  did. With a conversion the output pool running dry falls back to allocating;
+  BGRA hands back the staging buffer itself, so once every buffer is out
+  `grab()` returns None until one is released. Measured: 30 unreleased BGRA
+  grabs at `pool_size_frames=2` gave 2 frames and then None, where RGB kept
+  going. Documented rather than changed -- the fallback would have to hand back
+  an unpooled array, which is the aliasing hazard pooling exists to prevent.
+
 - **A failing timer wait looked like a normal tick.** `util/timer.py` declared
   none of its Windows functions, so ctypes read `WaitForSingleObject`'s DWORD
   return as a signed 32-bit int: `WAIT_FAILED` is `0xFFFFFFFF`, which comes

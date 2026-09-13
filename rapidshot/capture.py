@@ -89,8 +89,11 @@ class ScreenCapture:
                 75 MB with no pool at all. The default of 4 was chosen because
                 dropping from 10 saved 29 MB with no measurable change in frame
                 rate. Raise it only if you genuinely hold several frames at
-                once; running dry is not an error, it just falls back to
-                allocating, which is slower but always correct.
+                once. Running dry is not an error for a converting mode: it
+                falls back to allocating, which is slower but always correct.
+                ``BGRA`` has no such fallback -- the frame is the staging
+                buffer -- so ``grab()`` returns None until a buffer is
+                released.
             pool_output: Reuse buffers for the converted frame instead of
                 allocating one per frame. Saves ~1.6 ms on a 1080p RGB frame --
                 the page faults on first touch cost more than the conversion.
@@ -334,6 +337,15 @@ class ScreenCapture:
         """
         Initializes or re-initializes DXGI/D3D resources (Device, Output, Duplicator).
         Also re-initializes StageSurface, Processor, and MemoryPool if needed.
+
+        **Not safe to call from outside the capture thread while capture is
+        running.** It sets ``_duplicator`` to None part-way through, and a
+        concurrent ``_grab_locked`` dereferences it: calling this from another
+        thread mid-capture raises ``AttributeError: 'NoneType' object has no
+        attribute '_frame_acquired'`` in the capture thread. Nothing in the
+        library does that -- the capture thread reaches this through ``_grab``
+        via ``_needs_reinit``, and ``_on_output_change`` holds the duplication
+        lock -- but it is not a constraint the code states anywhere else.
         """
         logger.info(f"{'Re-initializing' if is_reinit else 'Initializing'} capture resources...")
         
@@ -687,7 +699,24 @@ class ScreenCapture:
 
         Returns None when the metadata is unavailable, which the processor
         reads as "convert everything".
+
+        A frame carrying **move** rects is treated the same way. The compositor
+        satisfied part of it by copying pixels already on screen, and DXGI does
+        not repeat those regions in the dirty rects -- so patching by dirty rect
+        alone would leave the moved region showing the previous frame. Redrawing
+        everything is the only answer that is right without implementing the
+        copy, and it costs nothing where move rects never appear.
+
+        Measured on this machine (Windows 11, 2560x1600): across 3,768 frames of
+        window dragging and page scrolling, DWM reported **zero** move rects,
+        with the metadata readable on every frame. With everything composited
+        into per-window surfaces there is nothing left for a screen-to-screen
+        blit to optimise. This branch is correctness insurance for the
+        configurations where that is not true, not a path this hardware takes.
         """
+        if getattr(self._duplicator, "move_rects", None):
+            return None
+
         rects = getattr(self._duplicator, "dirty_rects", None)
         if not rects:
             return rects if rects is None else []
@@ -837,6 +866,7 @@ class ScreenCapture:
             protected_content=duplicator.protected_content_detected,
             cursor_visible=duplicator.cursor_visible,
             dirty_rects=duplicator.dirty_rects,
+            move_rects=duplicator.move_rects,
             rects_coalesced=duplicator.rects_coalesced,
             sequence=self._next_sequence(),
             generation=self._generation,
@@ -1579,7 +1609,7 @@ class ScreenCapture:
         self.is_capturing = True
         
         # Phase 4: Initialize deque for continuous mode
-        self._pooled_frames_deque = collections.deque(maxlen=self.max_buffer_len)
+        self._pooled_frames_deque = collections.deque(maxlen=self._queue_limit())
         self._last_dup_source = None
         self._frame_available_event.clear() # Clear before starting
         self._stop_capture_event.clear()
@@ -1594,6 +1624,51 @@ class ScreenCapture:
         )
         self._capture_thread.daemon = True
         self._capture_thread.start()
+
+    def _queue_limit(self) -> int:
+        """How many frames the continuous-mode queue may hold.
+
+        Normally ``max_buffer_len``. But when the queue holds buffers from the
+        *staging* pool -- which is BGRA, the one mode that does no conversion
+        and so hands its staging buffer straight to the caller -- the queue
+        cannot be allowed to hold more than the pool can spare, or the producer
+        runs out of buffers to check out and capture stops dead.
+
+        That is what used to happen: the queue was bounded at 64 while the pool
+        held 4, nothing was returned until the queue reached 64, and it never
+        could. Continuous BGRA capture produced exactly `pool_size_frames`
+        frames and then froze, logging a pool-exhaustion warning per attempt.
+        Every other colour mode was unaffected, because its queued frames come
+        from the output pool, which falls back to allocating when it runs dry.
+
+        One buffer is always left free for the next grab, which is why this is
+        ``pool_size - 1``.
+        """
+        limit = self.max_buffer_len
+        processor = getattr(self, "_processor", None)
+        if processor is None or getattr(processor, "converts_output", True):
+            # No processor means a half-built camera in a test; a converting
+            # one queues output-pool buffers, which fall back to allocating.
+            return limit
+
+        pool = getattr(self, "memory_pool", None)
+        pool_size = (pool.num_buffers if pool is not None
+                     else self._init_args.get("pool_size_frames", 4))
+        if pool_size < 2:
+            logger.warning(
+                f"pool_size_frames={pool_size} leaves no buffer free while a "
+                "frame is queued, so continuous BGRA capture cannot keep "
+                "running. Use pool_size_frames=2 or more.")
+            return 1
+
+        spare = pool_size - 1
+        if spare < limit:
+            logger.debug(
+                f"Continuous-mode queue limited to {spare} frames by "
+                f"pool_size_frames={pool_size}, not max_buffer_len={limit}: "
+                "BGRA queues staging-pool buffers, and one must stay free for "
+                "the next capture.")
+        return min(limit, spare)
 
     def stop(self):
         """
@@ -1805,7 +1880,7 @@ class ScreenCapture:
                     # empty for RGB/BGR/RGBA/GRAY consumers.
                     evicted_buffer = None
                     with self._capture_lock:
-                        if len(self._pooled_frames_deque) == self.max_buffer_len:
+                        if len(self._pooled_frames_deque) == self._pooled_frames_deque.maxlen:
                             evicted_buffer = self._pooled_frames_deque[0]
                         self._pooled_frames_deque.append(grab_result)
                         self._last_dup_source = grab_result
@@ -1851,7 +1926,7 @@ class ScreenCapture:
 
                         evicted_buffer = None
                         with self._capture_lock:
-                            if len(self._pooled_frames_deque) == self.max_buffer_len:
+                            if len(self._pooled_frames_deque) == self._pooled_frames_deque.maxlen:
                                 evicted_buffer = self._pooled_frames_deque[0]
                             self._pooled_frames_deque.append(duplicate_frame)
                             self._last_dup_source = duplicate_frame

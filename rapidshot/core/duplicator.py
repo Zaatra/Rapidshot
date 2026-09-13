@@ -31,6 +31,7 @@ from rapidshot._libs.dxgi import (
     DXGI_OUTDUPL_POINTER_POSITION,
     DXGI_OUTDUPL_POINTER_SHAPE_INFO,
     DXGI_OUTDUPL_FRAME_INFO,
+    DXGI_OUTDUPL_MOVE_RECT,
     IDXGIResource,
     RECT,
 )
@@ -190,6 +191,11 @@ class Duplicator:
     # Regions the compositor redrew, in desktop coordinates. None means the
     # metadata could not be read, which is not the same as an empty list.
     dirty_rects: Optional[List[Tuple[int, int, int, int]]] = None
+    # Regions the compositor *moved* rather than redrew, as
+    # (source_x, source_y, left, top, right, bottom) in desktop coordinates.
+    # DXGI reports these separately from dirty rects and they are not repeated
+    # there, so anything patching by dirty rect alone leaves them stale.
+    move_rects: Optional[List[Tuple[int, int, int, int, int, int]]] = None
     # True when the driver merged rects rather than reporting them individually,
     # so the regions are an over-estimate of what actually changed.
     rects_coalesced: bool = False
@@ -430,7 +436,10 @@ class Duplicator:
             self.last_present_time = last_present_time
             self.accumulated_frames = info.AccumulatedFrames
             # Read while the frame is still acquired: the metadata belongs to
-            # this frame and is gone after ReleaseFrame.
+            # this frame and is gone after ReleaseFrame. Move rects first, the
+            # order Microsoft's Desktop Duplication sample uses -- they occupy
+            # the front of the same metadata buffer.
+            self.move_rects = self.get_frame_move_rects(info)
             self.dirty_rects = self.get_frame_dirty_rects(info)
             self.rects_coalesced = bool(info.RectsCoalesced)
 
@@ -631,6 +640,73 @@ class Duplicator:
             self.duplicator = None
             self._frame_acquired = False
             logger.info("Duplicator resources released.")
+
+    def get_frame_move_rects(self, frame_info):
+        """
+        Regions the compositor moved rather than redrew, in desktop coordinates.
+
+        A scroll or a window drag can be satisfied by copying pixels that are
+        already on screen. DXGI reports those as *move* rects and does not
+        repeat them in the dirty rects, so anything that patches a frame by
+        dirty rect alone leaves the moved region showing the previous contents.
+
+        Must be called while the frame is acquired, and before
+        :meth:`get_frame_dirty_rects` -- both read from one metadata buffer
+        whose size ``TotalMetadataBufferSize`` bounds, and the move rects sit at
+        the front of it.
+
+        Returns:
+            A list of ``(source_x, source_y, left, top, right, bottom)``: where
+            the content came from, and the rectangle it now occupies. Empty
+            means the frame carried no move metadata; None means it could not
+            be read, so callers can tell the two apart.
+        """
+        if self.duplicator is None or not self._frame_acquired:
+            return None
+
+        capacity = getattr(frame_info, "TotalMetadataBufferSize", 0)
+        if not capacity:
+            return []
+
+        rect_size = ctypes.sizeof(DXGI_OUTDUPL_MOVE_RECT)
+
+        try:
+            for _ in range(2):
+                count = max(1, capacity // rect_size)
+                buffer = (DXGI_OUTDUPL_MOVE_RECT * count)()
+                used = ctypes.c_uint(0)
+                try:
+                    self.duplicator.GetFrameMoveRects(
+                        count * rect_size,
+                        ctypes.cast(buffer, ctypes.POINTER(DXGI_OUTDUPL_MOVE_RECT)),
+                        ctypes.byref(used),
+                    )
+                except comtypes.COMError as ce:
+                    hresult = ce.args[0] if ce.args else None
+                    if hresult == DXGI_ERROR_MORE_DATA:
+                        capacity = used.value
+                        if capacity == 0:
+                            return None
+                        continue
+                    raise
+
+                return [
+                    (m.SourcePoint.x, m.SourcePoint.y,
+                     m.DestinationRect.left, m.DestinationRect.top,
+                     m.DestinationRect.right, m.DestinationRect.bottom)
+                    for m in buffer[: used.value // rect_size]
+                ]
+            return None
+        except comtypes.COMError as ce:
+            hresult = ce.args[0] if ce.args else None
+            self.last_error = (
+                f"COMError in get_frame_move_rects: {ce} "
+                f"(HRESULT: {_format_hresult(hresult)})"
+            )
+            logger.debug(self.last_error)
+            if hresult in DXGI_RECOVERABLE_ERRORS or hresult in DXGI_DEVICE_ERRORS:
+                raise
+            return None
 
     def get_frame_dirty_rects(self, frame_info) -> Optional[List[Tuple[int, int, int, int]]]:
         """
