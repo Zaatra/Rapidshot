@@ -641,11 +641,13 @@ The lifetime slice is done, `dirty_rects` is done, and `py.typed` now ships with
 | Piece | State |
 | --- | --- |
 | Normalised timestamps | **Done.** `Frame.timestamp_qpc` (raw `LastPresentTime` ticks) and `Frame.timestamp` (seconds). The docstring records the part that matters: this is when the *compositor presented* the frame, not when it was captured |
-| Cursor data on `Frame` | **Almost done** (2026-09-13). `Frame.cursor` carries a `CursorInfo`: `visible`, `position`, `hotspot`, raw `shape` bytes, `shape_type`, `shape_size`, `shape_pitch`, snapshotted per frame because the duplicator mutates its `Cursor` in place on the next acquire. **`position` is still in desktop coordinates** — the frame-coordinate translation below has not been applied to it |
+| Cursor data on `Frame` | **Done** (2026-09-13). `Frame.cursor` carries a `CursorInfo`: `visible`, `position`, `hotspot`, raw `shape` bytes, `shape_type`, `shape_size`, `shape_pitch`, snapshotted per frame because the duplicator mutates its `Cursor` in place on the next acquire. `position` is in frame coordinates; a point outside the frame is kept and shifted rather than dropped or clamped, because a pointer just past the edge still draws pixels inside the region. Verified live against `GetCursorPos` on both a full-output and an off-origin region capture |
 | `move_rects` | **Read and surfaced** (2026-09-13). See the row below and § 4 |
 | `Protocol`-typed interfaces | **Not started.** No `Protocol` anywhere in `rapidshot/` |
 
-Cursor position needs the frame-coordinate treatment below — it is reported against the duplicated output, so on a region capture it is wrong in exactly the case nobody checks by hand. It also needs the empty-versus-unknown distinction: a hidden cursor and an unreadable pointer are different answers.
+Cursor position **has now had** the frame-coordinate treatment below — it is reported against the duplicated output, so on a region capture the raw value was wrong in exactly the case nobody checks by hand. The empty-versus-unknown distinction holds too: `position is None` means DXGI reported no position, `visible=False` means the pointer is hidden, and they are different answers.
+
+So **§ 6.3 is down to one piece: the `Protocol`-typed interfaces.** Design them before a second backend exists (§ 7.3) — retrofitting a DXGI-shaped API to fit WGC later is the expensive order.
 
 `move_rects` is **read, but nothing patches with it — deliberately.** `Duplicator.get_frame_move_rects()` calls `GetFrameMoveRects` on every frame, `Frame.move_rects` surfaces the result in frame coordinates, and `changed_fraction` counts it — without which a scroll reports as *no change at all*. What is **not** built is a copy path that reproduces the move, because DWM never emits one to test it against (§ 4). Instead the accumulator refuses to patch a frame carrying move rects and converts the whole thing, which closes § 4's latent hole without inventing an untestable code path.
 

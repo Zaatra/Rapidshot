@@ -102,7 +102,16 @@ class CursorInfo:
     def __init__(self, visible=False, position=None, hotspot=None, shape=None,
                  shape_type=0, shape_size=None, shape_pitch=0):
         self.visible = bool(visible)
-        #: ``(x, y)`` in desktop coordinates, or None if not reported.
+        #: ``(x, y)`` in the coordinates of the frame this cursor came from,
+        #: or None when DXGI reported no position -- which is not the same as
+        #: a hidden cursor, and :attr:`visible` is the field that answers that.
+        #:
+        #: May fall outside the frame, including negative values, when a region
+        #: capture does not contain the pointer. It is deliberately not clipped
+        #: or clamped: a cursor whose hotspot sits just past the edge still
+        #: draws pixels inside the region, so a consumer compositing it needs
+        #: the true offset, and clamping would claim the pointer is somewhere
+        #: it is not.
         self.position = position
         #: ``(x, y)`` offset of the click point within the shape.
         self.hotspot = hotspot
@@ -114,6 +123,26 @@ class CursorInfo:
         self.shape_size = shape_size
         #: Row stride of :attr:`shape` in bytes.
         self.shape_pitch = int(shape_pitch)
+
+    def _rebased(self, dx: int, dy: int) -> "CursorInfo":
+        """A copy with the position shifted by ``(dx, dy)``.
+
+        A copy rather than a mutation: the caller's ``CursorInfo`` may be shared
+        (nothing stops one being passed to two Frames), and a frame quietly
+        moving somebody else's data is the kind of bug that only shows up on an
+        off-origin region. The shape buffer is shared, not copied -- it can be
+        megabytes and is never rewritten.
+        """
+        return CursorInfo(
+            visible=self.visible,
+            position=None if self.position is None else
+                     (self.position[0] + dx, self.position[1] + dy),
+            hotspot=self.hotspot,
+            shape=self.shape,
+            shape_type=self.shape_type,
+            shape_size=self.shape_size,
+            shape_pitch=self.shape_pitch,
+        )
 
     def __repr__(self) -> str:
         kind = {1: "monochrome", 2: "color", 4: "masked"}.get(self.shape_type, "none")
@@ -184,7 +213,7 @@ class Frame:
         self._source_id = source_id
         self._sequence = sequence
         self._generation = generation
-        self._cursor = cursor
+        self._cursor = self._cursor_in_frame(cursor)
 
     def _clip_to_region(self, rects):
         """Translate desktop-coordinate rects into this frame's coordinates.
@@ -208,6 +237,27 @@ class Frame:
             if nl < nr and nt < nb:
                 clipped.append((nl - left, nt - top, nr - left, nb - top))
         return clipped
+
+    def _cursor_in_frame(self, cursor):
+        """Rebase the cursor position from output coordinates into this frame's.
+
+        DXGI reports the pointer against the duplicated output, and a Frame may
+        cover only a region of it -- so on any off-origin region the raw value
+        points somewhere else entirely. Same rule as :attr:`dirty_rects`, and
+        the same reason: it is wrong only in the case nobody checks by hand.
+
+        Unlike a rect, a point that lands outside the frame is *kept*, shifted,
+        possibly negative. See :attr:`CursorInfo.position` for why.
+
+        `hotspot` needs no translation: it is an offset within the cursor's own
+        shape, not a position on the desktop.
+        """
+        if cursor is None or cursor.position is None:
+            return cursor
+        left, top = self._region[0], self._region[1]
+        if not left and not top:
+            return cursor          # full-output capture: already correct
+        return cursor._rebased(-left, -top)
 
     def _clip_move_rects(self, move_rects):
         """Clip move rects to this frame, keeping each source paired with its own
@@ -473,6 +523,10 @@ class Frame:
     @property
     def cursor(self) -> "CursorInfo":
         """Cursor position, hotspot and shape as of this frame.
+
+        ``position`` is in this frame's coordinates, like :attr:`dirty_rects`,
+        and may fall outside it when a region capture does not contain the
+        pointer -- see :attr:`CursorInfo.position`.
 
         Always present; when capture reported nothing, its :attr:`visible` is
         False and the rest are None. :attr:`cursor_visible` remains as a

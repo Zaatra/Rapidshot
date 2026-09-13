@@ -49,6 +49,20 @@ returned a view of a pooled buffer that the next capture overwrote.
 
 ### Fixed
 
+- **The cursor position was reported in desktop coordinates.** DXGI reports the
+  pointer against the whole duplicated output, and `Frame.cursor.position`
+  passed that through unchanged — so on any off-origin region capture it named
+  a point somewhere else entirely, wrong in exactly the case nobody checks by
+  hand. It is now in frame coordinates, the same rule `dirty_rects` follows. A
+  position outside the frame is kept and shifted, not dropped or clamped: a
+  cursor whose hotspot sits just past the edge still draws pixels inside the
+  region, and clamping would claim the pointer is somewhere it is not.
+  `position is None` still means DXGI reported no position, which is a
+  different answer from `visible=False`. Verified live against `GetCursorPos`:
+  a full-output capture returns the desktop position unchanged, and a
+  `(300, 200, 900, 700)` region turns a pointer at `(1328, 784)` into
+  `(1028, 584)`.
+
 - **Moved regions were invisible to the dirty-rect path.** DXGI reports regions
   the compositor *moved* -- a scroll, a window drag -- separately from the ones
   it redrew, and does not repeat them in the dirty rects. `GetFrameMoveRects`
