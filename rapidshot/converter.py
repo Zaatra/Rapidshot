@@ -305,6 +305,27 @@ def _check(code: int, what: str) -> None:
         raise RuntimeError(f"{what} failed with CUDA error {code}")
 
 
+def _cuda_device_luid(cuda, ordinal: int) -> Optional[bytes]:
+    """LUID of a CUDA device as the full 8 bytes, or None if the driver
+    declines to say.
+
+    Read from the driver API rather than CuPy's device properties, which
+    cannot be trusted for this. CuPy converts the fixed-size ``char luid[8]``
+    field to Python bytes as though it were a C string, so the value stops at
+    its first zero byte — and a LUID almost always contains one. The RTX 4060
+    here reports 8 bytes as ``3234010000000000`` and CuPy hands back three.
+    Comparing that against a real LUID never matches, on any adapter.
+    """
+    dev = ctypes.c_int()
+    if cuda.cuDeviceGet(ctypes.byref(dev), ordinal) != 0:
+        return None
+    buf = (ctypes.c_char * 8)()
+    node_mask = ctypes.c_uint()
+    if cuda.cuDeviceGetLuid(buf, ctypes.byref(node_mask), dev) != 0:
+        return None
+    return bytes(buf)
+
+
 def _device_for_adapter(cp, luid: bytes) -> int:
     """Find the CUDA device sitting on a given adapter, by LUID.
 
@@ -313,12 +334,16 @@ def _device_for_adapter(cp, luid: bytes) -> int:
     LUIDs is what distinguishes "pick device 0" from "there is no device here".
     """
     count = cp.cuda.runtime.getDeviceCount()
+    cuda = ctypes.WinDLL("nvcuda.dll")
+    # Harmless once CuPy has already initialised the driver; required when it
+    # has not, because a device query before cuInit fails.
+    cuda.cuInit(0)
+    cuda.cuDeviceGet.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_int]
+    cuda.cuDeviceGetLuid.argtypes = [
+        ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint), ctypes.c_int
+    ]
     for index in range(count):
-        try:
-            props = cp.cuda.runtime.getDeviceProperties(index)
-        except Exception:
-            continue
-        if props.get("luid", b"")[:8] == luid[:8]:
+        if _cuda_device_luid(cuda, index) == luid[:8]:
             return index
     raise CrossAdapterRequired(
         f"no CUDA device is on the adapter holding this tensor (LUID {luid.hex()}); "

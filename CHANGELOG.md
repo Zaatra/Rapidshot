@@ -26,6 +26,13 @@ things could not be, and are release gates:** the CUDA exports, and any
 transfer to a *hardware* second adapter — this machine's only second adapter is
 WARP.
 
+**Both were taken to an RTX 4060 laptop on 2026-09-14.** The transfer gate is
+met: a converted tensor crosses from the Intel iGPU to the discrete GPU, and
+the stale-read fix holds on a hardware destination. The CUDA gate found a bug
+that had made the exports dead on every machine — see **Fixed**. What remains
+open is the byte-equal export itself, which needs capture and CUDA on the same
+adapter; Optimus never gives that.
+
 #### Added
 
 **`GpuConverter` — a D3D12 transform path, added alongside `GpuPreprocessor12`
@@ -175,6 +182,27 @@ resolution. See ROADMAP § 6.1.
   unchanged: the existing exact-reference tests pass unmodified, and new tests on
   synthetic textures pin the crop against a known pattern with no screen needed.
   On a region frame the D3D11 and D3D12 preprocessors now produce one tensor.
+
+- **`to_cupy()`, `to_torch()` and `to_dlpack()` never worked, on any machine.**
+  Never released — the bug and the feature are both new in 2.6 — but it is
+  recorded here because of how it hid. Choosing the CUDA device is an equality
+  test between the tensor's adapter LUID and the device's, and the device side
+  was read from CuPy's `getDeviceProperties()["luid"]`. CuPy converts that
+  fixed-size `char luid[8]` field as though it were a C string, so the value
+  stops at the first zero byte — and a LUID almost always has several. The
+  RTX 4060 here reports `3234010000000000` and CuPy returns three bytes, so
+  **the comparison could never succeed on any adapter.** Every export raised
+  `CrossAdapterRequired`, whose message advises transferring the frame to the
+  CUDA adapter — impossible to act on when the tensor is already on it, as it
+  is on any single-adapter NVIDIA desktop.
+
+  Fixed by asking the driver instead: `cuDeviceGetLuid` from `nvcuda.dll`
+  returns the whole 8-byte field. `examples/gpu_tensor_to_cupy.py` had always
+  done this correctly, and `TensorTransfer.destination_luid` already documented
+  it as the thing to pair with; the regression was in re-implementing the
+  example rather than calling it. `tests/test_gpu_tensor_export.py` now pins
+  the library's comparison against the example's, so the two cannot diverge
+  unnoticed again, and two of its tests fail against the shipped version.
 
 
 ## [2.5.0] - 2026-09-13
