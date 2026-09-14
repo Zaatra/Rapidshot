@@ -45,6 +45,16 @@ cbuffer Params : register(b0)
     float Bias;       // then add
     uint  ChannelOrder; // 0 = RGB, 1 = BGR
     uint  _pad;
+    // The rectangle of the texture to convert, in texels. The whole texture
+    // unless the caller passes one -- and then CropX/CropY are 0 and
+    // CropW/CropH are SrcWidth/SrcHeight, which makes the mapping below the
+    // exact expression it replaced, so whole-texture output is unchanged bit
+    // for bit. It exists because a region camera's texture is the whole
+    // output: sizing from the texture resized the entire monitor (2026-09-14).
+    uint  CropX;
+    uint  CropY;
+    uint  CropW;
+    uint  CropH;
 };
 
 [numthreads(8, 8, 1)]
@@ -55,8 +65,8 @@ void CSMain(uint3 tid : SV_DispatchThreadID)
 
     // Nearest-neighbour sampling. Deliberate: it is exact and cheap, and any
     // filtering choice belongs to the caller's model, not to the capture layer.
-    uint sx = (SrcWidth  == OutWidth ) ? tid.x : (tid.x * SrcWidth  / OutWidth );
-    uint sy = (SrcHeight == OutHeight) ? tid.y : (tid.y * SrcHeight / OutHeight);
+    uint sx = CropX + ((CropW == OutWidth ) ? tid.x : (tid.x * CropW / OutWidth ));
+    uint sy = CropY + ((CropH == OutHeight) ? tid.y : (tid.y * CropH / OutHeight));
 
     // The hardware presents texture components *semantically*, not in memory
     // order: for DXGI_FORMAT_B8G8R8A8_UNORM it swizzles on the fly, so .x is
@@ -80,7 +90,9 @@ void CSMain(uint3 tid : SV_DispatchThreadID)
 }
 "#;
 
-/// Constant buffer layout. Must stay 16-byte aligned to match HLSL packing.
+/// Constant buffer layout. Must stay 16-byte aligned to match HLSL packing:
+/// D3D11 refuses a constant buffer whose `ByteWidth` is not a multiple of 16,
+/// which is why the crop adds exactly four fields (32 -> 48 bytes).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Params {
@@ -92,7 +104,13 @@ pub struct Params {
     pub bias: f32,
     pub channel_order: u32,
     pub _pad: u32,
+    pub crop_x: u32,
+    pub crop_y: u32,
+    pub crop_width: u32,
+    pub crop_height: u32,
 }
+
+const _: () = assert!(std::mem::size_of::<Params>() % 16 == 0);
 
 /// Everything needed to run the conversion, built once and reused per frame.
 pub struct Preprocessor {
@@ -263,15 +281,42 @@ impl Preprocessor {
     }
 
     /// Run the conversion for one captured texture. GPU-only; nothing is read back.
+    ///
+    /// `crop` is the rectangle of the texture to convert, in texels; `None` is
+    /// the whole texture. A region camera's frame covers only part of its
+    /// texture, so the caller must pass the region or the whole monitor is
+    /// resized into a correctly shaped tensor. Refused rather than clamped when
+    /// it does not fit.
     pub fn dispatch(
         &self,
         texture: &ID3D11Texture2D,
         scale: f32,
         bias: f32,
         channel_order: u32,
+        crop: Option<super::converter12::Crop>,
     ) -> windows::core::Result<()> {
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         unsafe { texture.GetDesc(&mut desc) };
+
+        let crop = crop.unwrap_or(super::converter12::Crop {
+            x: 0,
+            y: 0,
+            width: desc.Width,
+            height: desc.Height,
+        });
+        let fits = crop.width > 0
+            && crop.height > 0
+            && crop.x as u64 + crop.width as u64 <= desc.Width as u64
+            && crop.y as u64 + crop.height as u64 <= desc.Height as u64;
+        if !fits {
+            return Err(windows::core::Error::new(
+                windows::Win32::Foundation::E_INVALIDARG,
+                format!(
+                    "crop {}x{} at ({}, {}) does not fit inside the {}x{} texture",
+                    crop.width, crop.height, crop.x, crop.y, desc.Width, desc.Height
+                ),
+            ));
+        }
 
         let srv = unsafe {
             let mut view_desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
@@ -300,6 +345,10 @@ impl Preprocessor {
             bias,
             channel_order,
             _pad: 0,
+            crop_x: crop.x,
+            crop_y: crop.y,
+            crop_width: crop.width,
+            crop_height: crop.height,
         };
 
         unsafe {

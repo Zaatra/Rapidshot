@@ -41,6 +41,22 @@ from rapidshot.util.topology import (
 # Pure NumPy, so it imports on any platform even though capture does not.
 from rapidshot.preprocess import to_nchw
 
+# The GPU transform path is optional in exactly the way the native extension
+# is: importing it must not make `import rapidshot` fail on a no-toolchain
+# install (§ 11, "optional means optional"). The names are bound to None and
+# `capabilities()` reports why, rather than raising at import time.
+try:
+    from rapidshot.converter import (
+        GpuConverter, GpuTensor, TensorTransfer, CrossAdapterRequired,
+    )
+    from rapidshot.tensor_stream import TensorStream
+except Exception:  # pragma: no cover - only when the extension is absent
+    GpuConverter = None
+    GpuTensor = None
+    TensorTransfer = None
+    CrossAdapterRequired = None
+    TensorStream = None
+
 # Initialize logging
 logger = get_logger("init")
 
@@ -53,6 +69,8 @@ __all__ = [
     "RapidshotError", "HeadlessError", "get_version_info",
     "probe_topology", "GpuTopology", "AdapterInfo",
     "to_nchw",
+    "GpuConverter", "GpuTensor", "TensorTransfer", "CrossAdapterRequired",
+    "TensorStream",
 ]
 
 class RapidshotError(Exception):

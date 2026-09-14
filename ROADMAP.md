@@ -37,9 +37,27 @@ Both of the related settings were checked the same way on 2026-09-13:
 - **Private vulnerability reporting is enabled.** `SECURITY.md`'s link works.
 - **`main` has no branch protection at all.** Not "missing Code Owners review" — the API returns `Branch not protected`, so there are no required reviews and no required status checks. `CODEOWNERS` is therefore only a routing hint, CI is advisory rather than blocking, and anything can be pushed straight to `main`. That is how 39 commits landed on it in one go on 2026-09-13. Worth deciding deliberately rather than by default: for a single-maintainer project it is a defensible choice, but the repository currently documents guarantees it does not have.
 
+### Where 2.6 stands — 2026-09-14
+
+**Read this before anything below it; several older statements in this section are now wrong, and are corrected here rather than silently.**
+
+**§ 7.2's feature list is built.** `GpuConverter` (bilinear or nearest; FP32/FP16 in NCHW or NHWC; a resized BGRA8 frame; NV12 and P010; crop; multi-ROI batches in one dispatch; all four `DuplicateOutput1` input formats), `GpuTensor.to_torch()` / `to_cupy()` / `to_dlpack()`, `TensorTransfer` (convert first, then cross adapters), and `TensorStream`. The fused `.crop().resize()…` graph is not built, and § 7.2 says to build it only if it fuses. `CHANGELOG.md` `[Unreleased]` has the detail; § 7.2 below has the status per item.
+
+**Building `TensorStream` found a correctness bug in paths that have shipped since 2.3.0.** `GpuPreprocessor12` and `CrossAdapterTransfer` sometimes read **the previous frame**: `AcquireNextFrame` returns when the capture device's copy into the surface is *submitted*, and a D3D12 queue could overtake it. 7–15 of 150 first reads were stale for the preprocessor, 65 of 150 for the transfer. Fixed for all three paths with a fence ordering the D3D12 queue behind the D3D11 copy on the GPU (`native/src/capture_order.rs`); 0 of 150 after, at no measurable cost to dispatch and ~0.02 ms per transfer. § 4 records the rule, § 10 the history. **This corrects two claims:** the § 6.1 "verified byte-exact" results compared the destination against a copy of *the same snapshot*, so they could not detect a stale read, and the instruction below not to touch D3D12 synchronisation "without a measurement" — the measurement arrived.
+
+**Release gates for 2.6, none of which this machine can run.** Everything above was verified on the Intel-only development machine (Core Ultra 5 235, Intel iGPU, WARP as its only second adapter). Before 2.6.0 ships:
+
+1. **The CUDA exports** — `to_cupy()`, `to_torch()`, `to_dlpack()` — have never run. They need an NVIDIA GPU.
+2. **The stale-read fix on a hardware destination.** `CrossAdapterTransfer` and `TensorTransfer` were measured against WARP only. Re-run `tests/test_capture_order_shipped_paths.py` and `tests/test_tensor_transfer.py` on an Optimus system.
+3. **The three non-BGRA input formats** need an HDR or 10-bit desktop; only `B8G8R8A8` has been exercised.
+
+**Region cameras: fixed on every GPU path.** `GpuConverter`, `GpuPreprocessor12` and the D3D11 `GpuPreprocessor` all converted the whole monitor on a region camera; all three now convert the region, with whole-frame output unchanged bit for bit (§ 10). This changes output for anyone using the two shipped preprocessors on a region camera — which is the fix.
+
 **Next feature task:** § 6.3 — finish Stage 3 (Frame metadata). It is smaller again as of 2026-09-13: **timestamps are done** (`Frame.timestamp_qpc` and `Frame.timestamp`), **cursor data now reaches `Frame`** (`Frame.cursor` carries a `CursorInfo` with position, hotspot, shape bytes, shape type, size and pitch) with **one piece outstanding — `CursorInfo.position` is still in desktop coordinates**, which § 6.3 requires be translated to frame coordinates like `dirty_rects`, and **`Protocol`-typed interfaces are not started** — there is still no `Protocol` anywhere in the package. So § 6.3 is now two tasks: translate the cursor position, and design the `Protocol` interfaces. § 6.1 is complete: hybrid and headless systems are reported clearly, a captured frame crosses to a second adapter at **0.70–0.98 ms per 1080p frame** verified byte-exact, and the convert-first-or-transfer-first question **has been re-opened** (2026-09-13): the measurement that settled it in favour of transferring the frame omitted one of that ordering's costs and only tested the most expensive payload, and at 2560x1600 converting first wins at every size — see the box in § 6.1. **§ 6.1's validation on real hybrid hardware is now done** (2026-08-22, Intel→NVIDIA, byte-exact — see above), **and the asynchronous shared fence shipped in 2.4.0**, which was the last piece outstanding there. § 6.1 is closed in both directions: `transfer_async()` submits without blocking, `shared_fence_handle` lets a CUDA consumer wait on the GPU, and `set_consumer_fence()` / `wait_for_consumer()` close the reverse hazard where the producer overwrites a buffer the consumer is still reading.
 
 **Do not start another round of D3D12 synchronisation work without a measurement or a user report asking for it.** That seam has been through feature work, hardware validation, adversarial review, four rounds of fixes, targeted regression tests and a clean final pass. The next thing to do here is nothing; the returns are elsewhere.
+
+> **The measurement arrived, 2026-09-14, and the rule did its job.** Every round listed above ordered the *transfer* against its *consumer*. None ordered the *read of the capture surface* against the *capture itself*, and that is where the bug was: 65 of 150 first transfers carried the previous frame. It was found by a test that compared a stream's output with an independent conversion, not by reasoning about the seam — which is the argument for the rule, not against it. See the 2.6 box above and § 4.
 
 **The next task is § 7.0 — build the AI-ingestion benchmark — and it comes before § 6.3.** § 6.3 (finish `Frame` metadata) is still worth doing and is now folded into § 7.1, but it is no longer the front of the queue. § 7 explains why: every remaining proposal is a performance claim, and the only benchmark this project has measures `grab()` — the path where RapidShot's advantage is smallest and where it loses the frame-rate column outright. Until *present → model-ready tensor* is measured, feature ordering is guesswork, and § 11 has been right about that twice already.
 
@@ -94,7 +112,7 @@ Until that was set, the NVIDIA driver claimed the display output while the firmw
 | | **Machine A** — original | **Machine B** — added 2026-08-06 |
 | --- | --- | --- |
 | GPU | Intel iGPU, no NVIDIA | NVIDIA RTX 4060 Laptop (8 GB) |
-| CPU | — | Intel i9-14900HX, **8 P-cores + 16 E-cores** |
+| CPU | Intel Core Ultra 5 235, **6 P-cores + 8 E-cores** | Intel i9-14900HX, **8 P-cores + 16 E-cores** |
 | Display | 2× 1920×1080 | 1× **2560×1600** |
 | Topology | single (iGPU) | single (dGPU) — see below |
 | CUDA / CuPy | untested, no NVIDIA GPU | CuPy 14.1.1, CUDA 13.2, driver 595.95 |
@@ -193,7 +211,8 @@ python benchmarks/ab_conversion.py
 
 ### Testing gotchas that will waste your time otherwise
 
-- **Live capture tests need screen activity.** Desktop Duplication only reports *changed* content, so an idle screen produces zero frames and tests fail for reasons unrelated to the code.
+- **Live capture tests need screen activity.** Desktop Duplication only reports *changed* content, so an idle screen produces zero frames and tests fail for reasons unrelated to the code. For tests that need a *run* of changed frames, use the `motion` fixture in `tests/conftest.py`, which drives `benchmarks/motion_source.py` and yields a rectangle inside its window. It is module-scoped on purpose — the window is topmost and would change what every later test captures.
+- **A frame held for a whole test module hides every race with the capture.** Reading a frame long after acquiring it gives the capture device's copy into the surface all the time it needs, so a GPU read that would overtake it on a live stream never does. Every converter test before 2026-09-14 used one fixture frame per module, which is how `GpuPreprocessor12` and `CrossAdapterTransfer` shipped reading the previous frame 5–43% of the time with a green suite. Test a GPU path's **first read of a new frame, immediately after acquisition, against a moving source**, and compare it with a *settled re-read of the same held frame* — never with a second copy of the same read, which is stale in the same way (§ 10). Build the object under test on a frame you do not check: construction is slow enough to let that frame settle.
 - **Synthetic textures cannot test the D3D12 path.** D3D11 refuses `SHARED_NTHANDLE` without `SHARED_KEYEDMUTEX`, and a keyed-mutex resource reads as zeros until acquired — on *both* APIs. The real duplicated surface has its mutex managed by DXGI. Use live capture. Constructing `GpuPreprocessor12` over a `TestTexture` fails at the constructor with `D3D12 preprocessor setup failed: texture is not shareable ... (0x80070057)`, which is the guard working as designed — but it means **`baseline.json` has no D3D12 row at all**, and any D3D12-versus-D3D11 comparison has to be run over one live frame. See § 10.
 - **Benchmark noise is severe on a loaded machine.** Naive comparison once reported 11 false regressions up to 1.9× on *identical* code. The suite compensates with pooled rounds, minimum-sample comparison, and a control benchmark; run `--self-test` to measure the current noise floor before trusting any result.
 - **On a hybrid P-core/E-core CPU, pin the benchmark process to the P-cores or the numbers are meaningless.** Measured 2026-08-06 on Machine B (8 P-cores, 16 E-cores) with `--self-test`, which compares the suite *to itself with no code change*:
@@ -205,7 +224,9 @@ python benchmarks/ab_conversion.py
   | Spurious `FASTER` verdicts | 3.20× on `gpu_dispatch` | none |
   | `pipeline.cpu_to_nchw` across runs | 5.5 – 16.0 ms | 5.06 – 5.31 ms |
 
-  Windows moves benchmark threads onto E-cores under no particular provocation, and an E-core reads as a 2–3× regression on exactly the compute-bound rows that matter. **The control benchmark does not rescue this** — `control.memcopy` reported "machine state comparable, 1.01×" in the same run that called `shot.RGB` 2.57× slower, because the control got scheduled well and the others did not. That is the § 3 lesson about one control standing in for workloads it does not resemble, arriving by a new route. Machine A has no E-cores, which is why this never appeared before.
+  Windows moves benchmark threads onto E-cores under no particular provocation, and an E-core reads as a 2–3× regression on exactly the compute-bound rows that matter. **The control benchmark does not rescue this** — `control.memcopy` reported "machine state comparable, 1.01×" in the same run that called `shot.RGB` 2.57× slower, because the control got scheduled well and the others did not. That is the § 3 lesson about one control standing in for workloads it does not resemble, arriving by a new route.
+
+  **Machine A is hybrid too — this document said otherwise until 2026-09-14.** It is an Intel Core Ultra 5 235: 6 P-cores and 8 E-cores, `performance_core_mask()` returning `0x3c03` (6 of 14 logical processors). The earlier claim that Machine A had no E-cores was never measured; it was inferred from the fact that the effect had not been *seen* there, and what actually explains that is when the field arrived — `baseline.json` and `baseline-nonative.json` were recorded 2026-08-05, a day before `cpu_topology` existed, so both recorded `None` and neither could report the machine was hybrid. An unpinned Machine A recording is therefore subject to exactly the same 2–3× scheduling noise as Machine B, and the 2.1.0 recordings should be assumed to carry it.
 
   **`perf_suite.py` now pins itself**, so a bare invocation is correct again. It reads `EfficiencyClass` from `GetSystemCpuSetInformation`, restricts the process to the highest class when a machine has more than one, and prints what it did. A uniform CPU is left alone. The recording carries `cpu_topology`, `pinned_to_performance_cores` and `affinity_mask` in its `machine` block, because a pinned and an unpinned recording are not comparable and nothing in the numbers alone distinguishes them. `--no-pin` disables it. Leaving this to the invocation was the wrong default: a suite that silently produces 2.5× noise unless the caller remembers a `start /affinity` prefix is a suite that teaches people to ignore it.
 
@@ -219,7 +240,7 @@ python benchmarks/ab_conversion.py
 
 ## 3. Measured baseline
 
-All figures 1920×1080 BGRA (8.3 MB/frame), measured on **Machine A** (§ 2) unless a row says otherwise. Stored in `benchmarks/baseline.json`, **re-recorded 2026-08-05T12:14Z** after the GRAY work in § 10 *and* the `pipeline.cpu_to_nchw` correction in § 10 — the latter changes what that row measures, so recordings from before it are not comparable on it. Earlier recordings are kept as `benchmarks/baseline-2026-07-30.json` and `benchmarks/baseline-2026-07-27.json`; do not compare across recordings casually — the 07-27 one drove the benchmarks differently, and the notes below apply to the current one.
+All figures 1920×1080 BGRA (8.3 MB/frame), measured on **Machine A** (§ 2) unless a row says otherwise. Stored in `benchmarks/baseline.json`, **re-recorded 2026-09-14 at 2.5.0**, P-core-pinned, extension built. The recording it replaces was made 2026-08-05T12:14Z at **2.1.0**, and it had stopped gating: it predates the `cpu_topology` / `pinned_to_performance_cores` provenance, so on a hybrid CPU `print_comparison` could not tell how it had been scheduled and correctly declined to gate anything — every verdict printed *indicative only*. A gate that always passes is worse than no gate, which is § 2's own argument for `--compare auto`. Earlier recordings are kept as `benchmarks/baseline-2026-08-05.json`, `benchmarks/baseline-nonative-2026-08-05.json` (both 2.1.0), `benchmarks/baseline-2026-07-30.json` and `benchmarks/baseline-2026-07-27.json`; do not compare across recordings casually — the 07-27 one drove the benchmarks differently, and the notes below apply to the current one.
 
 **There are two committed recordings, and which one you want depends on the question:**
 
@@ -229,11 +250,12 @@ All figures 1920×1080 BGRA (8.3 MB/frame), measured on **Machine A** (§ 2) unl
 | `baseline-nonative.json` | absent | What `pip install rapidshot` gets, and what CI compares against — CI has no toolchain. |
 | `baseline-rtx4060.json` | **built** | Machine B, P-core-pinned, live rows included. **Not** a replacement for `baseline.json` and not wired to anything. |
 
-Both were recorded back-to-back on 2026-08-05 with `--rounds 5 --reps 25`, the invocation § 2 documents, so they are directly comparable to each other rather than separated by machine drift. Two consequences worth knowing:
+Both were recorded back-to-back on 2026-09-14 with `--rounds 5 --reps 25`, the invocation § 2 documents, so they are directly comparable to each other rather than separated by machine drift. The native recording was verified immediately by a second run, which read `~ same` on every synthetic row. Three consequences worth knowing:
 
 - **CI's compare step points at `baseline-nonative.json`.** Aimed at `baseline.json` it would report a 6–20× "regression" on every conversion row forever, since the runner builds no extension — which is how a benchmark suite teaches people to ignore it.
 - **`pipeline.gpu_dispatch` and `pipeline.gpu_plus_readback` appear only in `baseline.json`**; they need the extension.
-- The **live rows were recorded against a defined synthetic workload**: a 420×300 window moved at ~30 Hz. See the dirty-fraction note in § 6.3 — a small moving window is the *favourable* end of that distribution.
+- The **live rows were recorded against a defined synthetic workload**: `benchmarks/motion_source.py --fps 30` — a **900×700** window of animated bars, every pixel of it changing each update, positioned at +200+120. Earlier revisions of this document called it *a 420×300 window moved at ~30 Hz*; `motion_source.py` has been 900×700 since it was introduced in `aa20dc8`, so that description matched no version of the script and understated the dirty area considerably. See the dirty-fraction note in § 6.3 — a fully-redrawn 900×700 region is nearer the *unfavourable* end of that distribution than the old wording implied, and live rows recorded before 2026-09-14 are not comparable to later ones on workload grounds alone.
+- **`--fps` matters and its default is wrong for this purpose.** `motion_source.py` defaults to *uncapped*, which on this machine drove `live.grab_with_frame` to 5.1–7.0 ms against 1.6–2.9 ms at `--fps 30` — a 2.9× swing that reads as a regression and is nothing but the workload. Always pass `--fps 30` when recording a baseline.
 
 Use `python benchmarks/compare_recordings.py` to diff any two stored recordings; it normalises each by its own control row before quoting a ratio.
 
@@ -282,19 +304,33 @@ Two things are worth noticing rather than acting on. The conversion kernels land
 | Python → COM binding overhead (~6 calls) | **0.003 ms** |
 | `CopySubresourceRegion` (GPU) | 0.016 ms |
 | Read from mapped staging surface | 2.27 ms |
-| Pixel conversion, RGB/BGR (NumPy, post-optimisation) | 1.92–1.93 ms — 0.30 ms native, see below |
-| Pixel conversion, GRAY (NumPy) | 6.9–10.5 ms — was 13.7–14.9; 0.26 ms native, see § 10 |
-| Preprocess for a model (resize/normalise/CHW → 640×640) | **3.90 ms** — was 6.23, see below |
+| Pixel conversion, RGB/BGR (NumPy, post-optimisation) | 1.84–1.88 ms — 0.29 ms native, see below |
+| Pixel conversion, GRAY (NumPy) | 11.05 ms — was 13.7–14.9; 0.26 ms native, see § 10 |
+| Preprocess for a model (resize/normalise/CHW → 640×640) | **3.42–3.66 ms** — was 6.23, see below |
 | **CPU total, capture → model input** | **~8 ms** without the extension |
 
-The conversion row is the one the optional extension changes, and it changes it by 6–37×. **With the extension the total is no longer conversion-dominated** — it is the staging map plus the preprocess, neither of which the kernels touch. § 10 re-profiles a real `grab()` on that basis.
+Conversion and preprocess rows re-measured 2026-09-14 at 2.5.0; the staging-read and COM rows are unchanged from 2026-08-05 and were not re-measured.
+
+The conversion row is the one the optional extension changes, and it changes it by 7–48×. **With the extension the total is no longer conversion-dominated** — it is the staging map plus the preprocess, neither of which the kernels touch. § 10 re-profiles a real `grab()` on that basis.
 
 Capture path comparison, real capture, from the two committed recordings:
 
 | Path | `baseline.json` (built) | `baseline-nonative.json` | |
 | --- | --- | --- | --- |
-| `grab()` — CPU staging read + convert | 2.41 ms | 5.93 ms | **see the caveat below** |
-| `grab_frame()` — texture stays on GPU | 0.16 ms | 0.19 ms | **see the caveat below** |
+| `grab()` — CPU staging read + convert | 2.86 ms | **2.28 ms** | **inverted — see below** |
+| `grab_frame()` — texture stays on GPU | 0.22 ms | 0.23 ms | **see the caveat below** |
+
+**In the 2026-09-14 pair this comparison inverted: `grab()` recorded *faster* without the native kernels than with them.** That is not possible as a code result — the extension removes 1.6 ms of conversion from exactly this path — and it is not a hardware result either; both recordings were made within two minutes of each other with the same motion source running. It is the live-row spread below, arriving on the one table the spread most easily destroys. The 2026-08-05 pair happened to read 2.41 ms against 5.93 ms and was quoted as evidence of the extension's effect; that reading was luck, and the same table taken again does not reproduce it.
+
+**Use the synthetic `shot.*` rows for this question instead** — same staging read, same conversion, deterministic input, and they separate cleanly by 6–8×:
+
+| Mode | `baseline.json` (built) | `baseline-nonative.json` | Gain |
+| --- | --- | --- | --- |
+| `shot.RGB` | **0.303 ms** | 1.948 ms | 6.4× |
+| `shot.BGR` | **0.302 ms** | 1.962 ms | 6.5× |
+| `shot.RGBA` | **0.361 ms** | 2.603 ms | 7.2× |
+| `shot.GRAY` | **0.261 ms** | 10.989 ms | 42.1× |
+| `shot.BGRA` | 0.227 ms | 0.195 ms | — (no conversion; the control) |
 
 **Neither live figure should be quoted without this caveat, and both are unreliable.** Across six recordings in a single session, on code that only ever got faster, the minima ranged:
 
@@ -317,15 +353,17 @@ Between the 07-27 and 07-30 recordings the absolute figures *rose* (RGB 1.45 →
 
 ### Native conversion kernels
 
-Every colour mode now has a byte-exact Rust kernel, used automatically when the optional extension is present and declined cleanly when it is not. Measured 2026-08-05 by `perf_suite --synthetic-only --rounds 5 --reps 25 --compare`, against the native-absent baseline, with the control's 1.11× drift divided out:
+Every colour mode now has a byte-exact Rust kernel, used automatically when the optional extension is present and declined cleanly when it is not. **Re-measured 2026-09-14 at 2.5.0** with `compare_recordings.py benchmarks/baseline-nonative.json benchmarks/baseline.json`, P-core-pinned on both sides, with the control's 1.11× drift divided out. Ceiling is that run's `control.memcopy`, **36.4 GB/s**:
 
-| Mode | NumPy | Native | Gain | GB/s | Share of the 33.2 GB/s ceiling |
+| Mode | NumPy | Native | Gain | GB/s | Share of the 36.4 GB/s ceiling |
 | --- | --- | --- | --- | --- | --- |
-| BGRA | 0.22 ms | *(unchanged)* | — | 33.2 | **100%** — a straight copy; nothing to win |
-| GRAY | 9.39 ms | **0.26 ms** | **37.2×** | 31.8 | **96%** |
-| BGR | 1.91 ms | **0.30 ms** | 6.5× | 27.3 | 82% |
-| RGB | 1.90 ms | **0.31 ms** | 6.3× | 26.6 | 80% |
-| RGBA | 2.61 ms | **0.36 ms** | 7.5× | 22.9 | 69% |
+| BGRA | 0.21 ms | *(unchanged)* | — | 36.4 | **100%** — a straight copy; nothing to win |
+| GRAY | 11.05 ms | **0.26 ms** | **48.0×** | 29.6 | 81% |
+| BGR | 1.84 ms | **0.29 ms** | 7.1× | 24.7 | 68% |
+| RGB | 1.88 ms | **0.29 ms** | 7.1× | 24.5 | 67% |
+| RGBA | 2.56 ms | **0.37 ms** | 7.7× | 21.2 | 58% |
+
+The native times are within noise of the 2026-08-05 figures they replace — **the kernels did not change between 2.1.0 and 2.5.0** (`swizzle.rs` moved 21 lines, `luma.rs` two). The *gains* rose (GRAY 37.2× → 48.0×, RGB 6.3× → 7.1×) because the NumPy arm got slower, not because the kernels got faster, and the share-of-ceiling percentages fell for the same reason the ceiling rose: this is a different measurement session on a machine whose `control.memcopy` read 36.4 GB/s against 33.2. Both effects are the § 3 warning about cross-session comparison, landing on the one table most likely to be quoted as a speedup.
 
 The `convert.BGRA` row is the control that made this worth doing at all: the same 8.29 MB moves at 33.2 GB/s when nothing is reordered, so the old 2–3 ms figures were never a memory-system limit. They were three separate strided gather/scatter passes — `dst[..., 0] = src[..., 2]` and so on — where one pass can read each cache line once.
 
@@ -347,7 +385,7 @@ AVX2 is detected at runtime — x86_64 guarantees only SSE2, so a wheel that ass
 
 That leaves RGBA the least efficient at 69%, and it is the one mode where the autovectoriser was already close, so there is little left to win anywhere in conversion. **The remaining CPU costs are elsewhere: see § 10.**
 
-None of this changes `benchmarks/baseline.json`, which is deliberately recorded with the extension absent (§ 3 provenance above). The NumPy fallbacks were left byte-for-byte identical, so the no-toolchain install performs exactly as the baseline records.
+**`benchmarks/baseline.json` is recorded with the extension built**; the extension-absent recording is `benchmarks/baseline-nonative.json`, which is what CI compares against and what a plain `pip install rapidshot` gets (§ 3 provenance above). Earlier revisions of this section said the opposite of `baseline.json` — that predates the two files being split, and reading it that way inverts every conversion row by 7–48×. The NumPy fallbacks were left byte-for-byte identical, so the no-toolchain install performs exactly as `baseline-nonative.json` records.
 
 Cross-adapter transfer, 1080p BGRA (8.29 MB) into a `SHARED_CROSS_ADAPTER` heap, copy-queue submission and fence wait included:
 
@@ -414,6 +452,17 @@ The spec requirement is real even so: [MSDN states that to produce a visually ac
 
 What remains **not worth implementing** is a path that reproduces the move by copying: it cannot be exercised on available hardware, and synthetic metadata proves nothing (§ 2). Reading the rects is cheap and testable; acting on them is neither.
 
+**A D3D12 read of a captured surface must be ordered behind the capture device's own work, on the GPU.** `AcquireNextFrame` returns once the copy into the duplication surface is *submitted* on the capture device's D3D11 queue, not once it has run, and a D3D12 queue has no implied order with it. Unordered, a first read overtook the copy and returned the previous frame 7–15 of 150 times for `GpuPreprocessor12` and 65 of 150 for `CrossAdapterTransfer` (Intel iGPU, 2026-09-14). The settled answer is a fence shared with D3D11, signalled into its immediate context behind the copy, and `ID3D12CommandQueue::Wait` on the reading queue — `native/src/capture_order.rs`, used by every path that reads the surface. Do not re-litigate the alternatives, all measured:
+
+| Before the first read | Stale first reads | Why not |
+| --- | --- | --- |
+| nothing | 7–11 / 100 | the bug |
+| `ID3D11DeviceContext::Flush` | 13–14 / 100 | submits without waiting for completion |
+| a 5 ms sleep | 0 / 100 | hides the race; costs 5 ms; no guarantee under load |
+| **shared fence + queue `Wait`** | **0 / 150 per path** (converter also 0 / 500) | ordering on the GPU; no CPU wait; no measurable dispatch cost |
+
+It relies on one invariant, which should stay true: the capture device has no D3D11 multithread protection, so the fence is signalled only while the caller holds a live `Frame`, during which the camera refuses every call that uses that context. Any new path reading the capture surface from D3D12 needs this, and a test of the kind § 2 describes.
+
 **A software adapter is not a second GPU.** The Microsoft Basic Render Driver (WARP) reports zero outputs, exactly like the dGPU on an Optimus laptop, so the obvious "adapter with no outputs = discrete GPU" check calls every ordinary desktop a hybrid system. `DXGI_ADAPTER_FLAG_SOFTWARE` is what separates them. The flip side is useful: WARP is a real second D3D12 device, which is what makes the cross-adapter path testable on a single-GPU machine at all.
 
 **Confirmed against a real discrete GPU 2026-08-06.** On Machine B `topology_info()` reports `single`, not `hybrid` — the check holds when the hardware adapter is an NVIDIA dGPU rather than an Intel iGPU, which is the case it was written for and had never faced:
@@ -445,7 +494,7 @@ Topology: single
 | **6.3 (region-limited conversion)** ✅ | `grab()` converts only the dirty regions into a persistent accumulator, **12–15× faster** at the dirty fraction live capture produces. Falls back to a full conversion when metadata is missing, the area exceeds 90%, rotation is in play, or the mode is BGRA |
 | **Pooled output (2.0 breaking change)** ✅ | `grab()` returns a `PooledBuffer` the caller releases. Allocating per frame cost ~1.6 ms in page faults — more than the conversion — so reuse is **1.3–2.1× on `grab()`**. See § 10 |
 | **Stage 0 — release infrastructure** ✅ | PyPI Trusted Publishing with Sigstore attestations, SBOM, four wheel gates, GitHub Release automation, `py.typed` with the public API annotated, `SECURITY.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `CODEOWNERS`, PR template, least-privilege CI tokens, performance badges generated from `baseline.json` with a drift guard |
-| **6.1 (frame transfer)** ✅ | `native.cross_adapter_transfer(frame)` carries a captured frame to a second adapter and exposes the `ID3D12Resource` it lands in. Heap and placed resources are allocated once; only the copy is per-frame. Verified byte-exact on real capture by `examples/verify_cross_adapter.py` — 8,294,400 bytes per frame, against a source-side readback of the same snapshot |
+| **6.1 (frame transfer)** ✅ | `native.cross_adapter_transfer(frame)` carries a captured frame to a second adapter and exposes the `ID3D12Resource` it lands in. Heap and placed resources are allocated once; only the copy is per-frame. Verified byte-exact on real capture by `examples/verify_cross_adapter.py` — 8,294,400 bytes per frame, against a source-side readback of the same snapshot. **That method proves the bytes arrived intact, not that they were the current frame** — until 2026-09-14 the copy read the previous frame 43% of the time (§ 4, § 10) |
 | **1b — Native conversion (2.1.0)** ✅ | `native/src/luma.rs` and `native/src/swizzle.rs`: byte-exact AVX2 kernels for all five colour modes, used automatically when the extension is present and declined cleanly when it is not. **GRAY 37×, RGBA 7.5×, BGR 6.5×, RGB 6.3×**, all at 69–100% of the memory system's 33.2 GB/s. Correctness asserted exhaustively over 2²⁴ triples for GRAY and vector-against-scalar at every width 1–64. See § 3 |
 | **Consumer ergonomics (2.2.0)** ✅ | `to_nchw()` (7.20 → 4.05 ms against the version most people write, bit-identical); `timeout_ms` and `pool_size_frames` made public — the latter dropping the default from 10 to 4 for **−60 MB per camera at −1.8% fps**. The "no screen updates" warning no longer fires during healthy polling capture |
 | **GPU consumer — CUDA interop** ✅ | The tensor's output heap is `SHARED`, and `GpuPreprocessor12` exposes `shared_output_handle` / `output_byte_size`. `examples/gpu_tensor_to_cupy.py` imports it via `cuImportExternalMemory` into a `cupy.ndarray`, verified byte-identical to `read_back()` and read in place by a CUDA kernel. **The first GPU consumer this project has had** (§ 6.6) |
@@ -462,10 +511,16 @@ Topology: single
 | **Cross-library comparison (2.2.0)** ✅ | `benchmarks/compare_libraries.py` measures RapidShot against DXcam, BetterCam and mss — each in its own process, since all three declare the same COM interfaces and whichever imports first breaks the others — with a calibrated motion source and error bars on every quantity. It is also what established where RapidShot *loses*, now stated in the README |
 | **6.1 — Intel→NVIDIA on real hybrid hardware** ✅ | `examples/verify_cross_adapter.py` carried **5 captured frames from an Intel iGPU to an RTX 4060**, 16,384,000 bytes each at 2560×1600, every one byte-exact against a source-side readback. `probe_cross_adapter()` reports `representative: true` — hardware on both ends, in the direction § 6.1 targets. Open since the project began (§ 2, § 6.1) |
 | **Adapter selection on hybrid systems** ✅ | Duplication tries every adapter instead of assuming the display-owning one, keeps render-only adapters as candidates, and explains an all-adapter refusal instead of printing an HRESULT. Found by switching Machine B to Optimus, where capture stopped working entirely (§ 2, § 10) |
+| **7.2 — `GpuConverter` (unreleased, 2.6)** ✅ | Bilinear or nearest (nearest bit-identical to `GpuPreprocessor12`); FP32/FP16 NCHW and NHWC; resized BGRA8; **NV12 and P010** (BT.709/601, limited/full); **crop** in frame coordinates, honouring `Frame.region`; **multi-ROI** in one dispatch, 2.5–4.9× faster than N calls for small regions; all four `DuplicateOutput1` input formats (only BGRA8 exercised). Verified on live capture; each packing and placement check was confirmed to fail against a deliberately planted bug (§ 7.2) |
+| **7.2 — `TensorTransfer`, `TensorStream` (unreleased, 2.6)** ✅ | Convert-first across adapters, byte-equal at the boundary (WARP destination only). `TensorStream` iterates capture → tensor with frame release, CUDA sync, permanent-failure detection and converter rebuild handled; control flow tested without a GPU (§ 7.2) |
+| **7.2 — `GpuTensor` exports (unreleased, 2.6)** ⚠️ | `to_torch()` / `to_cupy()` / `to_dlpack()` written and **never run** — no CUDA device on the machine that built them. A release gate (§ 1) |
+| **Capture-ordering fix (unreleased, 2.6)** ✅ | `GpuPreprocessor12` and `CrossAdapterTransfer` read the previous frame 5–43% of the time on a moving source, since 2.3.0. Now ordered on the GPU behind the capture copy; 0 / 150 each, regression tests fail when the ordering is removed. Hardware destination unverified (§ 4, § 10) |
 
 **Also fixed:** `pip install rapidshot` shipped a broken package — `pyproject.toml` listed `packages = ["rapidshot"]`, so the wheel contained 5 modules instead of 25 and failed with `ModuleNotFoundError: No module named 'rapidshot.util'`. Invisible from a source checkout. Now guarded by CI.
 
-**Test coverage:** `python -m pytest tests/ -q` collects 282. The skips are environmental, not pending work, and **the count is a property of the machine, not of the code**:
+**Test coverage, 2026-09-14, Intel-only machine: 895 passed, 17 skipped**; `cargo test --release` 27 passed. The 2.6 work added `test_gpu_converter*.py` (seven files), `test_tensor_transfer.py`, `test_tensor_stream.py`, `test_tensor_stream_logic.py` (GPU-free, so it runs in CI) and `test_capture_order_shipped_paths.py`. The tables below are the 2026-08-06 state and are kept for the per-machine skip analysis, which still applies.
+
+**Test coverage (2026-08-06):** `python -m pytest tests/ -q` collects 282. The skips are environmental, not pending work, and **the count is a property of the machine, not of the code**:
 
 | | Machine A (Intel) | Machine B (RTX 4060) |
 | --- | --- | --- |
@@ -582,8 +637,56 @@ So B wins only below 416², **640² is a tie**, and A wins clearly above it. Thr
 > like an artifact of one resolution and one missing term. Re-measure before
 > relying on it, and prefer `cross_adapter_ordering_v2.py`.
 
+> ### Measured again 2026-09-14 with the kernels that were missing — and the resolution mattered
+>
+> v2 carried one stated caveat: its convert column was the FP32 NCHW path for
+> every row, because `GpuPreprocessor12` emits only that, so the BGRA8 and FP16
+> rows were *pessimistic on convert and exact on transfer*. 2.6's
+> `GpuConverter` emits all three, so `cross_adapter_ordering_v3.py` measures
+> each row with the kernel that would actually produce it.
+>
+> **The caveat was real** — the cheap representations are cheaper to produce as
+> well as to move (640²: BGRA8 0.27 ms, FP16 0.31 ms, FP32 0.38 ms, where v2
+> charged all three 0.38). **But removing it did not make B win everywhere at
+> 1080p**, and that is the finding.
+>
+> Machine A, Intel iGPU → WARP, **1920×1080 (8.29 MB)**, nearest sampling,
+> min of 30. A's transfer alone: **0.63–0.74 ms** across two runs.
+>
+> | out | payload | MB | convert | transfer | **B total** | verdict |
+> | --- | --- | ---: | ---: | ---: | ---: | --- |
+> | 320² | BGRA8 | 0.41 | 0.19 | 0.10 | **0.28 ms** | B wins |
+> | 320² | FP16 | 0.61 | 0.20 | 0.12 | **0.32 ms** | B wins |
+> | 416² | BGRA8 | 0.69 | 0.23 | 0.11 | **0.34 ms** | B wins |
+> | 416² | FP32 | 2.08 | 0.27 | 0.22 | **0.50 ms** | B wins |
+> | **640²** | **BGRA8** | 1.64 | 0.27 | 0.20 | **0.47 ms** | **B wins** |
+> | **640²** | **FP16** | 2.46 | 0.31 | 0.26 | **0.57 ms** | **B wins** |
+> | 640² | FP32 | 4.92 | 0.38 | 0.48 | 0.86 ms | undecided |
+> | 832² | BGRA8 | 2.77 | 0.35 | 0.28 | **0.64 ms** | B wins |
+> | 1024²+ | any | ≥4.19 | ≥0.39 | ≥0.37 | ≥0.76 ms | undecided |
+>
+> **This does not contradict v2 and does not re-open anything.** v2 measured
+> **2560×1600**, where the frame is 16.38 MB and A's transfer alone costs
+> 2.65 ms; here the frame is half that and A's transfer is a quarter the cost,
+> so B has far less to beat. Both tables are right about their own resolution.
+> What they jointly establish is that **the ordering is resolution-dependent**,
+> which the § 4 entry should say rather than naming a single winner.
+>
+> **The load-bearing row is 640² FP16.** At 1080p, converting first wins there
+> and does *not* win as FP32 — so on this machine the FP16 kernel is the
+> difference between B winning and the question being undecided at the size
+> production actually uses. That is the concrete return on 2.6's dtype work,
+> and it is a result the FP32-only path could not have produced.
+>
+> **Two limits, both stated rather than buried.** The destination is WARP —
+> Machine A has no second hardware GPU — so only the source side is
+> representative, the same caveat § 6.1 carries throughout. And the undecided
+> rows are genuinely undecided, not A wins: A's destination-side conversion is
+> still unmeasured and would count against it.
+
 Remaining work:
 
+- ~~**The transferred frame was current.**~~ **It often was not, and every check above was blind to it.** Found 2026-09-14 (§ 4, § 10): the source queue's copy could overtake the capture device's own copy into the surface, and carry the previous frame — 65 of 150 first transfers, Intel iGPU → WARP. Every "byte-exact" result in this section compared the destination with a source-side readback of *the same snapshot*, which is stale in exactly the same way, so they were correct about integrity and silent about currency. Fixed with a capture-ordering fence (0 / 150 after). **Not yet re-verified with a hardware destination**; the Intel → RTX 4060 figures below predate the fix.
 - ~~**A shared fence.**~~ **Built 2026-08-22, and the 2026-08-05 conclusion did not survive the hardware it was about.** That entry said the wait "adds essentially nothing per frame" and the fence would buy "latency and pipelining, not throughput". Measured against WARP, that was right. Measured Intel→NVIDIA it is wrong in the useful direction.
 
   **`probe_transfer_phases()` split one transfer**, the way § 10's `probe_dispatch_phases` did for the preprocessor. Medians, 2560×1600, 200 iterations:
@@ -1324,6 +1427,25 @@ Before more GPU surface area, make the library boringly dependable and easy to a
 
 ### 7.2 — 2.6: GPU transform and framework interop
 
+> **Status 2026-09-14 — built, not released.** Verified on live capture on the Intel-only machine; `CHANGELOG.md` `[Unreleased]` has the detail. The plan text after this box is kept as the rationale.
+>
+> | Item | State |
+> | --- | --- |
+> | `GpuConverter`, bilinear + FP16 + resized BGRA8 | ✅ nearest bit-identical to `GpuPreprocessor12` |
+> | Input `BGRA8 / RGBA8 / R10G10B10A2 / RGBA16F` | ⚠️ all accepted; **only BGRA8 exercised** (SDR desktop) |
+> | Output `NV12 / P010` | ✅ against a CPU reference and the published inverse matrices. Centre-sited chroma — H.264/HEVC assume left-sited, a one-line shader change for § 7.3 if the encoder needs it. HDR `RGBA16F` input refused: linear light needs a tone-map or PQ decision nobody has made |
+> | NHWC float | ✅ bit-identical to NCHW transposed |
+> | Crop | ✅ frame coordinates, honours `Frame.region`, filter clamped inside the crop; refused on rotated displays |
+> | Multi-ROI | ✅ one dispatch, `(N, …)`, capacity via `batch=`; 4 × 224²: 0.20 vs 0.51 ms, 16 × 224²: 0.43 vs 2.11 ms, 8 × 640²: 1.15–1.20 vs 2.02–2.43 ms against N separate calls |
+> | `GpuTensor` → Torch / CuPy / DLPack | ⚠️ **written, never run** — release gate |
+> | Convert-first transfer (`TensorTransfer`) | ✅ byte-equal; ⚠️ **WARP destination only** — release gate |
+> | `TensorStream` | ✅ |
+> | Fused pipeline graph | not built — build only if it fuses, as below |
+>
+> **What building it taught, worth more than the features.** `TensorStream`'s end-to-end test exposed that every GPU path reading the capture surface could return the previous frame (§ 4). The converter tests had not caught it because they held one frame per module (§ 2). The same work found `GpuConverter` resizing the whole monitor on a region camera, then the same bug shipped in `GpuPreprocessor12` and the D3D11 `GpuPreprocessor`; all three are fixed (§ 10).
+>
+> **One design choice to know before extending it:** a single crop and a multi-ROI batch are the same code path — rectangles in an upload-heap `StructuredBuffer`, `Dispatch(x, y, N)` with `tid.z` selecting the slot — so there is no separate crop kernel to keep in step.
+
 **`GpuConverter` — rank 2, and build it before the encoder.** A reusable colourspace/format layer: `BGRA8 / RGBA8 / R10G10B10A2 / RGBA16F → NV12 / P010 / RGB`. Capture already handles HDR formats through `DuplicateOutput1`. Built once as infrastructure it serves ML, encoding, streaming and recording; buried inside a Stage 7 encoder it serves one of them.
 
 **The existing preprocessor downsamples with nearest-neighbour, and that is not recorded anywhere else.** `native/src/preprocess12.rs` computes `sx = tid.x * SrcWidth / OutWidth` and reads with `Source.Load()`; the root signature declares `NumStaticSamplers: 0`, so no filtering hardware is involved. Scaling 2560x1600 down to 640² drops roughly fifteen of every sixteen pixels rather than averaging them, which aliases exactly the content desktop capture is most often pointed at — small text, thin borders, cursor edges. Nobody has measured what that costs a model's accuracy, and no test would catch it: the output is the right shape, the right range and the right channel order.
@@ -1495,6 +1617,24 @@ Realistic cost is roughly six months with a native-graphics-fluent co-maintainer
 ---
 
 ## 10. Known debt
+
+- ~~**GPU reads of the capture surface were unordered.**~~ **Fixed 2026-09-14, unreleased.** `GpuPreprocessor12` (7–15 / 150 stale) and `CrossAdapterTransfer` (65 / 150 to WARP) could read the surface before the capture device's copy into it had run, and return the previous frame; shipped since 2.3.0. § 4 has the mechanism and the rejected alternatives. How it went unnoticed is the part to keep:
+
+  - **Found by accident, from the right kind of test.** `TensorStream`'s test wrapped the camera to convert each frame independently while it was live, then compared the stream's output. The *reference* — the first reader — was the one that was wrong, which a `stream != reference` failure did not say; a third opinion from a fresh converter per frame did.
+  - **Two hypotheses were measured and rejected before the right one**: a surface that changes while held (it does not — identical reads across 85 ms), and a texture cache reusing a recycled address (one address across 60 frames, long-lived converters agreeing with fresh ones).
+  - **The existing verification was structurally blind.** `transfer_with_reference` snapshots the surface once and copies the snapshot to both sides, so both are stale together. Its comment blamed ~2,100 differing bytes on "DXGI keeps writing to" the surface; that was this race. The comment is corrected; the snapshot stays, because it still proves integrity.
+
+  **Still open:** the fix is unverified with a hardware destination (§ 1 release gate). `probe_cross_adapter()` and `probe_cross_adapter_buffer()` are timing probes and are not ordered. The D3D11 `GpuPreprocessor` and the CPU `grab()` path read on the capture device's own queue and should be ordered by construction — reasoned, not measured. And the fix rests on the invariant in § 4: signalled only while a `Frame` is live. Nothing tests that invariant.
+
+- ~~**`GpuPreprocessor12` ignores `Frame.region`.**~~ **Fixed 2026-09-14, unreleased.** A camera created with `region=` hands back frames whose texture is the whole output, and the preprocessor sized its sampling from the texture, so it resized **the entire monitor** into a correctly shaped tensor. Verified before the fix: on a `(101, 51, 421, 291)` region camera the output was bit-identical to the whole 1920×1080 surface resized. The shader now takes a crop rectangle, which with its whole-surface default reduces to the old expression — `tests/test_gpu_preprocess.py` passes unmodified — and the `native.GpuPreprocessor12` wrapper passes the frame's region, using the same translation helper as `GpuConverter` (`native._texture_crop`), so the two cannot drift. Tests in `test_gpu_converter_region.py` check the region against captured bytes, against decimation at the region's own stride, and against `GpuConverter`; each fails against a planted bug (wrapper not passing the region, shader dropping the offset, shader sizing from the texture). The raw extension still converts the whole surface unless given `crop=`, deliberately: it works in texels. Rotated displays are still not translated.
+
+- ~~**The D3D11 `native.GpuPreprocessor` ignores `Frame.region`.**~~ **Fixed 2026-09-14, unreleased**, the same way. Verified before the fix: on the same region camera its output was bit-identical to the whole monitor resized. `preprocess.rs`'s shader takes the crop (its `Params` constant buffer grew 32 → 48 bytes, asserted at compile time to stay on D3D11's 16-byte boundary) and the wrapper passes `_texture_crop`. Because the D3D11 path accepts synthetic textures, its crop is also pinned in `test_gpu_preprocess.py` against a known pattern — identity, downscale, upscale, origin and far-corner crops, a one-texel offset shift, and refusals — which needs no screen and runs wherever the extension does. Live, `test_gpu_converter_region.py` checks it against captured bytes and against `GpuPreprocessor12`. Planted bugs (wrapper not passing the region, shader dropping the offset, stride taken from the texture) fail 2, 7 and 6 tests. It reads on the capture device's own queue, so it needed no capture ordering.
+
+- **`test_nearest_output_matches_a_cpu_reference` never runs.** It skips unless a frame exposes `frame_buffer`, and no `Frame` does. Its intent — converter output against numbers computed on the CPU — is now covered by the identity-size slice checks in `test_gpu_converter_crop.py` and `test_gpu_converter_batch.py`. Delete it or rewrite it on those; it should not stay as a skip that reads like coverage.
+
+- **`GpuConverter` does not handle rotated displays.** The captured surface is unrotated and frame coordinates are not translated onto it, so `crop` and `regions` are refused when `Frame.rotation_angle` is non-zero, and a rotated frame without a crop converts the unrotated surface — as `GpuPreprocessor12` always has. Not testable on either development machine.
+
+- **`GpuConverter` input formats other than `B8G8R8A8_UNORM` have never been exercised.** `R8G8B8A8`, `R10G10B10A2` and `R16G16B16A16_FLOAT` are accepted by reasoning about how `Texture2D<float4>` reads each format, not by measurement; a D3D12 converter cannot be built over a synthetic texture (§ 2), so this needs a real HDR or 10-bit desktop.
 
 - **Pooled output is the default since 2.0**, and it is a breaking change: `grab()` returns a `PooledBuffer` the caller must `release()`. Allocating the output array cost ~1.6 ms per 1080p frame in page faults — more than the conversion it feeds — so reusing buffers is **1.3–2.1× on `grab()`** across RGB, RGBA and GRAY, pixels identical. The wrapper indexes and converts like the array it wraps (`frame[y, x]`, `np.asarray(frame)` zero-copy), so the migration is usually one added `release()`; `pool_output=False` restores 1.x behaviour. Use after release raises rather than returning another frame's pixels. Since 2.2.0 the pool depth is public as `pool_size_frames` and defaults to **4 rather than 10** — 60 MB less per camera for a frame-rate change inside noise. Running the pool dry falls back to allocating, verified by holding six frames against a two-buffer pool.
 - ~~**Exclusive-fullscreen and HDCP paths are fault-injection tested only.**~~ **Both were more testable than this entry claimed**, and it was wrong for a lazy reason: the real trigger was assumed to be the only trigger.

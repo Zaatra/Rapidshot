@@ -10,6 +10,173 @@ each release can be traced back to the plan it implements.
 
 ## [Unreleased]
 
+### Stage 7.2 — GPU transform and framework interop (2.6)
+
+**Capture to model input, or to encoder input, without leaving the GPU — and
+without silently handing back the previous frame.** 2.6 adds a general
+transform (`GpuConverter`), a way to move its result to another adapter
+(`TensorTransfer`), and an iterator over the whole path (`TensorStream`).
+Building the last of those exposed a race that 2.3.0–2.5.0 users of
+`GpuPreprocessor12` and `CrossAdapterTransfer` have been hitting: see
+**Fixed**, which matters more than anything added here.
+
+Everything below was verified against live capture on the Intel-only
+development machine (Core Ultra 5 235, Intel iGPU, no discrete GPU). **Two
+things could not be, and are release gates:** the CUDA exports, and any
+transfer to a *hardware* second adapter — this machine's only second adapter is
+WARP.
+
+#### Added
+
+**`GpuConverter` — a D3D12 transform path, added alongside `GpuPreprocessor12`
+rather than replacing it.** The old path samples with `Texture2D.Load()`, which
+scaling 2560×1600 to 640² discards roughly fifteen of every sixteen pixels
+rather than filtering them — aliasing exactly the small text and thin borders
+desktop capture is usually pointed at. `GpuConverter` defaults to bilinear
+through a static sampler; `sampling="nearest"` reproduces the old path **bit for
+bit**, asserted against it on live capture. Kept separate on purpose: bilinear
+changes the numbers `tests/test_gpu_preprocess.py` pins, and an A/B that cannot
+say which sampling it timed is not a measurement.
+
+- **Outputs.** `float32` and `float16` tensors in `layout="nchw"` or `"nhwc"`,
+  and `uint8` as a resized BGRA frame — the cheapest thing to put on a
+  cross-adapter bus. FP16 is half the bytes and what production inference
+  mostly consumes. NHWC is the NCHW values in the other order and is asserted
+  bit-identical to the transposed NCHW output. `normalize=` and `bgr=` as
+  before; note `normalize` is not a division — the capture format is UNORM, so
+  0..1 arrives free and 0..255 is what has to be reconstructed.
+- **`pixel_format="nv12"` / `"p010"`** — 4:2:0 in the standard planar layout,
+  what an encoder takes, returned as `(H*3/2, W)`. P010 carries the value in
+  the high ten bits. `matrix="bt709"` (default) or `"bt601"`, limited range by
+  default or `full_range=True`. Chroma is centre-sited (the 2×2 block mean);
+  H.264/HEVC default to left-sited, a half-pixel shift that matters for video
+  quality and not for ML. Verified against a CPU reference and, separately, by
+  decoding with the *published* inverse coefficients so the kernel and the
+  reference cannot share a wrong constant.
+- **`crop=(left, top, right, bottom)`**, in frame coordinates — the convention
+  of `Frame.region` and `dirty_rects` — at construction and per call. Applied
+  before the resize. With bilinear sampling the filter is clamped to the crop's
+  edge texels, so upscaling a small crop does not blend in the pixels beyond
+  it. A crop outside the frame is refused rather than clamped. Refused on
+  rotated displays, which are not handled.
+- **Multi-ROI.** `process(frame, regions=[...])` converts every region in **one
+  dispatch** into an `(N, …)` batch; `batch=` sets the capacity, and each call
+  may pass fewer. Every slot is asserted bit-identical to converting that region
+  alone. One batched call against N single-region calls, float16 bilinear:
+
+  | Regions × size | batched | N × single |
+  | --- | --- | --- |
+  | 4 × 224² | 0.20 ms | 0.51 ms |
+  | 16 × 224² | 0.43 ms | 2.11 ms |
+  | 8 × 640² | 1.15–1.20 ms | 2.02–2.43 ms |
+
+- **All four `DuplicateOutput1` formats accepted as input** — `B8G8R8A8`,
+  `R8G8B8A8`, `R10G10B10A2` and `R16G16B16A16_FLOAT` — where the first draft
+  refused everything but BGRA8. The view follows the surface format; declaring
+  BGRA8 over a 10-bit surface reinterprets the bits rather than converting
+  them. Float outputs pass scRGB values above 1.0 through; `uint8` saturates;
+  NV12/P010 refuse the linear-light HDR format rather than put it through a
+  gamma-domain matrix. `converter.source_format` reports which one arrived.
+  **Only BGRA8 has actually been exercised** — this is an SDR desktop.
+
+**`GpuTensor` — one-call framework export.** `to_torch()`, `to_cupy()` and
+`to_dlpack()` replace the ~60 lines of `ctypes` in
+`examples/gpu_tensor_to_cupy.py`, which stays as the worked version. The import
+is cached, so a capture loop pays nothing per frame to keep the view. Deliberately
+**not** on `Frame`: a frame is a captured surface, not a tensor. **Unverified —
+no CUDA device on this machine.**
+
+**`TensorTransfer` — convert first, then move the small result.** § 6.1
+measured that converting before crossing adapters wins at 2560×1600 and at
+1080p up to 640² FP16, but there was no way to do it: the converter writes a
+buffer and the frame transfer takes a texture. At 640² FP16 this moves
+2,457,600 bytes instead of the frame's 8,294,400. Asserted **byte-equal** across
+the boundary rather than within a tolerance. The destination adapter is matched
+by LUID, not index. **Exercised only against WARP.**
+
+**`TensorStream` — the whole path as an iterator.**
+
+```python
+for tensor in rapidshot.TensorStream(camera, (640, 640), dtype="float16"):
+    model(tensor.to_torch())
+```
+
+The value is in what it closes, each of which is quietly wrong when written by
+hand: the frame goes back to DXGI before the tensor is yielded, so holding a
+tensor cannot stall capture; `tensor.sync()` runs before the buffer is
+overwritten; a permanently failed or released camera raises instead of looking
+like an idle screen, since `grab_frame()` returns `None` for both; and a frame
+from a new duplicator rebuilds the converter once, while any other failure is
+raised rather than retried. Takes every converter option, including `regions`,
+which may change between iterations. Its control flow is tested without a GPU;
+its output is tested against an independent conversion of the same live frame.
+
+**`cross_adapter_ordering_v3.py` removes v2's stated caveat, and finds the
+ordering is resolution-dependent.** v2 charged every row FP32's conversion cost
+because that was the only kernel that existed. The cheap representations are
+genuinely cheaper to produce (640²: BGRA8 0.27 ms, FP16 0.31 ms, FP32 0.38 ms),
+but at **1080p** convert-first wins only up to 640² FP16, where v2's 2560×1600
+measurement had it winning everywhere. Both tables are right about their own
+resolution. See ROADMAP § 6.1.
+
+#### Fixed
+
+- **`GpuPreprocessor12` and `CrossAdapterTransfer` sometimes returned the
+  previous frame.** `AcquireNextFrame` returns once the copy into the
+  duplication surface has been *submitted* on the capture device's D3D11 queue,
+  not once it has run. A D3D12 queue reading that surface is a different queue
+  with no implied order, and could overtake the copy. No error, correct shape,
+  plausible content. Measured against a moving source, first read immediately
+  after acquisition against a settled re-read of the same held frame:
+
+  | Path | Stale, before | After |
+  | --- | --- | --- |
+  | `GpuPreprocessor12` | 7–15 / 150 | **0 / 150** |
+  | `CrossAdapterTransfer` (to WARP) | 65 / 150 | **0 / 150** |
+  | `GpuConverter` (never released with it) | 7–11 / 100 | **0 / 150** |
+
+  Fixed by ordering, not waiting: a fence shared with the capture device is
+  signalled into its D3D11 command stream behind the copy, and the reading
+  queue waits on it on the GPU. `ID3D11DeviceContext::Flush` alone does not
+  help (13–14 / 100 stale) because it submits without waiting. `transfer_async`
+  stays non-blocking. Cost, same build with and without, 640², P-core-pinned:
+  `GpuPreprocessor12.process` 0.44–0.48 → 0.40–0.41 ms, `GpuConverter.process`
+  0.38–0.41 → 0.36–0.37 ms, `CrossAdapterTransfer.transfer` 0.50–0.51 →
+  0.52–0.53 ms. One shared implementation, `native/src/capture_order.rs`.
+
+  **Why the "byte-exact" verification never caught it.** `transfer_with_reference`
+  compares the destination with a source-side copy taken from *the same
+  snapshot*, so a stale read is stale on both sides and the comparison passes.
+  The ~2,000 differing bytes that motivated that snapshot were this race,
+  recorded at the time as a surface DXGI keeps writing to. The new regression
+  tests compare a first read with a settled re-read instead, and each fails
+  when its ordering call is removed. **The cross-adapter half was measured only
+  against WARP**; a hardware destination is a release gate.
+
+- **`GpuPreprocessor12` and `GpuPreprocessor` resized the entire monitor on a region camera.** A
+  camera created with `region=` hands back frames whose texture is still the
+  whole output, and the preprocessor sized its sampling from the texture — so
+  its tensor was the whole monitor, correctly shaped. Verified before the fix:
+  on a `(101, 51, 421, 291)` region camera the output was bit-identical to the
+  whole 1920×1080 surface resized, and matched the region not at all. It now
+  converts the region. **Full-frame output is unchanged bit for bit** — the
+  shader's crop reduces to the old expression — and `tests/test_gpu_preprocess.py`
+  passes unmodified. **This changes the output for anyone using it with a
+  region camera**, which is the fix: that output was never the region. The raw
+  extension (`native.require().GpuPreprocessor12`) works in texels and still
+  converts the whole surface unless given `crop=`; the `native.GpuPreprocessor12`
+  wrapper passes the region. On a rotated display the region is still not
+  translated. `GpuConverter` had the same bug and was fixed before release.
+
+  **The D3D11 `native.GpuPreprocessor` had the same bug, fixed the same way** —
+  verified before the fix, bit-identical to the whole monitor on the same region
+  camera. Its constant buffer grew from 32 to 48 bytes to carry the crop, which
+  keeps it on the 16-byte boundary D3D11 requires. Whole-texture output is
+  unchanged: the existing exact-reference tests pass unmodified, and new tests on
+  synthetic textures pin the crop against a known pattern with no screen needed.
+  On a region frame the D3D11 and D3D12 preprocessors now produce one tensor.
+
+
 ## [2.5.0] - 2026-09-13
 
 **Everything that made RapidShot worth choosing, without the toolchain.** 2.4.0

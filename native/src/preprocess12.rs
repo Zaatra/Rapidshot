@@ -11,7 +11,9 @@
 //! D3D12), and once the shader runs there, its output buffer is already resident
 //! on the DirectML device. There is no sharing step left to fail.
 //!
-//! The HLSL is identical to the D3D11 path; only the host-side plumbing differs.
+//! The HLSL matches the D3D11 path except for the crop rectangle, which this
+//! path gained on 2026-09-14 to honour a frame's region; with the default
+//! whole-surface crop the two compute the same thing.
 
 use windows::core::{Interface, PCSTR};
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
@@ -28,6 +30,8 @@ const DXGI_SHARED_RESOURCE_READ: u32 = 0x8000_0000;
 /// than imported because `cross_adapter.rs` keeps its own copy private; the
 /// value is fixed by the Windows headers.
 const GENERIC_ALL: u32 = 0x1000_0000;
+/// Size of the shader's `Params` cbuffer, in 32-bit values.
+const CONSTANT_COUNT: usize = 12;
 
 /// Same conversion as the D3D11 path. Params arrive as root constants rather
 /// than a constant buffer, which removes a resource and an upload per frame.
@@ -45,6 +49,16 @@ cbuffer Params : register(b0)
     float Bias;
     uint  ChannelOrder;   // 0 = RGB, 1 = BGR
     uint  _pad;
+    // The rectangle of the surface to convert, in texels. The whole surface
+    // unless the caller passes one -- and then CropX/CropY are 0 and
+    // CropW/CropH are SrcWidth/SrcHeight, which makes the mapping below the
+    // exact expression it replaced, so full-frame output is unchanged bit for
+    // bit. It exists because a region camera's texture is the whole output:
+    // sampling the texture's size resized the entire monitor (2026-09-14).
+    uint  CropX;
+    uint  CropY;
+    uint  CropW;
+    uint  CropH;
 };
 
 [numthreads(8, 8, 1)]
@@ -53,8 +67,8 @@ void CSMain(uint3 tid : SV_DispatchThreadID)
     if (tid.x >= OutWidth || tid.y >= OutHeight)
         return;
 
-    uint sx = (SrcWidth  == OutWidth ) ? tid.x : (tid.x * SrcWidth  / OutWidth );
-    uint sy = (SrcHeight == OutHeight) ? tid.y : (tid.y * SrcHeight / OutHeight);
+    uint sx = CropX + ((CropW == OutWidth ) ? tid.x : (tid.x * CropW / OutWidth ));
+    uint sy = CropY + ((CropH == OutHeight) ? tid.y : (tid.y * CropH / OutHeight));
 
     // The hardware swizzles BGRA formats, so .x is RED here despite blue being
     // first in memory. Getting this backwards produces BGR labelled RGB, which
@@ -141,6 +155,10 @@ pub struct Preprocessor12 {
     cached_texture: std::cell::Cell<(usize, u64)>,
     cached_shared: std::cell::RefCell<Option<ID3D12Resource>>,
     cached_src_size: std::cell::Cell<(u32, u32)>,
+    /// Orders each dispatch behind the capture device's own work. Without it,
+    /// 7–15 of 150 first reads of a new frame converted the previous frame;
+    /// see `capture_order.rs`.
+    capture_order: super::capture_order::CaptureOrder,
     pub out_width: u32,
     pub out_height: u32,
 }
@@ -181,15 +199,7 @@ impl Preprocessor12 {
             }
         }
 
-        let adapter: IDXGIAdapter = unsafe {
-            let d3d11_device: ID3D11Device = d3d11_texture.GetDevice()?;
-            let dxgi: IDXGIDevice = d3d11_device.cast()?;
-            dxgi.GetAdapter()?
-        };
-
-        let mut device: Option<ID3D12Device> = None;
-        unsafe { D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_11_0, &mut device)? };
-        let device = device.expect("D3D12CreateDevice reported success");
+        let device = device_for_texture(d3d11_texture)?;
 
         let queue: ID3D12CommandQueue = unsafe {
             device.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC {
@@ -234,7 +244,7 @@ impl Preprocessor12 {
                     Constants: D3D12_ROOT_CONSTANTS {
                         ShaderRegister: 0,
                         RegisterSpace: 0,
-                        Num32BitValues: 8,
+                        Num32BitValues: CONSTANT_COUNT as u32,
                     },
                 },
                 ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
@@ -364,6 +374,8 @@ impl Preprocessor12 {
             device.CreateUnorderedAccessView(&output, None, Some(&uav_desc), uav_handle);
         }
 
+        let capture_order = super::capture_order::CaptureOrder::new(&device)?;
+
         Ok(Self {
             device,
             queue,
@@ -381,6 +393,7 @@ impl Preprocessor12 {
             cached_texture: std::cell::Cell::new((0, 0)),
             cached_shared: std::cell::RefCell::new(None),
             cached_src_size: std::cell::Cell::new((0, 0)),
+            capture_order,
             out_width,
             out_height,
         })
@@ -400,6 +413,12 @@ impl Preprocessor12 {
     }
 
     /// Convert one captured frame, entirely on the D3D12 device.
+    ///
+    /// `crop` is the rectangle of the surface to convert, in texels; `None` is
+    /// the whole surface. A region camera's frame covers only part of its
+    /// texture, so the caller must pass the region or the whole monitor is
+    /// resized into a correctly shaped tensor. Refused rather than clamped when
+    /// it does not fit.
     pub fn process(
         &self,
         d3d11_texture: &ID3D11Texture2D,
@@ -407,6 +426,7 @@ impl Preprocessor12 {
         scale: f32,
         bias: f32,
         channel_order: u32,
+        crop: Option<super::converter12::Crop>,
     ) -> windows::core::Result<()> {
         // Opening the captured texture on this device is per-*texture* work, not
         // per-frame work: Desktop Duplication hands back the same surface over
@@ -433,7 +453,31 @@ impl Preprocessor12 {
             .expect("open_texture populates the cache or returns Err");
         let (src_width, src_height) = self.cached_src_size.get();
 
-        let constants: [u32; 8] = [
+        let crop = crop.unwrap_or(super::converter12::Crop {
+            x: 0,
+            y: 0,
+            width: src_width,
+            height: src_height,
+        });
+        let fits = crop.width > 0
+            && crop.height > 0
+            && crop.x as u64 + crop.width as u64 <= src_width as u64
+            && crop.y as u64 + crop.height as u64 <= src_height as u64;
+        if !fits {
+            return Err(windows::core::Error::new(
+                windows::Win32::Foundation::E_INVALIDARG,
+                format!(
+                    "crop {}x{} at ({}, {}) does not fit inside the {}x{} surface",
+                    crop.width, crop.height, crop.x, crop.y, src_width, src_height
+                ),
+            ));
+        }
+
+        // Behind the capture device's copy into the surface, or the dispatch
+        // can overtake it and convert the previous frame.
+        self.capture_order.order(&self.queue, d3d11_texture)?;
+
+        let constants: [u32; CONSTANT_COUNT] = [
             self.out_width,
             self.out_height,
             src_width,
@@ -442,6 +486,10 @@ impl Preprocessor12 {
             bias.to_bits(),
             channel_order,
             0,
+            crop.x,
+            crop.y,
+            crop.width,
+            crop.height,
         ];
 
         unsafe {
@@ -459,7 +507,7 @@ impl Preprocessor12 {
             self.list.SetComputeRootSignature(&self.root_signature);
             self.list.SetDescriptorHeaps(&[Some(self.heap.clone())]);
             self.list
-                .SetComputeRoot32BitConstants(0, 8, constants.as_ptr() as *const _, 0);
+                .SetComputeRoot32BitConstants(0, CONSTANT_COUNT as u32, constants.as_ptr() as *const _, 0);
             self.list
                 .SetComputeRootDescriptorTable(1, self.heap.GetGPUDescriptorHandleForHeapStart());
 
@@ -517,7 +565,9 @@ impl Preprocessor12 {
             .expect("open_texture populates the cache or returns Err");
         let (src_width, src_height) = self.cached_src_size.get();
 
-        let constants: [u32; 8] = [
+        // Whole surface: a timing probe, where the rectangle does not change the
+        // work done per texel.
+        let constants: [u32; CONSTANT_COUNT] = [
             self.out_width,
             self.out_height,
             src_width,
@@ -526,7 +576,16 @@ impl Preprocessor12 {
             0.0f32.to_bits(),
             0,
             0,
+            0,
+            0,
+            src_width,
+            src_height,
         ];
+
+        // Once, before timing: every iteration reads the same held frame, so
+        // only the first could overtake the capture copy. `process` orders on
+        // every call; that cost is not one of the four phases timed here.
+        self.capture_order.order(&self.queue, d3d11_texture)?;
 
         let count = iterations.max(1) as usize;
         let mut records = Vec::with_capacity(count);
@@ -548,7 +607,7 @@ impl Preprocessor12 {
                 self.list.SetComputeRootSignature(&self.root_signature);
                 self.list.SetDescriptorHeaps(&[Some(self.heap.clone())]);
                 self.list
-                    .SetComputeRoot32BitConstants(0, 8, constants.as_ptr() as *const _, 0);
+                    .SetComputeRoot32BitConstants(0, CONSTANT_COUNT as u32, constants.as_ptr() as *const _, 0);
                 self.list.SetComputeRootDescriptorTable(
                     1,
                     self.heap.GetGPUDescriptorHandleForHeapStart(),
@@ -710,11 +769,7 @@ impl Preprocessor12 {
     /// device is the discrete GPU. Counting CUDA devices cannot detect that:
     /// there is exactly one, and it is the wrong one.
     pub fn adapter_luid(&self) -> [u8; 8] {
-        let luid = unsafe { self.device.GetAdapterLuid() };
-        let mut out = [0u8; 8];
-        out[..4].copy_from_slice(&luid.LowPart.to_le_bytes());
-        out[4..].copy_from_slice(&luid.HighPart.to_le_bytes());
-        out
+        adapter_luid_for(&self.device)
     }
 
     /// Address of the capture texture currently cached, or 0 if none is.
@@ -792,7 +847,38 @@ impl Drop for Preprocessor12 {
     }
 }
 
-fn create_buffer(
+/// Build a D3D12 device on the same adapter as a captured D3D11 texture.
+///
+/// Sharing only works within one adapter, so this must follow the capture
+/// rather than pick a device. Shared with `converter12` so the two paths
+/// cannot drift on which adapter they land on — if they did, the tensor one
+/// produced would be unreachable from the other.
+pub(crate) fn device_for_texture(
+    d3d11_texture: &ID3D11Texture2D,
+) -> windows::core::Result<ID3D12Device> {
+    let adapter: IDXGIAdapter = unsafe {
+        let d3d11_device: ID3D11Device = d3d11_texture.GetDevice()?;
+        let dxgi: IDXGIDevice = d3d11_device.cast()?;
+        dxgi.GetAdapter()?
+    };
+    let mut device: Option<ID3D12Device> = None;
+    unsafe { D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_11_0, &mut device)? };
+    Ok(device.expect("D3D12CreateDevice reported success"))
+}
+
+/// LUID of the adapter a device sits on, in the byte order CUDA's
+/// `cuDeviceGetLuid` reports.
+pub(crate) fn adapter_luid_for(device: &ID3D12Device) -> [u8; 8] {
+    let luid = unsafe { device.GetAdapterLuid() };
+    let mut out = [0u8; 8];
+    out[..4].copy_from_slice(&luid.LowPart.to_le_bytes());
+    out[4..].copy_from_slice(&luid.HighPart.to_le_bytes());
+    out
+}
+
+/// Shared with `converter12`: both paths allocate the same three kinds of
+/// buffer and there is no reason for two copies of the descriptor.
+pub(crate) fn create_buffer(
     device: &ID3D12Device,
     size: u64,
     heap_type: D3D12_HEAP_TYPE,

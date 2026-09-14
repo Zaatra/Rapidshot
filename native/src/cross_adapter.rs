@@ -912,6 +912,10 @@ pub struct CrossAdapterTransfer {
     shared_fence: ID3D12Fence,
     shared_fence_handle: HANDLE,
     shared_fence_value: Cell<u64>,
+    /// Orders each copy of the capture surface behind the capture device's
+    /// own copy into it. Without it, 65 of 150 first transfers of a new frame
+    /// (Intel iGPU -> WARP) carried the previous frame; see `capture_order.rs`.
+    capture_order: crate::capture_order::CaptureOrder,
     submission_health: Cell<SubmissionHealth>,
     /// The consumer's fence, opened from a handle the caller supplies.
     ///
@@ -1129,6 +1133,7 @@ impl CrossAdapterTransfer {
         let shared_fence_handle = OwnedHandle(unsafe {
             src_device.CreateSharedHandle(&shared_fence, None, GENERIC_ALL, None)?
         });
+        let capture_order = crate::capture_order::CaptureOrder::new(&src_device)?;
         Ok(Self {
             src: Submitter::new(&src_device)?,
             dst: Submitter::new(&dst_device)?,
@@ -1147,6 +1152,7 @@ impl CrossAdapterTransfer {
             shared_fence,
             shared_fence_handle: shared_fence_handle.release(),
             shared_fence_value: Cell::new(0),
+            capture_order,
             submission_health: Cell::new(SubmissionHealth::Usable),
             consumer_fence: std::cell::RefCell::new(None),
             retired_consumer_fences: std::cell::RefCell::new(Vec::new()),
@@ -1220,6 +1226,8 @@ impl CrossAdapterTransfer {
         std::mem::forget(self.src_readback.clone());
         std::mem::forget(self.snapshot.clone());
         std::mem::forget(self.shared_fence.clone());
+        // A queued source-queue Wait names the capture-order fence.
+        self.capture_order.quarantine();
         if let Some((resource, _)) = self.cached_shared.borrow().as_ref() {
             std::mem::forget(resource.clone());
         }
@@ -1313,6 +1321,7 @@ impl CrossAdapterTransfer {
         self.wait_shared_fence(self.shared_fence_value.get())?;
 
         let shared = self.open_capture_texture(texture, source_id)?;
+        self.capture_order.order(&self.src.queue, texture)?;
 
         if with_reference {
             return self.copy_via_snapshot(&shared);
@@ -1342,11 +1351,18 @@ impl CrossAdapterTransfer {
 
     /// Transfer a frame *and* return a source-side copy of the same bytes.
     ///
-    /// Verification only. Both copies are recorded into one command list and
-    /// submitted together, so they are guaranteed to see identical source
-    /// content — the duplicated surface is live and does change between two
-    /// separately submitted copies, which showed up as ~2000 differing bytes in
-    /// a single screen region.
+    /// Verification only. Both copies come from one snapshot in one command
+    /// list, so they are guaranteed identical to each other.
+    ///
+    /// **That guarantee is also why this never caught the stale-read bug.**
+    /// ~2000 differing bytes between two separately submitted copies were
+    /// attributed to a "live" surface. Measured 2026-09-14, a held frame does
+    /// not change once its capture copy has run: what differed was a first
+    /// copy overtaking that capture copy and reading the previous frame. A
+    /// shared snapshot makes both sides equally stale, so the comparison
+    /// passed while production transfers were wrong. `capture_order` fixes
+    /// the cause; `tests/test_capture_order_shipped_paths.py` checks it against
+    /// a settled re-read rather than against a copy of the same read.
     ///
     /// Comparing against a CPU capture instead does not work at all: Desktop
     /// Duplication reports only *changed* content, so two consecutive frames
@@ -1363,15 +1379,16 @@ impl CrossAdapterTransfer {
         map_to_vec(&self.src_readback, self.total_bytes)
     }
 
-    /// Freeze the live surface, then feed both the shared heap and the
-    /// reference from the frozen copy.
+    /// Freeze the surface, then feed both the shared heap and the reference
+    /// from the frozen copy.
     ///
-    /// The duplicated surface is not stable: DXGI keeps writing to it, and
-    /// Rapidshot does not hold its keyed mutex during these copies. Two
-    /// CopyTextureRegion calls execute one after another on the copy engine, so
-    /// even inside a single command list they can see different pixels — this
-    /// showed up as ~2100 bytes differing in one screen region, reproducibly at
-    /// the same offset. Reading the live surface exactly once removes the race.
+    /// Originally justified as "the duplicated surface is not stable: DXGI
+    /// keeps writing to it", from ~2100 bytes differing between two copies in
+    /// one list. That diagnosis was wrong (2026-09-14): a held frame is stable
+    /// once the capture device's copy into it has *run*, and the differences
+    /// were copies racing that copy. The caller now orders behind it
+    /// (`capture_order`). The snapshot is kept because it still guarantees
+    /// the two outputs are identical — but it cannot show they are *current*.
     fn copy_via_snapshot(&self, shared: &ID3D12Resource) -> windows::core::Result<()> {
         let list = self.src.begin()?;
         unsafe {
@@ -1472,6 +1489,9 @@ impl CrossAdapterTransfer {
         self.wait_shared_fence(self.shared_fence_value.get())?;
 
         let shared = self.open_capture_texture(texture, source_id)?;
+        // GPU-side, so this stays asynchronous: the copy queues behind the
+        // capture work instead of the calling thread waiting for it.
+        self.capture_order.order(&self.src.queue, texture)?;
         let mut src_location = D3D12_TEXTURE_COPY_LOCATION {
             pResource: core::mem::ManuallyDrop::new(Some(shared)),
             Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
@@ -1515,6 +1535,7 @@ impl CrossAdapterTransfer {
 
         self.wait_shared_fence(self.shared_fence_value.get())?;
         let shared = self.open_capture_texture(texture, source_id)?;
+        self.capture_order.order(&self.src.queue, texture)?;
         let list = self.src.begin()?;
 
         unsafe {
@@ -1791,6 +1812,9 @@ impl CrossAdapterTransfer {
         // and transfer APIs, so drain the latest async copy before the probe
         // touches it. This wait is intentionally outside the timings.
         self.wait_shared_fence(self.shared_fence_value.get())?;
+        // Once, outside the timings: every iteration copies the same held
+        // frame, so only the first could overtake the capture copy.
+        self.capture_order.order(&self.src.queue, texture)?;
 
         let count = iterations.max(1) as usize;
         let mut phases: [Vec<f64>; 6] = Default::default();
@@ -2220,6 +2244,243 @@ pub fn probe_cross_adapter_buffer(
         }
     }
     Ok(out.into())
+}
+
+/// Move an already-converted tensor across adapters — ordering **B** from
+/// ROADMAP § 6.1, which until now had no implementation behind it.
+///
+/// `CrossAdapterTransfer` moves the *frame*: 8.29 MB at 1080p, 16.38 MB at
+/// 2560×1600, and the consumer converts on arrival. That is ordering A. § 6.1
+/// measured B — convert on the capture adapter, then move the much smaller
+/// result — and found it wins at every size at 2560×1600, and up to 640² FP16
+/// at 1080p. But B could not actually be *done*: the converter writes a
+/// buffer, and `CrossAdapterTransfer::new` takes a texture. Measuring an
+/// ordering nobody can select is a benchmark, not a feature.
+///
+/// This closes that. It borrows a `Converter12`'s device and output buffer,
+/// builds a `SHARED_CROSS_ADAPTER` heap on the *capture* adapter, and copies
+/// the tensor into it on a copy queue. The destination adapter opens the same
+/// heap, so the consumer reads the tensor without it ever crossing the CPU.
+///
+/// **What crosses is what the converter produced.** Pick the representation
+/// there: at 640², BGRA8 is 1.64 MB, FP16 2.46 MB, FP32 4.92 MB. Choosing
+/// FP16 over FP32 is what puts 1080p on the winning side of § 6.1.
+pub struct TensorTransfer {
+    src: Submitter,
+    /// Placed in the cross-adapter heap on the source device. The copy target.
+    shared_src: ID3D12Resource,
+    /// The same heap memory, opened on the destination device.
+    dst_buffer: ID3D12Resource,
+    dst_device: ID3D12Device,
+    _src_heap: ID3D12Heap,
+    _dst_heap: ID3D12Heap,
+    /// Borrowed NT handle for the destination heap, so a consumer on that
+    /// adapter can import the tensor. Closed in `Drop`, like every other
+    /// shared handle in this crate — importers reference, never own.
+    shared_destination_handle: HANDLE,
+    size_bytes: u64,
+    source: String,
+    destination: String,
+    destination_is_software: bool,
+}
+
+impl TensorTransfer {
+    pub fn new(converter: &crate::converter12::Converter12) -> windows::core::Result<Self> {
+        let size_bytes = converter.output_byte_size();
+        let src_device = converter.device().clone();
+        let src_luid = unsafe { src_device.GetAdapterLuid() };
+
+        let adapters = enumerate_adapters()?;
+        // The source is not chosen — it is wherever capture already is. Match
+        // by LUID rather than by index or by "the one with an output":
+        // enumeration order is not a stable identity, and on a hybrid laptop
+        // the capture adapter is the one holding the display, which is exactly
+        // the adapter a naive search would also pick as a destination.
+        let source = adapters
+            .iter()
+            .find(|a| a.luid == (src_luid.LowPart, src_luid.HighPart));
+        let source_desc = source
+            .map(|a| a.description.clone())
+            .unwrap_or_else(|| "unknown (LUID not enumerated)".to_string());
+        let source_index = source.map(|a| a.index);
+
+        let dest = adapters
+            .iter()
+            .find(|a| Some(a.index) != source_index && !a.is_software)
+            .or_else(|| adapters.iter().find(|a| Some(a.index) != source_index));
+        let Some(dest) = dest else {
+            return Err(windows::core::Error::new(
+                windows::Win32::Foundation::E_INVALIDARG,
+                "only one adapter on this system, so there is nothing to transfer \
+                 to. The tensor is already where a consumer on this adapter can \
+                 reach it: use shared_output_handle instead.",
+            ));
+        };
+
+        let dst_device = make_device(&dest.adapter)?;
+
+        let heap_desc = D3D12_HEAP_DESC {
+            SizeInBytes: size_bytes,
+            Properties: D3D12_HEAP_PROPERTIES {
+                Type: D3D12_HEAP_TYPE_DEFAULT,
+                CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+                MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
+                CreationNodeMask: 1,
+                VisibleNodeMask: 1,
+            },
+            Alignment: D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT as u64,
+            Flags: D3D12_HEAP_FLAG_SHARED | D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER,
+        };
+        let mut src_heap: Option<ID3D12Heap> = None;
+        unsafe { src_device.CreateHeap(&heap_desc, &mut src_heap)? };
+        let src_heap = src_heap.expect("CreateHeap reported success");
+
+        let handle = unsafe { src_device.CreateSharedHandle(&src_heap, None, GENERIC_ALL, None)? };
+        let mut dst_heap: Option<ID3D12Heap> = None;
+        let opened = unsafe { dst_device.OpenSharedHandle(handle, &mut dst_heap) };
+        if opened.is_err() {
+            unsafe {
+                let _ = CloseHandle(handle);
+            }
+            opened?;
+        }
+        let dst_heap = dst_heap.expect("OpenSharedHandle reported success");
+
+        let buffer_desc = cross_adapter_buffer_desc(size_bytes);
+        let mut shared_src: Option<ID3D12Resource> = None;
+        let mut dst_buffer: Option<ID3D12Resource> = None;
+        let placed = (|| -> windows::core::Result<()> {
+            unsafe {
+                src_device.CreatePlacedResource(
+                    &src_heap,
+                    0,
+                    &buffer_desc,
+                    D3D12_RESOURCE_STATE_COMMON,
+                    None,
+                    &mut shared_src,
+                )?;
+                dst_device.CreatePlacedResource(
+                    &dst_heap,
+                    0,
+                    &buffer_desc,
+                    D3D12_RESOURCE_STATE_COMMON,
+                    None,
+                    &mut dst_buffer,
+                )?;
+            }
+            Ok(())
+        })();
+        if placed.is_err() {
+            unsafe {
+                let _ = CloseHandle(handle);
+            }
+            placed?;
+        }
+
+        Ok(Self {
+            src: Submitter::new(&src_device)?,
+            shared_src: shared_src.expect("CreatePlacedResource reported success"),
+            dst_buffer: dst_buffer.expect("CreatePlacedResource reported success"),
+            dst_device,
+            _src_heap: src_heap,
+            _dst_heap: dst_heap,
+            shared_destination_handle: handle,
+            size_bytes,
+            source: source_desc,
+            destination: dest.description.clone(),
+            destination_is_software: dest.is_software,
+        })
+    }
+
+    /// Copy the converter's current output across. Blocks until the source GPU
+    /// has finished, so the tensor is readable on the destination adapter when
+    /// this returns.
+    ///
+    /// The caller is responsible for having run `process()` first: this copies
+    /// whatever is in the buffer, and a buffer that was never written is zeros
+    /// rather than an error.
+    pub fn transfer(
+        &self,
+        converter: &crate::converter12::Converter12,
+    ) -> windows::core::Result<()> {
+        if converter.output_byte_size() != self.size_bytes {
+            return Err(windows::core::Error::new(
+                windows::Win32::Foundation::E_INVALIDARG,
+                format!(
+                    "this transfer was built for {} bytes but the converter now \
+                     produces {}. Build a TensorTransfer per converter.",
+                    self.size_bytes,
+                    converter.output_byte_size()
+                ),
+            ));
+        }
+        let list = self.src.begin()?;
+        unsafe {
+            list.CopyBufferRegion(&self.shared_src, 0, converter.output(), 0, self.size_bytes)
+        };
+        self.src.end_and_wait()
+    }
+
+    /// Read the destination-side buffer back to the CPU. Verification only: it
+    /// undoes the entire point of the path.
+    pub fn read_back_destination(&self) -> windows::core::Result<Vec<u8>> {
+        let readback = make_readback_buffer(&self.dst_device, self.size_bytes)?;
+        let dst = Submitter::new(&self.dst_device)?;
+        let list = dst.begin()?;
+        unsafe { list.CopyBufferRegion(&readback, 0, &self.dst_buffer, 0, self.size_bytes) };
+        dst.end_and_wait()?;
+
+        let mut out = vec![0u8; self.size_bytes as usize];
+        unsafe {
+            let mut mapped: *mut std::ffi::c_void = std::ptr::null_mut();
+            readback.Map(0, None, Some(&mut mapped))?;
+            std::ptr::copy_nonoverlapping(mapped as *const u8, out.as_mut_ptr(), out.len());
+            readback.Unmap(0, None);
+        }
+        Ok(out)
+    }
+
+    pub fn shared_destination_handle(&self) -> isize {
+        self.shared_destination_handle.0 as isize
+    }
+
+    pub fn destination_resource_address(&self) -> usize {
+        self.dst_buffer.as_raw() as usize
+    }
+
+    pub fn total_bytes(&self) -> u64 {
+        self.size_bytes
+    }
+
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    pub fn destination(&self) -> &str {
+        &self.destination
+    }
+
+    pub fn destination_is_software(&self) -> bool {
+        self.destination_is_software
+    }
+
+    pub fn destination_luid(&self) -> [u8; 8] {
+        let luid = unsafe { self.dst_device.GetAdapterLuid() };
+        let mut out = [0u8; 8];
+        out[..4].copy_from_slice(&luid.LowPart.to_le_bytes());
+        out[4..].copy_from_slice(&luid.HighPart.to_le_bytes());
+        out
+    }
+}
+
+impl Drop for TensorTransfer {
+    fn drop(&mut self) {
+        if !self.shared_destination_handle.is_invalid() {
+            unsafe {
+                let _ = CloseHandle(self.shared_destination_handle);
+            }
+        }
+    }
 }
 
 /// A GPU-local buffer on the given device.

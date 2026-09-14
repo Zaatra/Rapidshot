@@ -131,6 +131,72 @@ def test_non_square_source_and_target():
 
 
 # --------------------------------------------------------------------------
+# crop — how a frame's region reaches the shader
+# --------------------------------------------------------------------------
+#
+# A region camera's texture is the whole output; until 2026-09-14 this path
+# sized its sampling from the texture and resized the entire monitor. The fix
+# is a crop rectangle in texels. These run on a synthetic texture, so unlike
+# the live region tests they need no screen and pin exact values.
+
+
+def preprocess_crop(pattern, out_w, out_h, crop):
+    ext = native.require()
+    tex = texture_from(pattern)
+    pre = ext.GpuPreprocessor(tex.pointer, out_w, out_h)
+    pre.process(tex.pointer, 1.0, 0.0, False, crop=crop)
+    return np.frombuffer(pre.read_back(), dtype=np.float32).reshape(1, 3, out_h, out_w)
+
+
+def sliced(pattern, crop):
+    x, y, w, h = crop
+    return pattern[y:y + h, x:x + w]
+
+
+@pytest.mark.parametrize(
+    "crop,out_size",
+    [
+        ((5, 3, 20, 12), (20, 12)),    # identity size: the slice itself
+        ((7, 9, 40, 30), (16, 12)),    # downscale, odd offsets
+        ((11, 13, 6, 4), (24, 16)),    # upscale a small crop
+        ((0, 0, 64, 48), (32, 24)),    # anchored at the origin
+        ((33, 17, 31, 31), (31, 31)),  # touching the far corner
+    ],
+)
+def test_crop_matches_the_reference_of_the_slice(crop, out_size):
+    """Cropping then resizing must equal resizing the slice: same stride, same
+    offset. An off-by-one or a stride taken from the texture fails exactly."""
+    pattern = make_pattern(64, 48)
+    out_w, out_h = out_size
+    got = preprocess_crop(pattern, out_w, out_h, crop)
+    np.testing.assert_array_equal(got, reference(sliced(pattern, crop), out_w, out_h))
+
+
+def test_whole_texture_crop_is_bit_identical_to_no_crop():
+    """The shader's crop reduces to the old expression; this pins that."""
+    pattern = make_pattern(64, 48)
+    np.testing.assert_array_equal(
+        preprocess_crop(pattern, 40, 24, (0, 0, 64, 48)), preprocess(pattern, 40, 24)
+    )
+
+
+def test_crop_offset_moves_the_output_by_exactly_one_texel():
+    pattern = make_pattern(64, 48)
+    a = preprocess_crop(pattern, 20, 12, (5, 3, 20, 12))
+    b = preprocess_crop(pattern, 20, 12, (6, 3, 20, 12))
+    np.testing.assert_array_equal(a[..., 1:], b[..., :-1])
+
+
+@pytest.mark.parametrize(
+    "crop",
+    [(60, 0, 8, 8), (0, 44, 8, 8), (0, 0, 0, 8), (0, 0, 8, 0), (64, 48, 1, 1)],
+)
+def test_crop_outside_the_texture_is_refused_not_clamped(crop):
+    with pytest.raises(RuntimeError, match="does not fit"):
+        preprocess_crop(make_pattern(64, 48), 8, 8, crop)
+
+
+# --------------------------------------------------------------------------
 # normalisation
 # --------------------------------------------------------------------------
 

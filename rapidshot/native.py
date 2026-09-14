@@ -21,7 +21,7 @@ Building it (needs Rust and the MSVC C++ toolset)::
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +71,50 @@ BUILD_HINT = (
     "    cd native && cargo build --release\n"
     "    python native/install_dev.py"
 )
+
+
+def _validate_crop(frame, crop) -> Tuple[int, int, int, int]:
+    """Check a frame-coordinate crop against the frame; return it as ints.
+
+    Refused rather than clamped: a clamped crop is a correctly shaped image of
+    a region nobody asked for.
+    """
+    try:
+        left, top, right, bottom = (int(v) for v in crop)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"crop must be (left, top, right, bottom), got {crop!r}"
+        ) from None
+    if getattr(frame, "rotation_angle", 0):
+        raise ValueError(
+            f"crop is not supported on a rotated display (rotation "
+            f"{frame.rotation_angle}): the captured surface is unrotated and "
+            "frame coordinates are not translated onto it"
+        )
+    width, height = frame.width, frame.height
+    if not (0 <= left < right <= width and 0 <= top < bottom <= height):
+        raise ValueError(
+            f"crop {(left, top, right, bottom)} must be non-empty and inside "
+            f"the {width}x{height} frame, as (left, top, right, bottom)"
+        )
+    return left, top, right, bottom
+
+
+def _texture_crop(frame, crop) -> Optional[Tuple[int, int, int, int]]:
+    """Frame-coordinate crop -> ``(x, y, width, height)`` in surface texels.
+
+    The frame's region is where the frame sits on the surface, so it is the
+    offset — and, with no crop, the rectangle itself. ``None`` means the whole
+    surface, which is only right when the frame has no region to honour.
+    """
+    region = getattr(frame, "region", None)
+    if crop is None:
+        if region is None or getattr(frame, "rotation_angle", 0):
+            return None
+        crop = (0, 0, frame.width, frame.height)
+    left, top, right, bottom = crop
+    x0, y0 = (region[0], region[1]) if region is not None else (0, 0)
+    return (x0 + left, y0 + top, right - left, bottom - top)
 
 
 def is_available() -> bool:
@@ -278,13 +322,20 @@ class GpuPreprocessor:
         """
         Convert one frame. Nothing is copied to the CPU.
 
+        Converts the frame's **region**, not the whole texture. A camera created
+        with ``region=`` hands back frames whose texture is still the whole
+        output; until 2026-09-14 this resized the entire monitor into a
+        correctly shaped tensor. On a rotated display the region is not
+        translated and the whole unrotated texture is converted, as before.
+
         Args:
             frame: A live Frame.
             scale / bias: Applied as ``value * scale + bias`` after the 0..1
                 texture fetch. Defaults give 0..1; use scale=2, bias=-1 for -1..1.
             bgr: Emit BGR channel order instead of RGB.
         """
-        self._impl.process(_texture_address(frame), scale, bias, bgr)
+        self._impl.process(_texture_address(frame), scale, bias, bgr,
+                           crop=_texture_crop(frame, None))
 
     def read_back(self):
         """
@@ -362,11 +413,19 @@ class GpuPreprocessor12:
 
     def process(self, frame, scale: float = 1.0, bias: float = 0.0,
                 bgr: bool = False) -> None:
-        """Convert one frame. The result stays on the DirectML device."""
+        """Convert one frame. The result stays on the DirectML device.
+
+        Converts the frame's **region**, not the whole texture. A camera
+        created with ``region=`` hands back frames whose texture is still the
+        whole output; until 2026-09-14 this resized the entire monitor into a
+        correctly shaped tensor. On a rotated display the region is not
+        translated and the whole unrotated surface is converted, as before.
+        """
         # The texture address alone is not an identity -- COM addresses get
         # recycled -- so the frame's source_id goes with it. See Frame.source_id.
         self._impl.process(_texture_address(frame), scale, bias, bgr,
-                           source_id=getattr(frame, "source_id", 0))
+                           source_id=getattr(frame, "source_id", 0),
+                           crop=_texture_crop(frame, None))
 
     def read_back(self):
         """Copy the tensor to the CPU as (1, 3, H, W). Verification only."""

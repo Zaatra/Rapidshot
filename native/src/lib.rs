@@ -18,6 +18,8 @@
 //! The diagnostics here (`probe_*`) exist because each answered a question that
 //! changed the design, and would otherwise have to be rediscovered.
 
+mod capture_order;
+mod converter12;
 mod cross_adapter;
 mod luma;
 mod preprocess;
@@ -412,15 +414,31 @@ impl GpuPreprocessor {
     ///     scale / bias: applied as `value * scale + bias` after the 0..1 fetch.
     ///         Defaults give 0..1; pass scale=2.0, bias=-1.0 for -1..1.
     ///     bgr: emit BGR channel order instead of RGB
-    #[pyo3(signature = (texture_ptr, scale=1.0, bias=0.0, bgr=false))]
-    fn process(&self, texture_ptr: usize, scale: f32, bias: f32, bgr: bool) -> PyResult<()> {
+    ///     crop: `(x, y, width, height)` in texels of the texture, keyword-only;
+    ///         `None` is the whole texture. The Python wrapper passes a frame's
+    ///         region; a raw caller that omits it converts the whole texture.
+    #[pyo3(signature = (texture_ptr, scale=1.0, bias=0.0, bgr=false, *, crop=None))]
+    fn process(
+        &self,
+        texture_ptr: usize,
+        scale: f32,
+        bias: f32,
+        bgr: bool,
+        crop: Option<(u32, u32, u32, u32)>,
+    ) -> PyResult<()> {
         let inner = self.inner.lock().map_err(|_| {
             PyRuntimeError::new_err("preprocessor lock poisoned by an earlier panic")
         })?;
+        let crop = crop.map(|(x, y, width, height)| converter12::Crop {
+            x,
+            y,
+            width,
+            height,
+        });
         unsafe {
             with_texture(texture_ptr, |texture| {
                 inner
-                    .dispatch(texture, scale, bias, if bgr { 1 } else { 0 })
+                    .dispatch(texture, scale, bias, if bgr { 1 } else { 0 }, crop)
                     .map_err(|e| PyRuntimeError::new_err(format!("dispatch failed: {e}")))
             })
         }
@@ -557,6 +575,439 @@ fn probe_onnxruntime(py: Python<'_>, dll_path: Option<String>) -> PyResult<Py<Py
 ///
 /// Functionally identical to `GpuPreprocessor`, but the tensor lands in a D3D12
 /// `DEFAULT`-heap buffer on the DirectML device instead of a D3D11 buffer that
+/// `TensorTransfer` — ordering B from ROADMAP § 6.1, finally selectable.
+///
+/// `CrossAdapterTransfer` moves the frame and converts on arrival (ordering
+/// A). This converts first and moves the result, which § 6.1 measured as the
+/// winner at every size at 2560×1600 and up to 640² FP16 at 1080p — but which
+/// nothing could actually *do*, because the converter writes a buffer and
+/// `CrossAdapterTransfer` takes a texture.
+///
+/// Built from a `GpuConverter12`, whose dtype decides what crosses.
+#[pyclass(name = "TensorTransfer", unsendable)]
+struct TensorTransfer {
+    inner: Mutex<cross_adapter::TensorTransfer>,
+}
+
+#[pymethods]
+impl TensorTransfer {
+    #[new]
+    fn new(converter: &GpuConverter12) -> PyResult<Self> {
+        let source = converter
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("converter lock poisoned"))?;
+        let inner = cross_adapter::TensorTransfer::new(&source).map_err(|e| {
+            PyRuntimeError::new_err(format!("tensor transfer setup failed: {e}"))
+        })?;
+        Ok(Self {
+            inner: Mutex::new(inner),
+        })
+    }
+
+    /// Copy the converter's current output to the destination adapter.
+    ///
+    /// Call `process()` first: this moves whatever is in the buffer, and a
+    /// buffer never written is zeros rather than an error.
+    fn transfer(&self, converter: &GpuConverter12) -> PyResult<()> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("transfer lock poisoned"))?;
+        let source = converter
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("converter lock poisoned"))?;
+        inner
+            .transfer(&source)
+            .map_err(|e| PyRuntimeError::new_err(format!("tensor transfer failed: {e}")))
+    }
+
+    /// Destination-side bytes. Verification only.
+    fn read_back_destination<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("transfer lock poisoned"))?;
+        let data = inner
+            .read_back_destination()
+            .map_err(|e| PyRuntimeError::new_err(format!("destination readback failed: {e}")))?;
+        Ok(PyBytes::new(py, &data))
+    }
+
+    #[getter]
+    fn source(&self) -> PyResult<String> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("transfer lock poisoned"))?;
+        Ok(inner.source().to_string())
+    }
+
+    #[getter]
+    fn destination(&self) -> PyResult<String> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("transfer lock poisoned"))?;
+        Ok(inner.destination().to_string())
+    }
+
+    #[getter]
+    fn destination_is_software(&self) -> PyResult<bool> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("transfer lock poisoned"))?;
+        Ok(inner.destination_is_software())
+    }
+
+    #[getter]
+    fn total_bytes(&self) -> PyResult<u64> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("transfer lock poisoned"))?;
+        Ok(inner.total_bytes())
+    }
+
+    #[getter]
+    fn shared_destination_handle(&self) -> PyResult<isize> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("transfer lock poisoned"))?;
+        Ok(inner.shared_destination_handle())
+    }
+
+    #[getter]
+    fn destination_resource_address(&self) -> PyResult<usize> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("transfer lock poisoned"))?;
+        Ok(inner.destination_resource_address())
+    }
+
+    fn destination_luid<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("transfer lock poisoned"))?;
+        Ok(PyBytes::new(py, &inner.destination_luid()))
+    }
+}
+
+/// `GpuConverter12` — the 2.6 transform path (ROADMAP § 7.2).
+///
+/// Separate from `GpuPreprocessor12` on purpose; `converter12.rs` explains
+/// why at length. The short version: bilinear changes the numbers that
+/// `tests/test_gpu_preprocess.py` pins, and an A/B that cannot say which
+/// sampling it timed is not a measurement.
+///
+/// `sampling` is `"nearest"` or `"bilinear"`. `dtype` is `"float32"`,
+/// `"float16"` or `"bgra8"` — the last being a *resized frame* rather than a
+/// tensor, which is the cheap payload § 6.1's ordering question needs.
+#[pyclass(name = "GpuConverter12", unsendable)]
+struct GpuConverter12 {
+    inner: Mutex<converter12::Converter12>,
+}
+
+#[pymethods]
+impl GpuConverter12 {
+    #[new]
+    #[pyo3(signature = (
+        texture_ptr, out_width, out_height, *,
+        sampling="bilinear", dtype="float32", matrix="bt709", full_range=false, batch=1,
+        layout=None
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        texture_ptr: usize,
+        out_width: u32,
+        out_height: u32,
+        sampling: &str,
+        dtype: &str,
+        matrix: &str,
+        full_range: bool,
+        batch: u32,
+        layout: Option<&str>,
+    ) -> PyResult<Self> {
+        let sampling = match sampling {
+            "nearest" => converter12::Sampling::Nearest,
+            "bilinear" => converter12::Sampling::Bilinear,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "sampling must be 'nearest' or 'bilinear', got {other:?}"
+                )))
+            }
+        };
+        // `layout` chooses between the two float layouts. Omitted, it is each
+        // dtype's own layout -- NCHW for floats, as before `layout` existed, so
+        // existing callers are unaffected. The other outputs have exactly one
+        // layout each, so an explicit mismatch is refused rather than ignored.
+        use converter12::OutputFormat as F;
+        let format = match (dtype, layout) {
+            ("float32", None | Some("nchw")) => F::Fp32Nchw,
+            ("float32", Some("nhwc")) => F::Fp32Nhwc,
+            ("float16", None | Some("nchw")) => F::Fp16Nchw,
+            ("float16", Some("nhwc")) => F::Fp16Nhwc,
+            ("bgra8", None | Some("nhwc")) => F::Bgra8Nhwc,
+            ("nv12", None) => F::Nv12,
+            ("p010", None) => F::P010,
+            ("float32" | "float16" | "bgra8" | "nv12" | "p010", Some(other)) => {
+                return Err(PyValueError::new_err(format!(
+                    "layout {other:?} is not available for dtype {dtype:?}: float32 and \
+                     float16 take 'nchw' or 'nhwc', bgra8 is 'nhwc', nv12/p010 take none"
+                )))
+            }
+            (other, _) => {
+                return Err(PyValueError::new_err(format!(
+                    "dtype must be 'float32', 'float16', 'bgra8', 'nv12' or 'p010', got {other:?}"
+                )))
+            }
+        };
+        let yuv = converter12::YuvOptions {
+            matrix: match matrix {
+                "bt709" => converter12::Matrix::Bt709,
+                "bt601" => converter12::Matrix::Bt601,
+                other => {
+                    return Err(PyValueError::new_err(format!(
+                        "matrix must be 'bt709' or 'bt601', got {other:?}"
+                    )))
+                }
+            },
+            full_range,
+        };
+        let inner = unsafe {
+            with_texture(texture_ptr, |texture| {
+                converter12::Converter12::new(
+                    texture, out_width, out_height, sampling, format, yuv, batch,
+                )
+                    .map_err(|e| {
+                        PyRuntimeError::new_err(format!("D3D12 converter setup failed: {e}"))
+                    })
+            })?
+        };
+        Ok(Self {
+            inner: Mutex::new(inner),
+        })
+    }
+
+    /// `scale`/`bias` are ignored for `dtype="bgra8"`, which reproduces the
+    /// captured pixels rather than normalising them.
+    /// `crop` is one `(x, y, width, height)` and `regions` a list of them, in
+    /// texels of the captured surface — *not* frame coordinates; the Python
+    /// layer translates a frame's region. Give at most one of the two. All
+    /// regions run in one dispatch, into slots `0..len(regions)`.
+    #[pyo3(signature = (
+        texture_ptr, scale=1.0, bias=0.0, bgr=false, *, source_id=0, crop=None, regions=None
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn process(
+        &self,
+        texture_ptr: usize,
+        scale: f32,
+        bias: f32,
+        bgr: bool,
+        source_id: u64,
+        crop: Option<(u32, u32, u32, u32)>,
+        regions: Option<Vec<(u32, u32, u32, u32)>>,
+    ) -> PyResult<()> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("converter lock poisoned"))?;
+        let rects: Vec<converter12::Crop> = match (crop, regions) {
+            (Some(_), Some(_)) => {
+                return Err(PyValueError::new_err("give crop or regions, not both"))
+            }
+            (Some(one), None) => vec![one],
+            (None, Some(many)) => {
+                if many.is_empty() {
+                    return Err(PyValueError::new_err("regions must not be empty"));
+                }
+                many
+            }
+            (None, None) => Vec::new(),
+        }
+        .into_iter()
+        .map(|(x, y, width, height)| converter12::Crop {
+            x,
+            y,
+            width,
+            height,
+        })
+        .collect();
+        unsafe {
+            with_texture(texture_ptr, |texture| {
+                inner
+                    .process(texture, source_id, scale, bias, if bgr { 1 } else { 0 }, &rects)
+                    .map_err(|e| PyRuntimeError::new_err(format!("D3D12 dispatch failed: {e}")))
+            })
+        }
+    }
+
+    /// Raw output bytes. Interpret with the `dtype` and `shape` properties.
+    /// Verification only — production keeps the result on the GPU.
+    fn read_back<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("converter lock poisoned"))?;
+        let data = inner
+            .read_back()
+            .map_err(|e| PyRuntimeError::new_err(format!("D3D12 readback failed: {e}")))?;
+        Ok(PyBytes::new(py, &data))
+    }
+
+    #[getter]
+    fn shape(&self) -> PyResult<Vec<u32>> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("converter lock poisoned"))?;
+        let (w, h, n) = (inner.out_width, inner.out_height, inner.batch);
+        // The leading dimension is the buffer's capacity. How many slots the
+        // last call filled is the Python layer's to report.
+        Ok(match inner.format {
+            converter12::OutputFormat::Bgra8Nhwc => vec![n, h, w, 4],
+            converter12::OutputFormat::Fp32Nhwc | converter12::OutputFormat::Fp16Nhwc => {
+                vec![n, h, w, 3]
+            }
+            // The conventional array form of a 4:2:0 frame (OpenCV, FFmpeg):
+            // the Y plane's H rows, then H/2 rows of interleaved chroma.
+            converter12::OutputFormat::Nv12 | converter12::OutputFormat::P010 => {
+                vec![h * 3 / 2, w]
+            }
+            _ => vec![n, 3, h, w],
+        })
+    }
+
+    /// Most regions one `process` call can convert.
+    #[getter]
+    fn batch(&self) -> PyResult<u32> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("converter lock poisoned"))?;
+        Ok(inner.batch)
+    }
+
+    #[getter]
+    fn dtype(&self) -> PyResult<&'static str> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("converter lock poisoned"))?;
+        Ok(match inner.format {
+            converter12::OutputFormat::Fp32Nchw | converter12::OutputFormat::Fp32Nhwc => "float32",
+            converter12::OutputFormat::Fp16Nchw | converter12::OutputFormat::Fp16Nhwc => "float16",
+            converter12::OutputFormat::Bgra8Nhwc => "uint8",
+            converter12::OutputFormat::Nv12 => "uint8",
+            converter12::OutputFormat::P010 => "uint16",
+        })
+    }
+
+    /// `(matrix, full_range)` the YUV outputs quantise with. Reported for every
+    /// output so a caller never has to know which ones ignore it.
+    #[getter]
+    fn yuv(&self) -> PyResult<(&'static str, bool)> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("converter lock poisoned"))?;
+        let matrix = match inner.yuv.matrix {
+            converter12::Matrix::Bt709 => "bt709",
+            converter12::Matrix::Bt601 => "bt601",
+        };
+        Ok((matrix, inner.yuv.full_range))
+    }
+
+    /// `"nv12"`, `"p010"`, or `None` for the tensor and BGRA outputs, which
+    /// `dtype` already describes.
+    #[getter]
+    fn pixel_format(&self) -> PyResult<Option<&'static str>> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("converter lock poisoned"))?;
+        Ok(match inner.format {
+            converter12::OutputFormat::Nv12 => Some("nv12"),
+            converter12::OutputFormat::P010 => Some("p010"),
+            _ => None,
+        })
+    }
+
+    /// Name of the captured surface's DXGI format, or "none" before the first
+    /// frame. An HDR desktop and an SDR one are otherwise indistinguishable
+    /// from the output, so this is how a caller finds out which it got.
+    #[getter]
+    fn source_format(&self) -> PyResult<&'static str> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("converter lock poisoned"))?;
+        Ok(inner.source_format())
+    }
+
+    #[getter]
+    fn sampling(&self) -> PyResult<&'static str> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("converter lock poisoned"))?;
+        Ok(match inner.sampling {
+            converter12::Sampling::Nearest => "nearest",
+            converter12::Sampling::Bilinear => "bilinear",
+        })
+    }
+
+    #[getter]
+    fn shared_output_handle(&self) -> PyResult<isize> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("converter lock poisoned"))?;
+        Ok(inner.shared_output_handle())
+    }
+
+    #[getter]
+    fn output_byte_size(&self) -> PyResult<u64> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("converter lock poisoned"))?;
+        Ok(inner.output_byte_size())
+    }
+
+    #[getter]
+    fn output_resource_address(&self) -> PyResult<usize> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("converter lock poisoned"))?;
+        Ok(inner.output_resource_address())
+    }
+
+    #[getter]
+    fn output_gpu_address(&self) -> PyResult<u64> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("converter lock poisoned"))?;
+        Ok(inner.output_gpu_address())
+    }
+
+    fn adapter_luid<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("converter lock poisoned"))?;
+        Ok(PyBytes::new(py, &inner.adapter_luid()))
+    }
+}
+
 /// can never get there — D3D11 shares only 2D textures, never buffers.
 #[pyclass(name = "GpuPreprocessor12", unsendable)]
 struct GpuPreprocessor12 {
@@ -586,7 +1037,11 @@ impl GpuPreprocessor12 {
     // parameters silently repurposed existing callers' `scale` as the id, which
     // broke `benchmarks/cross_adapter_ordering.py` with a TypeError. A new
     // optional argument must not move the ones already in use.
-    #[pyo3(signature = (texture_ptr, scale=1.0, bias=0.0, bgr=false, *, source_id=0))]
+    //
+    // `crop` is `(x, y, width, height)` in texels of the surface, keyword-only
+    // for the same reason. The Python wrapper passes the frame's region; a raw
+    // caller that omits it converts the whole surface, as before.
+    #[pyo3(signature = (texture_ptr, scale=1.0, bias=0.0, bgr=false, *, source_id=0, crop=None))]
     fn process(
         &self,
         texture_ptr: usize,
@@ -594,15 +1049,22 @@ impl GpuPreprocessor12 {
         bias: f32,
         bgr: bool,
         source_id: u64,
+        crop: Option<(u32, u32, u32, u32)>,
     ) -> PyResult<()> {
         let inner = self
             .inner
             .lock()
             .map_err(|_| PyRuntimeError::new_err("preprocessor lock poisoned"))?;
+        let crop = crop.map(|(x, y, width, height)| converter12::Crop {
+            x,
+            y,
+            width,
+            height,
+        });
         unsafe {
             with_texture(texture_ptr, |texture| {
                 inner
-                    .process(texture, source_id, scale, bias, if bgr { 1 } else { 0 })
+                    .process(texture, source_id, scale, bias, if bgr { 1 } else { 0 }, crop)
                     .map_err(|e| PyRuntimeError::new_err(format!("D3D12 dispatch failed: {e}")))
             })
         }
@@ -1469,6 +1931,8 @@ fn _rapidshot_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(build_info, m)?)?;
     m.add_class::<GpuPreprocessor>()?;
     m.add_class::<GpuPreprocessor12>()?;
+    m.add_class::<GpuConverter12>()?;
+    m.add_class::<TensorTransfer>()?;
     m.add_class::<TestTexture>()?;
     m.add_class::<CrossAdapterTransfer>()?;
     Ok(())
