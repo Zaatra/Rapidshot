@@ -126,7 +126,397 @@ but at **1080p** convert-first wins only up to 640² FP16, where v2's 2560×1600
 measurement had it winning everywhere. Both tables are right about their own
 resolution. See ROADMAP § 6.1.
 
+#### Changed
+
+- **CuPy `GRAY` is 6-9x faster, and byte-identical.** The Q8 luma was a chain
+  of CuPy expressions: a kernel launch per line and a full-size uint16
+  temporary for each, roughly six passes over an 8 MB frame to do arithmetic
+  that needs one. It is now a single `ElementwiseKernel`. Measured on an RTX
+  4060 against the form it replaces: **0.262 -> 0.042 ms** at 1080p, **0.629 ->
+  0.068** at 1600p, **1.601 -> 0.190** at 4K.
+
+  End to end the gain is small and worth stating plainly: `grab()` on that
+  machine is capped by the 165 Hz panel, so GRAY capture went 162.8 -> 164.8
+  fps, about 1%. What this buys is headroom -- for higher-rate sources, for
+  more than one display, and for a GPU that is also running inference -- not
+  frame rate.
+
+  The portable array-expression form is kept as `_gray_chained` and is still
+  what runs under any module without `ElementwiseKernel`. `CupyProcessor` is
+  deliberately NumPy-substitutable so it can be tested without a GPU, and the
+  fused kernel had broken that. The two are asserted byte-equal on a real
+  device, at odd sizes as well as round ones.
+
+
+- **`import rapidshot` no longer configures logging.** It used to attach a
+  stdout handler and a DEBUG-level rotating file under `~/.rapidshot/logs` in
+  every process that imported it -- per-frame debug messages included, 55 MB in
+  two days on the development machine. The package now adds only a
+  `NullHandler`, as a library should; warnings still reach stderr through
+  Python's default handler. Call `rapidshot.util.logging.setup_logging()` to get
+  the old console and file output back.
+
+- **Removed unused DXGI factory wrappers** from `rapidshot._libs.dxgi`
+  (`CreateDXGIFactory1`, `CreateDXGIFactory6`, `CreateLatestDXGIFactory`).
+  Nothing called them, `dxgi.dll` does not export `CreateDXGIFactory6`, and
+  binding them at import changed `restype` on `ctypes.windll`'s process-wide
+  function object. `core/device.py` and `core/output.py` now load their DLLs on
+  private handles for the same reason.
+
+- **Device creation no longer falls back to another adapter.** If
+  `D3D11CreateDevice` failed on an adapter, `Device` retried on the *default*
+  adapter and then on WARP, REFERENCE and SOFTWARE, while still reporting the
+  original adapter's description -- a device living on one adapter under
+  another's name, which the factory then offered for duplication. Creation now
+  stays on the adapter, varying only what that adapter may legitimately refuse
+  (the debug layer, and feature level 11.1 on a runtime that predates it). An
+  adapter that will not open is recorded in `RapidshotFactory.device_failures`
+  and named in the `HeadlessError`, with its HRESULT -- now printed as
+  `0x80004005` rather than `-0x7fffbffb`.
+
+- **Removed code nothing could reach.** `PillowProcessor` (selectable only if
+  importing NumPy failed, which the package cannot survive) with the PIL
+  backend enum member and the Pillow version warning; the uncalled
+  `NumpyProcessor.process_cvtcolor`; `Device.create()`; and
+  `util.io.enum_dxgi_adapters_with_preference()`. **The `pil` extra is gone and
+  `all` no longer installs Pillow** -- nothing in the library imports it.
+  `pip install rapidshot[pil]` now warns that the extra does not exist rather
+  than failing. `capabilities()` still reports a Pillow install, as an optional
+  consumer of frames.
+
+- **Memory: a RapidShot process is 58% smaller, and none of it was a
+  redesign.** At 2560x1600 the RGB `grab()` path went from 416.0 MB to
+  174.8 MB, and `grab_frame()` from 282.1 MB to 104.4 MB -- **1.01x DXcam's
+  103.1 MB**, against the 1.25x that ROADMAP § 7.2 sets as the target. Three
+  changes, each measured on its own with `benchmarks/memory_profile.py` and
+  each recorded in `benchmarks/memory-baseline-machineB.json`:
+
+  | | `grab()` | `grab_frame()` |
+  | --- | ---: | ---: |
+  | before | 416.0 MB | 282.1 MB |
+  | CuPy imported on first use | 238.1 MB | 104.6 MB |
+  | staging pool sized to what a converting grab can use | 199.3 MB | 104.5 MB |
+  | `pool_size_frames` 4 -> 2 | **174.8 MB** | **104.4 MB** |
+
+  Throughput is unchanged throughout: 165 fps for `grab_frame()` and ~100-139
+  for `grab()` before and after, every difference inside the run-to-run spread.
+
+- **CuPy is imported on first use rather than at `import rapidshot`.**
+  `rapidshot/capture.py` imported it at module scope to set `CUPY_AVAILABLE`,
+  so **every** caller paid **178.8 MB** resident for it -- including on
+  machines with no NVIDIA GPU, and for callers who only ever touch `grab()`.
+  `import rapidshot` now costs 20.3 MB rather than 184.8 MB. Nothing in that
+  module needs CuPy unless `nvidia_gpu=True`, and `capture.CUPY_AVAILABLE` and
+  `capture.cp` still read correctly for anything that imported them; they just
+  pay for the import at that point. For scale, the native extension is 1.3 MB.
+
+- **`pool_size_frames` defaults to 2, from 4.** Each buffer is a full frame, so
+  the step is 12.3 MB at 2560x1600 and the scaling is exactly linear. Measured
+  before changing it: 196.3 MB at 4 against 171.7 MB at 2, at 134.4 and 139.1
+  fps -- a difference inside the run-to-run spread. Holding a rolling window of
+  1, 3 and 6 frames did not separate them either, and **neither size could be
+  made to exhaust**: 25 frames were held at both, because a converting mode
+  falls back to allocating rather than refusing. Pass `pool_size_frames=4` to
+  restore the old sizing; raise it only if you genuinely hold several frames at
+  once. This is the second time the default has moved on a measurement, after
+  10 -> 4 in 2.4.0.
+
 #### Fixed
+
+- **`shot()` on a rotated display trusted its own docstring about the
+  destination size.** The direct path validates the caller's buffer before
+  capturing; the rotated path then wrote `frame.nbytes` into it on the strength
+  of a comment saying the two must match. They do while nothing else is wrong,
+  and `describe_destination` was already returning the size -- which this threw
+  away into `_`. The size is now re-checked, and a mismatch is refused the way
+  `shot()` refuses one two checks earlier.
+
+- **A rotated 1-pixel region handed back the pooled buffer itself.**
+  `np.ascontiguousarray` returns its argument unchanged when the view is
+  already contiguous, and every rotation of a 1x1 region is a no-op view -- so
+  the caller received the pool's own memory while `is_still_pooled_buffer` said
+  `False`, which is precisely the aliasing the pool exists to prevent. It now
+  copies. `CupyProcessor` documents this exact case and has always used
+  `.copy()`; the NumPy path had the bug its comment describes.
+
+
+- **`process()` did not refuse a pitch narrower than a row; `shot()` always
+  had.** The guard existed on the path almost nobody takes and was missing from
+  the one every `grab()` goes through. A pitch smaller than a row makes the
+  strided view span past the end of the mapped surface, so the last rows read
+  whatever follows it -- with nothing in the result's shape, dtype or range to
+  show it. Added to both the NumPy and CuPy processors, with the same message
+  `shot()` uses.
+
+- **`process()` read rows one at a time whenever a region was offset.** The
+  vectorised branch was guarded by `pitch == row_bytes and start == 0`, and
+  everything else fell to a Python loop. Padding is one way to miss that
+  condition; the other is `start`, the byte offset of a region's left edge --
+  so **every region camera took the loop, whatever the pitch**. One strided
+  slice covers all of it: where `pitch == row_bytes` and `start == 0`,
+  `start:end` *is* `:row_bytes`, so the special case was subsumed rather than
+  removed. The CuPy path did the same thing and also allocated a fresh buffer
+  per frame.
+
+  Measured on the read in isolation, 2560x1600: full frame padded **1.662 ->
+  0.797 ms**, region at origin **0.396 -> 0.170**, region offset **0.385 ->
+  0.152**, region offset and padded **0.368 -> 0.167**. The contiguous
+  full-frame fast path is unchanged at 0.59 ms.
+
+  **It does not move end-to-end capture on this machine, and that is worth
+  saying rather than burying.** Instrumented over 400 frames of a 1280x800
+  region capture, `_read_patch` ran 399 times: with dirty rects available the
+  frame is patched a band at a time, so the loop was running over a handful of
+  rows rather than 800, and `grab()` is refresh-capped at 165 fps regardless.
+  CPU per frame measured 1.17 / 1.14 / 1.04 ms across before-and-after runs --
+  all noise. The change is kept because it is strictly less work, simpler than
+  the branch it replaces, and faster on the full-read path that runs whenever
+  dirty-rect metadata is unavailable; not on an end-to-end claim the numbers
+  here do not support.
+
+
+- **Unreadable move metadata patched the frame anyway, showing stale pixels.**
+  The duplicator distinguishes two answers deliberately: `[]` means the frame
+  carried no move rects, `None` means they could not be *read*. `_dirty_rects_for`
+  collapsed both with a truthiness check, so an unreadable frame was patched by
+  dirty rect alone -- and since DXGI does not repeat moved regions in the dirty
+  rects, any region the compositor had moved kept showing the previous frame,
+  with nothing anywhere to indicate it.
+
+  Unknown now means "there may have been moves", so the whole frame is
+  converted. That is already how unreadable *dirty* metadata was handled three
+  lines below; the same uncertainty was being answered two opposite ways inside
+  one function.
+
+  **This reverses a previously tested decision.** The old behaviour was
+  asserted by `test_unreadable_move_metadata_does_not_force_a_full_convert`, on
+  the reasoning that the dirty rects are probably still usable. What settled it
+  is the cost: an ordinary frame with no move metadata returns `[]`, so every
+  `None` is a genuine metadata error and rare, and the full convert it now
+  forces is correspondingly rare. Measured on Windows 11 at 2560x1600, across
+  3,768 frames of window dragging and page scrolling, DWM reported zero move
+  rects with the metadata readable on every frame.
+
+  One test fake had to be corrected with it: `FakeDuplicator` left `move_rects`
+  at `None` for its lifetime, where a real duplicator reassigns it on every
+  acquire. It was modelling a display whose move metadata failed on every
+  frame.
+
+
+- **`shot()` copied a padded surface one row at a time.** When the driver pads
+  a row -- common on non-power-of-two widths, and on modes this machine's
+  display does not happen to use -- the BGRA path ran a `ctypes.memmove` per
+  row inside a Python loop: 1600 calls a frame at 1600p against one for the
+  contiguous case. It is now a single strided copy. Measured: **0.775 -> 0.313
+  ms** at 1080p (padding now costs nothing at all, 0.98x the contiguous case,
+  from 2.38x), **1.833 -> 1.036** at 1600p, **4.082 -> 3.235** at 4K. The
+  converting modes already worked this way, which is why *they* showed no
+  padding penalty while BGRA showed 2.4-2.7x.
+
+- **`TensorStream` burned a core waiting on a still screen.** What paces its
+  wait loop is the camera blocking inside `AcquireNextFrame` for `timeout_ms`.
+  With `timeout_ms=0` -- documented and supported -- it does not block, and the
+  loop measured **10,302,950 `grab_frame()` calls per second**, one core fully
+  consumed re-asking a question whose answer had not changed. It now yields
+  after a call that returned without blocking: **1,804 calls/s**, a 5,710x
+  reduction, CPU per wall-second **1.0 -> 0.078**.
+
+  The blocking default is untouched and pays nothing, because the yield is
+  reached only when the call came back in under a millisecond. Windows rounds
+  any non-zero sleep up to about half a millisecond, so a polling caller waits
+  ~0.5 ms rather than 10 -- still 18x tighter than the default it opted out of.
+
+
+- **`grab()` could return a frame that was almost entirely the previous one,
+  after a `shot()` or `grab_frame()`.** Converting modes keep an accumulator and
+  patch only each frame's dirty rects onto it. Those rects describe the change
+  since the last frame the duplicator acquired, so a frame taken by `shot()` or
+  `grab_frame()` in between -- whose rects were never applied -- left the next
+  `grab()` 99.5% out of date in the reproduction, with no error. The duplicator
+  now numbers every frame with new content, and `grab()` patches only onto an
+  accumulator holding exactly the previous frame from the same duplicator;
+  anything else converts in full. That covers both entry points, a duplicator
+  rebuilt after an output change, and a grab that failed after acquiring.
+
+- **`video_mode` could copy a frame it no longer owned into the queue.** When the
+  screen is idle the capture thread duplicates the last frame, copying outside
+  the capture lock. A consumer calling `get_latest_frame_buffer()` in that
+  window takes ownership of the frame, and anything it drew on it could come
+  back out of the queue as a captured frame. The copy is now checked, under the
+  lock that publishes it, against the frame still being the producer's to copy,
+  and dropped if not; on the CuPy path only after the device copy has actually
+  run. Not a torn frame from recycling -- only the capture thread writes
+  staging buffers, and it is the one copying.
+
+- **`MemoryPool.release_all_buffers()` gave a held buffer to a second owner.** It
+  marked every buffer available, including ones a caller still held, so the
+  next checkout returned memory that caller was still reading. Held buffers are
+  now detached and replaced with new allocations, atomically.
+
+- **`shot()` raised for failures `grab()` reports as None.** Its contract is
+  False on a failed capture, but only access loss was handled: protected
+  content, other DXGI errors and a failed copy or map escaped as exceptions, and
+  a camera that had given up or was waiting on recovery was used as though
+  healthy. `shot()` now handles each case as `grab()` does -- recovery first,
+  rebuild on access loss, False with the reason recorded otherwise -- and only
+  an unusable destination still raises. The new `last_capture_error` property
+  says why the last capture failed, for either call.
+
+- **`max_buffer_len=0` failed capture for good.** It built a zero-length queue
+  whose first eviction raised `IndexError` inside the capture thread. It is now
+  rejected as a positive int, at construction and again at `start()`.
+
+- **A CUDA driver failure was reported as the hybrid-laptop case.** `cuInit`'s
+  return code was ignored, and a device the driver could not describe counted
+  as "not on this adapter", so a broken driver raised `CrossAdapterRequired`
+  and told the caller to transfer the frame. Both now raise `RuntimeError`
+  naming the call and code; a device that fails does not hide a matching one
+  after it. Every call through `nvcuda.dll` declares its argument types, and
+  `close()` logs a failed `cuMemFree` or `cuDestroyExternalMemory` rather than
+  dropping the code.
+
+- **Driver-reported buffer sizes were allocated from unchecked.** A corrupt
+  `TotalMetadataBufferSize`, `PointerShapeBufferSize` or `MORE_DATA` size would
+  have been a multi-gigabyte allocation on the capture thread. Sizes over
+  16 MiB are refused before allocating: the rects count as unknown, and the
+  cursor keeps the shape it has.
+
+- **The CuPy path allocated a host output pool it never used.** With
+  `pool_output`, a pool of `pool_size_frames` full frames was built and a buffer
+  checked out and returned every frame, though that backend allocates its own
+  result. The pool is now used only by a backend that can write into it.
+
+- **`shot()` on the GPU backend failed quietly, over and over.** The CuPy
+  backend cannot write into caller memory, which `shot()` discovered only after
+  acquiring a frame -- then returned False and scheduled a rebuild that could
+  never help. It now raises `NotImplementedError` before capturing, pointing
+  at `grab()`.
+
+- **Releasing a pooled buffer twice raised.** A second `release()` raised
+  `ValueError` from the pool, or `RuntimeError` if the pool had since been
+  destroyed; it is now a no-op. A release through a stale reference after the
+  buffer was checked out again is still not detectable, since the wrapper is
+  the same object.
+
+- **`repr()` of a GPU pooled buffer raised `AttributeError`.** It read the
+  address through `.ctypes`, which CuPy arrays do not have.
+
+- **`version_below()` treated `"4.5"` as older than `"4.5.0"`.** Missing
+  components now count as zero, so a two-part version string no longer
+  triggers the too-old warning.
+
+- **A frame held across a capture rebuild broke.** A resolution change or
+  device loss destroys the staging pool, which deleted the array out of every
+  buffer -- including ones a caller still held from `grab()`. Reading such a
+  frame raised `AttributeError` and releasing it raised `RuntimeError`. Held
+  buffers are now detached: still readable, and released without error.
+
+- **DXGI error messages printed HRESULTs signed**, as `-0x7785ffda` rather than
+  the `0x887a0026` people search for.
+
+- **`_create_dxgi_factory1()` ignored `CreateDXGIFactory1`'s result**, so a
+  failure surfaced later as an unexplained "NULL COM pointer access".
+
+- **Every `StageSurface` shared one `D3D11_TEXTURE2D_DESC`**: a ctypes struct
+  used as a dataclass default is created once.
+
+- **`pointer_to_address()` raised for a NULL typed pointer** instead of
+  returning None, because `hasattr` does not swallow ctypes'
+  `ValueError("NULL pointer access")`.
+
+- **CuPy's install hint recommended `cupy-cuda10x`**, plus Linux and macOS
+  variants of a Windows-only library. It now names this package's
+  `gpu_cuda13` / `gpu_cuda12` / `gpu` extras.
+
+- **`benchmarks/compare_libraries.py` reported per-call time as per-frame
+  time.** The interval clock advanced on every `grab()`, hit or miss, so a
+  polling library showed `ms_p50` 1.59 ms at ~100 fps while RapidShot's blocking
+  default showed 9.96 ms at the same rate. Intervals now run frame to frame and
+  records carry `"ms_basis": "frame_interval"`. **The `ms_p50`, `ms_p99` and
+  `ms_jitter_stdev` columns in the committed `library-comparison*.json` predate
+  this and are per-call times**; README quotes only frame rate, CPU and memory
+  from those runs, which were correct.
+
+- **The native extension's Rust formatting had drifted**, so CI's
+  `cargo fmt --check` failed on the committed code before reaching anything
+  else. CI also never ran `cargo test`: clippy and build do not compile
+  `#[cfg(test)]` code, so the Rust unit tests had never executed. There is now a
+  `cargo test --lib` step, and new tests pin the shader constant layouts, output
+  byte sizes and DXGI format names.
+
+- **`shot(0, buffer_size=n)` crashed the process.** `pointer_to_address(0)`
+  returns 0 rather than None, and every null check was `is None`, so a null
+  destination passed validation and reached `ctypes.memmove` into address 0 --
+  an access violation, not an exception. `shot()` now refuses it before any
+  capture work, and both copy paths below it check for 0 as well.
+  `pointer_to_address()` also no longer lets `ctypes.ArgumentError` escape for
+  objects it cannot read.
+
+- **`grab()` failed on every display rotated 90 or 270 degrees.** Staging
+  buffers were sized from the desktop region, but the staging surface holds the
+  panel's orientation, and the processor refuses a buffer of the wrong shape.
+  Until processing errors were made to raise (below) that refusal came back as
+  a black frame; afterwards it would have been `None` and a recovery loop.
+  Buffers are now sized by `ScreenCapture._staging_shape()`.
+
+- **Rotated frames were turned the wrong way.** `region_to_memory_region`
+  followed Microsoft's Desktop Duplication sample, where 90 degrees is
+  clockwise; both processors rotated counter-clockwise with `rot90(k=1)`. So a
+  full-screen grab on a 90/270 display came back upside down and a region grab
+  read the wrong part of the screen. Both now turn clockwise. The tests that
+  pinned the old direction compared against `np.rot90` itself; they now build
+  the expected image pixel by pixel from Microsoft's mapping.
+
+- **`shot()` ignored rotation.** It wrote the staging surface as-is, so on a
+  rotated display it did not match `grab()`, which is what it documents: every
+  pixel misplaced at 180 degrees, a transposed image at 90 and 270.
+
+- **A processing error returned a black frame.** `NumpyProcessor.process()`
+  zeroed the staging buffer and returned it flagged as a fresh array, so an RGB
+  or GRAY caller received a 4-channel BGRA frame that aliased a buffer already
+  back in the pool, and no recovery was scheduled. It now raises, as
+  `CupyProcessor` already did, and invalidates a half-patched dirty-rect
+  accumulator. `grab()`'s handler also returns the converted-output buffer it
+  had checked out, which would otherwise have leaked once per failed frame.
+
+- **A recovery forgot the region given to `start()`.** Both rebuild paths reset
+  to the constructor's region, so continuous capture of a region came back from
+  a device loss or resolution change capturing the whole screen; and a
+  constructor region that no longer fit made `_on_output_change` raise
+  `ValueError`. The requested region is now restored whenever it fits, with the
+  full screen used -- and the request kept -- while it does not.
+
+- **`dxcam_compat` reported `latest_frame_time` as 0 on every real camera.** It
+  read `last_present_time` from the `ScreenCapture`, which never had one; its
+  test passed because the fake camera did. `ScreenCapture.last_present_time`
+  now exists.
+
+- **`create()` accepted negative device and output indices.** `-1` selected the
+  last one under a cache key different from its positive index, so one output
+  could be given two cameras.
+
+- **`output_info()` raised `TypeError`** for an output missing from the display
+  metadata, such as one attached after the factory was built. `create()`
+  already tolerated that case.
+
+- **`grab()` held three BGRA staging buffers it could never reach.** A
+  converting mode releases its staging buffer inside the same `grab()` -- the
+  caller receives the *output* buffer -- and `_grab_locked` runs under the
+  duplication lock, so exactly one staging buffer is ever in flight. The pool
+  held `pool_size_frames` of them regardless: **4 x 16.4 MB at 2560x1600, three
+  of them unreachable**, allocated at `create()` for every RGB camera.
+  `ScreenCapture._staging_pool_size()` now sizes that pool to 1 when the frame
+  the caller receives is not the staging buffer. **BGRA is unchanged and keeps
+  the full count** -- it converts nothing, so the staging buffer *is* the
+  returned frame, and in video mode the capture thread checks out more to fill
+  `_pooled_frames_deque`. Throughput is unchanged, because serialised grabs
+  never used the other three.
+
+- **A rebuilt memory pool used a default two releases stale.** The rebuild path
+  read `pool_size_frames` with a fallback of **10** -- the default before 2.4.0
+  -- so any camera that did not pass the argument explicitly got a pool five
+  times the size of the one it replaced when the frame shape changed.
+
 
 - **`GpuPreprocessor12` and `CrossAdapterTransfer` sometimes returned the
   previous frame.** `AcquireNextFrame` returns once the copy into the

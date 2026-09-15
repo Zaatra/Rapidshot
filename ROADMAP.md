@@ -99,6 +99,38 @@ Until that was set, the NVIDIA driver claimed the display output while the firmw
 
 **Before changing anything performance-related**, read § 3 (measured baseline) and § 4 (settled questions). Several intuitive-sounding optimisations have already been measured and rejected.
 
+> ### Four performance items, measured on Machine B — 2026-09-15
+>
+> Measured here rather than on Machine A, because three of the four are about
+> paths Machine A cannot reach: a discrete GPU, and a display that pads its
+> surface pitch. **Three were real and are fixed; one was measured and left
+> alone**, which is the outcome this section exists to make respectable.
+>
+> | item | before | after |
+> | --- | ---: | ---: |
+> | `shot()` on a padded surface, 1600p | 1.833 ms | **1.036 ms** |
+> | CuPy `GRAY`, 1600p | 0.629 ms | **0.068 ms** |
+> | `TensorStream` waiting on a still screen | 10,302,950 calls/s | **1,804 calls/s** |
+> | `grab(timeout_ms=0)` idle cost | 4.3x the default | *unchanged* |
+>
+> **The one left alone is the interesting one.** `timeout_ms=0` costs a full
+> core on a still screen, which looks exactly like the `TensorStream` spin
+> beside it. It is not the same thing: the documentation already says "0 polls,
+> which costs roughly 4x the CPU for about 7% more frames", and Machine B
+> measured **4.3x the calls for 6% more frames** -- the claim is accurate and
+> the default is already the blocking one. A caller who asks for polling is
+> asking for precisely that trade, and quietly inserting a sleep would be
+> overriding an explicit request. `TensorStream` was different because nobody
+> asked *it* to spin: the spin was emergent, from a wrapper whose loop had no
+> pacing of its own once the call beneath it stopped blocking.
+>
+> **The GRAY result also needs its end-to-end figure stated, not just its
+> microbenchmark.** The kernel is 6-9x faster; GRAY capture on this machine
+> went 162.8 to 164.8 fps, about 1%, because `grab()` is capped by the 165 Hz
+> panel. The win is headroom, not frame rate, and a table showing only the
+> 9x would be the kind of claim § 11 keeps having to correct.
+
+
 ---
 
 ## 2. Working on this project
@@ -686,9 +718,52 @@ So B wins only below 416², **640² is a tie**, and A wins clearly above it. Thr
 > rows are genuinely undecided, not A wins: A's destination-side conversion is
 > still unmeasured and would count against it.
 
+> ### The first limit is now removed: measured 2026-09-14 on a hardware destination
+>
+> Machine B, **Intel iGPU → RTX 4060** (driver 616.92), Optimus, P-core-pinned
+> (the script does not pin itself — § 2's gotcha applies), nearest sampling,
+> min of 30, **2560×1600 (16.38 MB)**. This is the first run of any ordering
+> benchmark with a real GPU on both ends, and the first after the
+> capture-ordering fence, so unlike every earlier table here it is measuring
+> transfers that are known to carry the *current* frame.
+>
+> A's transfer alone: **2.75 ms min, 3.69 ms median** — and A's destination-side
+> conversion is still not included and cannot be negative.
+>
+> | out | payload | MB | convert | transfer | **B total** | verdict |
+> | --- | --- | ---: | ---: | ---: | ---: | --- |
+> | 320² | BGRA8 | 0.41 | 0.25 | 0.12 | **0.37 ms** | B wins by ≥2.39 ms |
+> | 320² | FP16 | 0.61 | 0.25 | 0.12 | **0.37 ms** | B wins by ≥2.38 ms |
+> | 416² | BGRA8 | 0.69 | 0.35 | 0.12 | **0.47 ms** | B wins by ≥2.28 ms |
+> | **640²** | **BGRA8** | 1.64 | 0.56 | 0.15 | **0.71 ms** | **B wins by ≥2.04 ms** |
+> | **640²** | **FP16** | 2.46 | 0.56 | 0.17 | **0.73 ms** | **B wins by ≥2.02 ms** |
+> | 640² | FP32 | 4.92 | 0.59 | 0.22 | **0.81 ms** | B wins by ≥1.95 ms |
+> | 832² | FP16 | 4.15 | 0.58 | 0.22 | **0.80 ms** | B wins by ≥1.96 ms |
+> | 1024² | FP16 | 6.29 | 0.55 | 0.27 | **0.81 ms** | B wins by ≥1.94 ms |
+> | 1280² | FP32 | 19.66 | 0.85 | 0.84 | **1.69 ms** | B wins by ≥1.06 ms |
+>
+> **B wins every row, unconditionally**, including the worst one by more than a
+> millisecond. At this resolution the question is not close, which is what v2
+> said about 2560×1600 and what the 1080p table above does *not* say about
+> 1080p. The resolution-dependence stands: **at 1080p the ordering is genuinely
+> contested above 640² FP16; at 2560×1600 it is not.** Choose by frame size,
+> not by rule.
+>
+> **It corroborates v2 closely rather than replacing it.** Same resolution and
+> output sizes, and the transfer column lands on the same numbers — 640² FP16
+> crosses in 0.17 ms in both, against v2's 2.65 ms and this run's 2.75 ms for
+> the full frame. The convert column is ~0.05 ms higher here, which is a
+> different capture adapter and a different day, not a finding.
+>
+> **What it does not measure.** A's destination-side conversion, still — and it
+> still does not need to: A loses on its transfer alone. Sampling is nearest
+> for comparability with v2, so a caller taking `GpuConverter`'s bilinear
+> default pays more than the convert column here. And this is one machine's
+> bus; § 6.1's caveat about the consumer adapter's own read cost is unchanged.
+
 Remaining work:
 
-- ~~**The transferred frame was current.**~~ **It often was not, and every check above was blind to it.** Found 2026-09-14 (§ 4, § 10): the source queue's copy could overtake the capture device's own copy into the surface, and carry the previous frame — 65 of 150 first transfers, Intel iGPU → WARP. Every "byte-exact" result in this section compared the destination with a source-side readback of *the same snapshot*, which is stale in exactly the same way, so they were correct about integrity and silent about currency. Fixed with a capture-ordering fence (0 / 150 after). **Not yet re-verified with a hardware destination**; the Intel → RTX 4060 figures below predate the fix.
+- ~~**The transferred frame was current.**~~ **It often was not, and every check above was blind to it.** Found 2026-09-14 (§ 4, § 10): the source queue's copy could overtake the capture device's own copy into the surface, and carry the previous frame — 65 of 150 first transfers, Intel iGPU → WARP. Every "byte-exact" result in this section compared the destination with a source-side readback of *the same snapshot*, which is stale in exactly the same way, so they were correct about integrity and silent about currency. Fixed with a capture-ordering fence (0 / 150 after). **Re-verified with a hardware destination 2026-09-14** — the regression tests pass Intel → RTX 4060 on Machine B, and the ordering benchmark was re-run there post-fix (box above). The older Intel → RTX 4060 figures below still predate the fix.
 - ~~**A shared fence.**~~ **Built 2026-08-22, and the 2026-08-05 conclusion did not survive the hardware it was about.** That entry said the wait "adds essentially nothing per frame" and the fence would buy "latency and pipelining, not throughput". Measured against WARP, that was right. Measured Intel→NVIDIA it is wrong in the useful direction.
 
   **`probe_transfer_phases()` split one transfer**, the way § 10's `probe_dispatch_phases` did for the preprocessor. Medians, 2560×1600, 200 iterations:
@@ -1008,6 +1083,306 @@ configuration is fastest *and* cheapest. What holds up for cross-adapter is: *a
 model-ready tensor for under half DXcam's CPU per frame, with no host-to-device
 transfer at all.* For an agent doing inference on the same machine, that is the
 number that decides whether capture starves the model.
+
+> ### 2.6 measured, 2026-09-14 — and one configuration is now both
+>
+> The table above predates 2.6 and measures none of it: it was recorded
+> 2026-09-10, four days before `GpuConverter` and `TensorTransfer` existed, so
+> the benchmark built to decide which features move the number could not see
+> the features that shipped. Two paths were added and the target moved to the
+> **FP16** § 7.0 specified all along (it had measured FP32 — the representation
+> § 6.1 puts on the *losing* side of the convert-first question at 1080p).
+> `benchmarks/ai-ingestion-fp16-machineB.json`, same machine and method,
+> medians of 3 passes, **FP16**:
+>
+> | path | fps | p50 ms | p95 | p99 | CPU % | **CPU ms/frame** | H2D |
+> | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+> | mss | 32.4 | 30.40 | 35.90 | 37.85 | 53.9 | 16.78 | 1.23 MB |
+> | dxcam | 103.7 | 9.46 | 11.96 | 13.58 | 92.0 | 8.65 | 1.23 MB |
+> | rapidshot-cpu | 139.2 | 6.61 | 10.48 | 11.90 | 100.2 | 7.20 | 1.23 MB |
+> | rapidshot-cupy | 130.5 | 7.32 | 10.82 | 12.40 | 59.8 | 4.68 | 0 |
+> | rapidshot-xadapter | 102.3 | 9.72 | 13.18 | 14.14 | 47.0 | 4.58 | **0** |
+> | rapidshot-xadapter-async | 98.1 | 10.32 | 13.45 | 14.38 | 43.9 | 4.35 | **0** |
+> | **rapidshot-converter-xadapter** | **165.0** | **6.06** | **7.21** | **7.63** | **15.2** | **0.92** | **0** |
+>
+> **The sentence above is now wrong, and that is the finding.** 2.6's
+> convert-first path is the fastest row *and* the cheapest row at once: 19%
+> more frames than `rapidshot-cpu` at a **7.8× lower CPU cost**, and against
+> the whole-frame cross-adapter path it is 61% more frames for **1/5th the
+> CPU** — while still moving zero bytes host-to-device. Against DXcam:
+> **9.4× less CPU per frame** and 59% more frames.
+>
+> **Where the CPU went.** Both cross-adapter rows end with the same CUDA
+> import; what differs is who resizes. The old path moves the whole 16.38 MB
+> frame and resizes it on the destination with about fifteen chained CuPy
+> kernels per frame, each launched from Python. The new one does it in **one
+> D3D12 dispatch on the capture adapter** and moves the finished 2.46 MB
+> tensor. That is the § 7.2 architecture doing exactly what it was proposed to
+> do, and it is the first measurement that says so.
+>
+> **The tail moved more than the median.** p99 7.63 ms against 11.90 for
+> `rapidshot-cpu` and 14.14 for the old transfer, with jitter 0.59 ms against
+> 1.99. For anything frame-paced, that matters more than p50.
+>
+> **It is the same picture, not a cheaper one.** The new path verifies against
+> the same independent float64 NumPy reference as every other row: **max error
+> 0.000486**, which is FP16 quantisation, well inside the 2/255 the comparison
+> allows. And the six pre-existing paths reproduce their 2026-09-10 FP32
+> figures within a few percent, so the dtype knob did not disturb them.
+>
+> **`rapidshot-converter` — the one-call export, no transfer at all — skips
+> here.** It needs capture and CUDA on the same adapter, which Optimus never
+> gives; it is recorded as a skip rather than a failure. It should be the
+> fastest row of all on a single-adapter NVIDIA desktop, and that is unmeasured.
+>
+> **Caveats.** One machine, not P-core-pinned (matching how the FP32 recording
+> was made, § 2), and **call duration, not pixel age**. The pixel-age result is
+> the next box; two claims made here earlier in the day were wrong and are
+> corrected there.
+
+> ### Pixel age, 2026-09-14 — the metric § 7.0 actually asks for
+>
+> **Two corrections first, because both were stated here earlier today and both
+> were wrong.** `section7.py` was said to measure FP32: it does not, and never
+> did — `benchmark_contract.normalized_tensor` has always ended
+> `.astype(xp.float16)`, so the pixel-age harness was already on FP16. And it
+> was said to measure only pre-2.6 paths: true when written, fixed since.
+> `rapidshot-converter-xadapter` and `rapidshot-converter` now run there.
+>
+> Same run, same source, 8 s per path, 2560×1600 at 165 Hz, unique frames only:
+>
+> | path | unique fps | **age p50** | p95 | p99 | jitter | CPU ms/frame | RSS MB |
+> | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+> | dxcam | 101.4 | 35.15 | 38.42 | 39.30 | 1.68 | 10.83 | 408.3 |
+> | rapidshot-cpu | 131.5 | 32.65 | 35.48 | 36.87 | 1.48 | 7.61 | 501.2 |
+> | rapidshot-cupy | 128.7 | 32.62 | 35.15 | 36.45 | 1.39 | 5.13 | 454.1 |
+> | rapidshot-xadapter | 80.1 | 35.16 | 36.81 | 40.49 | 1.13 | 5.68 | 556.4 |
+> | **rapidshot-converter-xadapter** | **163.6** | **28.17** | **28.82** | **29.76** | **0.38** | **1.90** | 476.8 |
+>
+> **It wins every latency axis and the cost axis at once.** Pixels reach the
+> model **7.0 ms younger than DXcam** at p50 and **9.5 ms younger at p99**, for
+> **5.7× less CPU per frame**, and it is the only path that reaches the panel's
+> 165 Hz ceiling — 61% more unique frames than DXcam. Jitter is 0.38 ms against
+> 1.13–1.68 for everything else, which for anything frame-paced matters more
+> than the median.
+>
+> **Stage breakdown**, p50: capture call 2.07 ms, D3D convert 1.88 ms, transfer
+> 0.36 ms, marker decode 1.23 ms. The transfer — the thing ordering B exists to
+> shrink — is now the smallest timed stage in the path.
+>
+> **One cost this path pays that the others do not, left in the numbers.** Every
+> other path carries the whole frame to where the tensor is built, so the
+> frame-ID marker arrives free. This one resizes *before* anything crosses, and
+> a 640-square resize destroys a marker whose cells are 8 px wide and are read
+> from row 8. The marker therefore travels as its own 1:1 uint8 crop, 384×16,
+> about 24 kB — a second conversion and a second transfer, both inside the
+> timings above. Against the 16.38 MB the other paths move for the same
+> information, it is cheap; it is still not nothing, and a deployment that
+> needed no frame ID would not pay it.
+>
+> **Verified in this harness too**, not only in the call-duration one:
+> `--verify` reports max RGB8 deviation **1** against the shared canonical
+> reference, and the run's WHEA guard reported no new hardware records.
+>
+> **`rapidshot-converter` is `unavailable` here**, correctly: `to_cupy()` on a
+> tensor sitting on the iGPU raises `CrossAdapterRequired`, which the worker
+> already records as unavailable rather than as a failure. It is the path that
+> should win outright on a single-adapter NVIDIA desktop, and it is unmeasured.
+
+> ### Memory, measured for the first time — 2026-09-14
+>
+> § 7.2 has a memory target (*within 1.25× DXcam*) and, until now, no
+> instrument that could say whether it was met.
+> `benchmarks/memory_pool_stress_test.py` exercises the pool and records no
+> process memory at all. `benchmarks/memory_profile.py` is the instrument:
+> every library in its own process, three workloads from the same controlled
+> D3D source as § 7.0, working set / private bytes / commit sampled at 10 Hz,
+> and growth reported as a least-squares slope because a single pair of samples
+> cannot tell a leak from allocator warm-up. Recorded in
+> `benchmarks/memory-baseline-machineB.json`.
+>
+> Steady state after a 2 s warm-up, 10 s per cell, 2560×1600. *capture* is
+> steady state minus the same process before its first frame — the memory
+> capture itself is responsible for, with the import bill removed so RapidShot
+> is not charged for `comtypes` where DXcam has no equivalent:
+>
+> | library | fps | working set | private | **capture** | growth/s |
+> | --- | ---: | ---: | ---: | ---: | ---: |
+> | mss | 33.0 | 65.8 MB | 34.6 MB | +32.8 MB | +0.003 |
+> | dxcam | 145.5 | 103.3 MB | 878.1 MB | +26.3 MB | -0.129 |
+> | **rapidshot `grab()`** | 109.7 | **416.0 MB** | 1314.8 MB | **+134.3 MB** | +0.042 |
+> | **rapidshot `grab_frame()`** | **165.1** | 282.1 MB | 1253.3 MB | **+0.6 MB** | +0.029 |
+>
+> Figures are within noise across all three workloads; the static row is
+> reproduced above and scroll and motion agree to within a megabyte.
+>
+> **The target is missed by a wide margin, and the measurement says exactly
+> where.** `grab()` is **4.0× DXcam's working set** against a 1.25× target, and
+> **5.1× its capture-attributable memory**. But `grab_frame()` costs **0.6 MB**
+> — essentially nothing. The surface pool is not the problem. **The ~134 MB is
+> the NumPy output path**, and that is also what makes `grab()` the slowest
+> RapidShot row here at 109.7 fps while `grab_frame()` reaches the 165 Hz
+> ceiling. One defect, both symptoms.
+>
+> **Nothing leaks.** An early 10-second run showed `grab()` growing at
+> +1.29 MB/s on the static workload; at 60 seconds that falls to **+0.066
+> MB/s**, so it was warm-up bleeding past the cutoff, not a leak. Worth
+> recording because the short run was alarming and wrong — the slope is only
+> meaningful over a window much longer than the warm-up it is trying to exclude.
+>
+> `tests/test_memory_bounds.py` pins the bounded-growth property so the 7.2
+> memory work cannot regress it while changing the machinery. It pins *growth*,
+> not absolute size: an absolute threshold would encode one machine's
+> resolution, and 2560×1600 BGRA is 16.4 MB a frame where 1080p is 8.3.
+>
+> **Where the 416 MB actually goes**, measured by stage in one process:
+>
+> | stage | delta | running |
+> | --- | ---: | ---: |
+> | interpreter + psutil | — | 19.1 MB |
+> | `import numpy` | +13.2 | 32.3 MB |
+> | **`import rapidshot`** | **+184.8** | 217.1 MB |
+> | `rapidshot.create()` | +62.7 | 279.8 MB |
+> | 200x `grab_frame()` + release | **+0.2** | 280.0 MB |
+> | 200x `grab()` | **+128.8** | 408.9 MB |
+>
+> **Almost all of the import cost is CuPy, and nothing asked for it.**
+> `rapidshot/capture.py` imports `cupy` at module scope to set
+> `CUPY_AVAILABLE`, so every `import rapidshot` pays **178.8 MB** for it —
+> including on machines with no NVIDIA GPU, and for callers who only ever touch
+> `grab()`. The native extension, measured on its own without the package
+> `__init__` that pulls CuPy in behind it, costs **1.3 MB**. (An earlier note
+> in this session attributed the 182 MB to the extension; that was wrong, and
+> the cause was exactly this import chain.)
+>
+> **So the 1.25x target is reachable, and the two largest levers are not the
+> pool.** DXcam's 103.3 MB gives a target of ~129 MB. Deferring the CuPy import
+> to first use recovers ~179 MB and is a one-line change; fixing `grab()`'s
+> output path recovers ~129 MB. Those two alone land at ~101 MB — **under the
+> target, before any buffer-lease redesign**, which would then be addressing
+> the 62.7 MB of construction rather than the 308 MB above it. The pool work is
+> still worth doing; it is just not where the memory is.
+
+> ### The first lever, pulled — 2026-09-14
+>
+> CuPy's import is now deferred to first use (`_require_cupy()` in
+> `rapidshot/capture.py`; `CUPY_AVAILABLE` and `cp` still resolve, lazily, via
+> a module `__getattr__`, so anything that imported them still works). Every
+> CuPy use in that module already sat behind `nvidia_gpu`, so nothing else had
+> to move. `import rapidshot` went from **+184.8 MB to +20.3 MB**.
+>
+> Same command, same machine, immediately before and after — both recordings
+> are in `benchmarks/memory-baseline-machineB.json`:
+>
+> | library | before | after | change | vs DXcam |
+> | --- | ---: | ---: | ---: | ---: |
+> | dxcam | 103.3 MB | 103.3 MB | — | 1.00x |
+> | rapidshot `grab()` | 416.0 MB | **238.1 MB** | **-177.9** | 2.30x |
+> | rapidshot `grab_frame()` | 282.1 MB | **104.6 MB** | **-177.5** | **1.01x** |
+>
+> **`grab_frame()` now meets the § 7.2 target**, at 1.01x DXcam against a 1.25x
+> bound — from 2.73x, for a change that moved one import. Private bytes fell
+> with it (1253 -> 981 MB). Throughput is unchanged: 165.1 fps before and
+> after, 109.5 for `grab()`, so nothing was traded for it.
+>
+> **`grab()` is the whole of what remains.** At 2.30x it is still over, and the
+> gap is exactly the +134.2 MB output path — unchanged by this, because this
+> did not touch it.
+
+> ### The second lever: three staging buffers nothing could reach — 2026-09-14
+>
+> `grab()` checks out a BGRA staging buffer from `memory_pool`, and for a
+> **converting** mode releases it inside the same call: the caller receives the
+> *output* buffer, and `_grab_locked` says so itself — "the BGRA staging buffer
+> is finished with either way". `_grab_locked` runs under the duplication lock,
+> so exactly one staging buffer is ever in flight. The pool held
+> `pool_size_frames` of them anyway: **4 x 16.4 MB at 2560x1600, of which three
+> were unreachable**, allocated at `create()` for every RGB camera.
+>
+> `ScreenCapture._staging_pool_size()` now sizes that pool to 1 when the frame
+> the caller receives is not the staging buffer. **BGRA keeps the full count**
+> and is the reason the pool is sized this way at all: it converts nothing, so
+> the staging buffer *is* the returned frame, and in video mode the capture
+> thread checks out more to fill `_pooled_frames_deque`. `pool_size_frames`
+> keeps meaning exactly what it documents there. Verified per mode:
+>
+>     RGB    staging 1 x (1600,2560,4) = 16.4 MB   output 4 x (1600,2560,3) = 49.2 MB
+>     BGRA   staging 4 x (1600,2560,4) = 65.5 MB   output none
+>
+> | | original | after lazy CuPy | **after this** | vs DXcam |
+> | --- | ---: | ---: | ---: | ---: |
+> | `grab()` | 416.0 MB | 238.1 MB | **199.3 MB** | 1.93x |
+> | `grab_frame()` | 282.1 MB | 104.6 MB | **104.5 MB** | **1.01x** |
+>
+> Throughput is unchanged — 139.4 and 134.4 fps with the fix against 134.6
+> without, the same within noise — because serialised grabs never used the
+> other three buffers.
+>
+> **What is left is smaller than it looks, and most of it is not waste.**
+> `grab()`'s capture-attributable memory is now +95.4 MB: 16.4 MB of staging,
+> **49.2 MB of output pool**, and ~30 MB not yet attributed to anything — the
+> next thing to measure rather than the next thing to cut.
+>
+> The output pool is the part that is a *choice*. Those four buffers exist so a
+> caller can hold several frames at once, which DXcam does not offer; DXcam's
+> whole capture cost is 25.7 MB, about one staging plus one output buffer.
+> Dropping the default `pool_size_frames` from 4 to 2 — the documented minimum,
+> since a pool of 1 leaves nothing free while a frame is held — would save
+> 24.6 MB and put `grab()` near 175 MB, or ~1.70x.
+>
+> **So the 1.25x target is not reachable for `grab()` without giving that
+> guarantee up.** 1.25x of DXcam's 103 MB is ~129 MB, and RapidShot's baseline
+> before its first frame is already 104 MB. Meeting it would mean a capture
+> budget of ~25 MB against DXcam's 25.7 — one staging and one output buffer,
+> and no multi-frame ownership. That is a product decision, not an
+> optimisation, and it should be made deliberately rather than by tuning a
+> default. **`grab_frame()` already meets the target at 1.01x**, and it is the
+> path the GPU pipeline uses.
+
+> ### The third lever, after testing it rather than assuming it — 2026-09-14
+>
+> `pool_size_frames` moved from 4 to 2. **What the measurement changed was the
+> reason.** The expectation was a trade: fewer buffers, fewer frames a caller
+> could hold. There is no such trade, and the first attempt to find one was
+> wrong in a way worth recording — the holding loop was bounded by
+> `pool_size + 3`, so it could never observe exhaustion and simply reported its
+> own limit back. Re-run with a fixed ceiling of 25, **neither size exhausted**:
+> both held 25 frames and both recovered after release, because a converting
+> mode falls back to allocating rather than refusing. `pool_size_frames` does
+> not cap what a caller can hold. It sets where the allocating fallback begins.
+>
+> | pool | fps | working set | capture | output pool |
+> | ---: | ---: | ---: | ---: | ---: |
+> | **2** | 139.1 | **171.7 MB** | 70.6 MB | 24.6 MB |
+> | 3 | 138.4 | 184.0 MB | 83.0 MB | 36.9 MB |
+> | 4 | 134.4 | 196.3 MB | 95.4 MB | 49.2 MB |
+>
+> Exactly linear: one 12.3 MB RGB buffer per step. And because a steady-state
+> loop releases each frame immediately, the pool never runs dry at *any* size —
+> so fps there cannot separate them. Holding a rolling window is the only case
+> that can, and it does not either: 140.8 / 134.5 / 132.6 fps at pool 2 for
+> windows of 1, 3 and 6, against 136.5 / 130.7 / 134.9 at pool 4. Pool 2 is
+> ahead at two of the three depths and 1.7% behind at the third, inside the
+> spread seen between identical runs all session.
+>
+> **One thing the A/B did contradict.** `pool_output=False` drops the process to
+> 146.1 MB — 49.5 MB below the default — for ~4% fps (135.6 against 140.9). So
+> the output pool does buy throughput; it is the buffers *beyond two* that buy
+> nothing measurable.
+>
+> `grab()` is now **174.8 MB, 1.70x DXcam**, from 416.0 MB and 4.04x at the
+> start of the day. `grab_frame()` is unchanged at 104.4 MB and 1.01x. The
+> paragraph above still stands: closing the last 0.45x means giving up
+> multi-frame ownership, and that is a decision about what `grab()` promises.
+>
+> **The 62.7 MB of construction is now the second-largest item**, not the
+> fourth. A buffer-lease redesign would be aimed there, and it is worth
+> measuring what it is holding before designing what replaces it.
+>
+> **Not yet measured:** VRAM attributable to capture. CUDA's `memGetInfo`
+> reports the RTX 4060, and capture runs on the Intel iGPU, so the instrument
+> points at the wrong adapter on this machine. DXGI's
+> `QueryVideoMemoryInfo` is the right call and is not currently exposed.
 
 The broader claim § 7.0 was aiming at — "fastest Windows desktop-to-model
 pipeline" — is not earned by this table. It needs present-to-inference measured
