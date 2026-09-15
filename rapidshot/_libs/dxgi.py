@@ -1,11 +1,8 @@
 import ctypes
 import ctypes.wintypes as wintypes
 import comtypes  # type: ignore[import-untyped]
-import logging
 from .d3d11 import ID3D11Device
 
-# Set up logger
-logger = logging.getLogger("rapidshot._libs.dxgi")
 
 def _hresult(code: int) -> int:
     """
@@ -660,85 +657,8 @@ class IDXGIFactory6(IDXGIFactory5):
     ]
 
 
-# Create DXGI Factory function
-try:
-    _CreateDXGIFactory1 = ctypes.windll.dxgi.CreateDXGIFactory1
-    _CreateDXGIFactory1.restype = comtypes.HRESULT
-    _CreateDXGIFactory1.argtypes = [
-        ctypes.POINTER(comtypes.GUID),
-        ctypes.POINTER(ctypes.c_void_p)
-    ]
-
-    def CreateDXGIFactory1(riid, ppFactory):
-        """
-        Create a DXGI factory object.
-        
-        Args:
-            riid: Reference to the factory interface ID
-            ppFactory: Pointer to receive the created factory
-            
-        Returns:
-            HRESULT value
-        """
-        return _CreateDXGIFactory1(riid, ppFactory)
-except (AttributeError, WindowsError) as e:
-    # Provide a fallback implementation or raise an informative error
-    logger.error(f"Failed to load CreateDXGIFactory1: {e}")
-    
-    def CreateDXGIFactory1(riid, ppFactory):
-        """
-        Fallback implementation that raises an error.
-        """
-        raise RuntimeError(
-            "CreateDXGIFactory1 is not available. This might indicate DirectX is not properly installed."
-        )
-
-
-# Function to create DXGI Factory with the latest available version
-try:
-    _CreateDXGIFactory6 = ctypes.windll.dxgi.CreateDXGIFactory6
-    _CreateDXGIFactory6.restype = comtypes.HRESULT
-    _CreateDXGIFactory6.argtypes = [
-        ctypes.POINTER(comtypes.GUID),
-        ctypes.POINTER(ctypes.c_void_p)
-    ]
-    
-    def CreateDXGIFactory6(riid, ppFactory):
-        """
-        Create a DXGI factory object with DXGI 1.6.
-        
-        Args:
-            riid: Reference to the factory interface ID
-            ppFactory: Pointer to receive the created factory
-            
-        Returns:
-            HRESULT value
-        """
-        return _CreateDXGIFactory6(riid, ppFactory)
-except (AttributeError, WindowsError) as e:
-    logger.info(f"CreateDXGIFactory6 not available, falling back to CreateDXGIFactory1: {e}")
-    CreateDXGIFactory6 = None
-
-
-# Create DXGI Factory function with version detection
-def CreateLatestDXGIFactory(riid, ppFactory):
-    """
-    Create a DXGI factory with the latest available version.
-    
-    Args:
-        riid: Reference to the factory interface ID
-        ppFactory: Pointer to receive the created factory
-        
-    Returns:
-        HRESULT value
-    """
-    try:
-        if CreateDXGIFactory6 is not None:
-            logger.info("Using DXGI 1.6 (CreateDXGIFactory6)")
-            return CreateDXGIFactory6(riid, ppFactory)
-        else:
-            logger.info("Using DXGI 1.1 (CreateDXGIFactory1)")
-            return CreateDXGIFactory1(riid, ppFactory)
-    except Exception as e:
-        logger.error(f"Failed to create DXGI Factory: {e}")
-        raise
+# The CreateDXGIFactory1/6 wrappers that lived here are gone. Nothing called
+# them, dxgi.dll does not export CreateDXGIFactory6 at all (a 1.6 factory comes
+# from QueryInterface), and binding them set restype on ctypes.windll's shared
+# function object at import -- the process-wide change util/io.py already
+# avoids with a private handle. Use rapidshot.util.io._create_dxgi_factory1.

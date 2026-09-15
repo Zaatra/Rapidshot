@@ -262,3 +262,105 @@ def test_exported_from_the_package():
     import rapidshot
 
     assert rapidshot.TensorStream is TensorStream
+
+
+# -- waiting without burning a core --------------------------------------
+#
+# `_next_frame` loops on `grab_frame()`, and what paces that loop is the
+# camera blocking inside AcquireNextFrame for `timeout_ms`. With
+# `timeout_ms=0` -- a documented, supported setting -- it does not block, and
+# the loop measured **10.3 million calls per second** against a still screen:
+# one core fully burned asking a question whose answer had not changed.
+#
+# The fix must not touch the blocking default, where the camera already paces
+# the loop and any sleep is added latency for nothing.
+
+
+class InstantCamera:
+    """Reports 'nothing changed' without blocking, as timeout_ms=0 does."""
+
+    released = False
+    _capture_permanently_failed = False
+
+    def __init__(self, frames_after=3):
+        self.calls = 0
+        self.frames_after = frames_after
+
+    def grab_frame(self):
+        self.calls += 1
+        return object() if self.calls > self.frames_after else None
+
+
+class BlockingCamera(InstantCamera):
+    """Blocks for timeout_ms the way the default camera does."""
+
+    def __init__(self, clock, frames_after=3, blocks_for=0.010):
+        super().__init__(frames_after)
+        self.clock, self.blocks_for = clock, blocks_for
+
+    def grab_frame(self):
+        self.clock.advance(self.blocks_for)
+        return super().grab_frame()
+
+
+class Clock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += seconds
+
+
+def stream_over(camera, monkeypatch, clock=None):
+    from rapidshot.tensor_stream import TensorStream
+
+    slept = []
+    clock = clock or Clock()
+    monkeypatch.setattr(ts_module.time, "sleep",
+                        lambda seconds: (slept.append(seconds),
+                                         clock.advance(seconds)))
+    monkeypatch.setattr(ts_module.time, "perf_counter", clock)
+    monkeypatch.setattr(ts_module.time, "monotonic", clock)
+    stream = TensorStream.__new__(TensorStream)
+    stream._camera = camera
+    stream._timeout = None
+    return stream, slept
+
+
+def test_a_non_blocking_camera_does_not_spin(monkeypatch):
+    """Without this the loop runs as fast as the interpreter can call, which
+    on a still screen is a core burned for nothing."""
+    camera = InstantCamera(frames_after=3)
+    stream, slept = stream_over(camera, monkeypatch)
+    stream._next_frame()
+    assert camera.calls == 4
+    # One yield per empty answer, none after the frame arrives.
+    assert len(slept) == 3
+    assert all(0 < s <= 0.001 for s in slept), slept
+
+
+def test_a_blocking_camera_is_left_alone(monkeypatch):
+    """The default already waits inside AcquireNextFrame. Sleeping on top of
+    that is pure added latency, and this is what stops the fix reaching it."""
+    clock = Clock()
+    camera = BlockingCamera(clock, frames_after=3)
+    stream, slept = stream_over(camera, monkeypatch, clock)
+    stream._next_frame()
+    assert camera.calls == 4
+    assert slept == []
+
+
+def test_a_timeout_still_fires_while_yielding(monkeypatch):
+    """The yield must not outlive the deadline it is waiting inside."""
+    import pytest as _pytest
+
+    clock = Clock()
+    camera = InstantCamera(frames_after=10_000)
+    stream, slept = stream_over(camera, monkeypatch, clock)
+    stream._timeout = 0.05
+    with _pytest.raises(TimeoutError):
+        stream._next_frame()
+    assert camera.calls < 10_000

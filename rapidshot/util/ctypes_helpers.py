@@ -90,16 +90,19 @@ def pointer_to_address(ptr: Union[int, ctypes.c_void_p, ctypes._Pointer]) -> Opt
         value = ctypes.cast(ptr, ctypes.c_void_p).value
         if value is not None:
             return value
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, ctypes.ArgumentError):
+        # ArgumentError is what cast() raises for an arbitrary object, and it
+        # is neither of the others -- so this escaped a function documented to
+        # return None for anything that is not an address.
         pass
 
     if hasattr(ptr, "value") and ptr.value is not None:
         return ptr.value
 
-    if hasattr(ptr, "contents"):
-        try:
-            return ctypes.addressof(ptr.contents)
-        except (TypeError, ValueError):
-            return None
-
-    return None
+    # Not hasattr(ptr, "contents"): on a NULL typed pointer reading the attribute
+    # raises ValueError("NULL pointer access"), which hasattr does not swallow,
+    # so this escaped a function documented to return None.
+    try:
+        return ctypes.addressof(ptr.contents)
+    except (AttributeError, TypeError, ValueError):
+        return None

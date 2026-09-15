@@ -97,14 +97,51 @@ def test_bilinear_differs_from_nearest(live_frame):
         live_frame, (OUT, OUT), dtype="float32", sampling="bilinear"
     ).process(live_frame).numpy()
 
-    if np.array_equal(near, bilin):
-        pytest.skip(
-            "captured frame is too uniform to distinguish the samplers "
-            "(a flat region filters to itself)"
-        )
-    # Filtering averages neighbours, so it cannot leave the range.
-    assert bilin.min() >= near.min() - 1e-6
-    assert bilin.max() <= near.max() + 1e-6
+    def roughness(tensor):
+        """Mean absolute difference between neighbouring pixels."""
+        plane = tensor[0]
+        return float(np.abs(np.diff(plane, axis=1)).mean()
+                     + np.abs(np.diff(plane, axis=2)).mean())
+
+    # Only a genuinely flat frame may excuse identical output. Skipping
+    # whenever the two agree would skip on exactly the defect this test is for:
+    # a sampler that fell through to Load() produces output identical to
+    # nearest, and the run would go green. A flat frame is identifiable on its
+    # own terms -- nearest has nothing to filter -- so that is what gates it.
+    if roughness(near) == 0:
+        pytest.skip("captured frame is uniform, so neither sampler has work")
+
+    # The sampler did something. That is all that can be asserted between
+    # these two: "bilinear is smoother" is *not* reliable at this ratio.
+    # Reducing 2560x1600 to 64 square is 40:1, where a 2x2 filter averages four
+    # source pixels out of every sixteen hundred -- both samplers are
+    # effectively point samples, and which lands on a high-contrast edge is
+    # down to the content. Measured on one desktop: bilinear 0.0572 against
+    # nearest 0.0553, rougher by 3.5%.
+    assert not np.array_equal(near, bilin), (
+        "bilinear produced output identical to nearest; the sampler did not "
+        "filter")
+
+    # Both must stay inside the range of the *source*, which is the bound
+    # filtering actually obeys.
+    #
+    # This used to compare bilinear against `near.min()`/`near.max()`, on the
+    # reasoning that averaging cannot leave the range. It can, and it does:
+    # nearest reports the range of the pixels its sample grid happens to land
+    # on, while bilinear averages neighbourhoods containing pixels nearest
+    # never visits. On a 2560x1600 desktop nearest bottomed out at 0.0157 while
+    # bilinear reached 0.0 -- a black pixel between two sample points. The
+    # assertion failed on screen content rather than on any defect, which is
+    # the worst kind of red.
+    source = rapidshot.GpuConverter(
+        live_frame, (live_frame.width, live_frame.height), dtype="uint8",
+        layout="nhwc", sampling="nearest"
+    ).process(live_frame).numpy()
+    rgb = source[0][..., 2::-1].astype(np.float32) / 255.0
+
+    for name, tensor in (("bilinear", bilin), ("nearest", near)):
+        assert tensor.min() >= rgb.min() - 1e-6, name
+        assert tensor.max() <= rgb.max() + 1e-6, name
 
 
 # --------------------------------------------------------------------------

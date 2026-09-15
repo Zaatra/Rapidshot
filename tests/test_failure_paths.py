@@ -17,6 +17,8 @@ import pytest
 
 comtypes = pytest.importorskip("comtypes", reason="COM is Windows-only")
 
+from test_capture_paths import pipeline  # noqa: E402,F401  (fixture)
+
 from rapidshot._libs.dxgi import (  # noqa: E402
     DXGI_ERROR_ACCESS_LOST,
     DXGI_ERROR_DEVICE_REMOVED,
@@ -335,29 +337,9 @@ def test_legacy_env_var_skips_duplicate_output1(monkeypatch):
     assert used_v1 is False
 
 
-def test_masked_out_protected_content_is_flagged_not_fatal():
-    """
-    When protected content is merely blanked (rather than refused), capture
-    continues but callers must be able to tell a masked frame from a black one.
-    """
-    dup = make_duplicator()
-    dup.protected_content_detected = False
-
-    class MaskedInfo:
-        ProtectedContentMaskedOut = True
-        LastMouseUpdateTime = 0
-        LastPresentTime = 0
-        PointerShapeBufferSize = 0
-
-    # Drive the same branch update_frame() uses for the flag.
-    info = MaskedInfo()
-    if info.ProtectedContentMaskedOut:
-        dup.protected_content_detected = True
-    assert dup.protected_content_detected is True
-    # ...and it is cleared again once the protected surface goes away.
-    info.ProtectedContentMaskedOut = False
-    dup.protected_content_detected = bool(info.ProtectedContentMaskedOut)
-    assert dup.protected_content_detected is False
+# Masked-out (blanked rather than refused) protected content is covered through
+# update_frame itself in test_duplicator_paths.py; the test that lived here set
+# the flag by hand and asserted it had been set.
 
 
 # --------------------------------------------------------------------------
@@ -787,7 +769,9 @@ def _fake_factory(monkeypatch):
     {"pool_output": False},
     {"timeout_ms": 0},
     {"max_buffer_len": 8},
-    {"pool_size_frames": 2},
+    # Must differ from the constructor default, or there is no mismatch
+    # to detect: this was 2 until 2026-09-14, when 2 became the default.
+    {"pool_size_frames": 3},
 ])
 def test_create_refuses_to_return_a_camera_built_with_other_settings(monkeypatch, change):
     """The cache is keyed by output; the settings must match too.
@@ -902,42 +886,35 @@ def test_duplication_failure_explains_itself(monkeypatch):
 # The "nothing is arriving" warning must describe elapsed time, not attempts
 # --------------------------------------------------------------------------
 
-def _quiet_warning_fired(capture, monkeypatch, clock_values, updated_flags):
-    """Drive the still-screen branch over a scripted clock, return warning count."""
-    import rapidshot.capture as capture_module
+def _quiet_warning_fired(pipeline, monkeypatch, clock_values, updated_flags):
+    """Run real grab() calls over a scripted clock; return the warnings logged.
 
+    This used to re-implement the warning logic inside the test and drive the
+    copy, so capture.py itself was never run: its three lines could be deleted
+    with every one of these tests still passing. Now each step is a grab() on a
+    ScreenCapture over the fake pipeline, and the clock is read wherever the
+    library reads it.
+    """
+    import rapidshot.capture as capture_module
+    from test_capture_paths import FakeDuplicator
+
+    cam, _, _, _ = pipeline(pool_output=False)
     warnings = []
     monkeypatch.setattr(capture_module.logger, "warning",
                         lambda msg, *a, **k: warnings.append(msg))
+    clock = {"now": 0.0}
+    monkeypatch.setattr(capture_module.time, "perf_counter", lambda: clock["now"])
 
-    ticks = iter(clock_values)
-    monkeypatch.setattr(capture_module.time, "perf_counter", lambda: next(ticks))
-
-    for updated in updated_flags:
-        now = capture_module.time.perf_counter()
-        if updated:
-            capture._last_frame_time = now
-            continue
-        if capture._last_frame_time is None:
-            capture._last_frame_time = now
-        quiet_for = now - capture._last_frame_time
-        if (quiet_for >= capture._quiet_warning_after_s
-                and now - capture._last_quiet_warning >= capture._quiet_warning_after_s):
-            capture_module.logger.warning(f"No screen updates for {quiet_for:.1f}s.")
-            capture._last_quiet_warning = now
-    return warnings
+    FakeDuplicator.script = ["frame" if updated else "timeout" for updated in updated_flags]
+    FakeDuplicator.position = 0
+    for now, updated in zip(clock_values, updated_flags):
+        clock["now"] = now
+        frame = cam.grab()
+        assert (frame is not None) == updated
+    return [w for w in warnings if "No screen updates" in w]
 
 
-class _Quiet:
-    """Just the warning state the capture loop keeps."""
-
-    def __init__(self):
-        self._last_frame_time = None
-        self._quiet_warning_after_s = 2.0
-        self._last_quiet_warning = 0.0
-
-
-def test_polling_misses_do_not_warn_while_frames_are_arriving(monkeypatch):
+def test_polling_misses_do_not_warn_while_frames_are_arriving(pipeline, monkeypatch):
     """A run of empty acquires is normal and must not be reported as a still screen.
 
     With `timeout_ms=0` the capture loop makes tens of thousands of calls a
@@ -945,31 +922,35 @@ def test_polling_misses_do_not_warn_while_frames_are_arriving(monkeypatch):
     warning seven times while capture was running at 117 fps. The question is
     how long it has been since a frame, not how many times we asked.
     """
-    state = _Quiet()
     # 600 polls across 3 seconds, a frame every 20th -- i.e. 5 ms apart, a
     # perfectly healthy 200 fps with a 95% miss rate.
     clock = [i * 0.005 for i in range(600)]
     flags = [(i % 20 == 0) for i in range(600)]
-    assert _quiet_warning_fired(state, monkeypatch, clock, flags) == []
+    assert _quiet_warning_fired(pipeline, monkeypatch, clock, flags) == []
 
 
-def test_a_genuinely_still_screen_still_warns(monkeypatch):
+def test_a_genuinely_still_screen_still_warns(pipeline, monkeypatch):
     """The warning must survive: a real stall is worth reporting."""
-    state = _Quiet()
     clock = [0.0] + [1.0 + i * 0.5 for i in range(12)]
     flags = [True] + [False] * 12
-    fired = _quiet_warning_fired(state, monkeypatch, clock, flags)
+    fired = _quiet_warning_fired(pipeline, monkeypatch, clock, flags)
     assert fired, "a still screen should still produce a warning"
-    assert "No screen updates for" in fired[0]
+    assert "No screen updates for 2.0s" in fired[0]
 
 
-def test_still_screen_warning_is_rate_limited(monkeypatch):
+def test_still_screen_warning_is_rate_limited(pipeline, monkeypatch):
     """Once every couple of seconds, not once per poll."""
-    state = _Quiet()
     clock = [0.0] + [1.0 + i * 0.01 for i in range(1200)]   # 12s of polling
     flags = [True] + [False] * 1200
-    fired = _quiet_warning_fired(state, monkeypatch, clock, flags)
+    fired = _quiet_warning_fired(pipeline, monkeypatch, clock, flags)
     assert 1 <= len(fired) <= 8, f"expected a handful of warnings, got {len(fired)}"
+
+
+def test_a_screen_still_from_the_first_grab_warns_too(pipeline, monkeypatch):
+    """No frame has ever arrived: the clock starts at the first empty grab."""
+    fired = _quiet_warning_fired(pipeline, monkeypatch, [0.0, 1.0, 2.5], [False] * 3)
+    assert fired == ["No screen updates for 2.5s. Desktop Duplication only reports "
+                     "changed content, so a still screen produces no frames by design."]
 
 
 # --------------------------------------------------------------------------

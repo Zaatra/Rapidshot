@@ -41,12 +41,28 @@ class PooledBuffer:
         self._pool = pool_ref
 
     def release(self):
-        """Releases the buffer back to its pool."""
+        """Releases the buffer back to its pool.
+
+        A buffer whose pool was destroyed while this was held -- a capture
+        rebuild after a resolution change or device loss does that -- has no
+        pool to go back to. Releasing it just ends the caller's use of it; this
+        used to raise RuntimeError from the dead pool.
+        """
+        if self.state == 'DETACHED':
+            self.state = 'RELEASED'
+            return
+        if self.state in ('AVAILABLE', 'RELEASED'):
+            # Already released: a second call ends nothing and returns nothing.
+            # It used to raise from checkin, or from the dead pool. This cannot
+            # catch a release through a stale reference after the buffer was
+            # checked out again -- the wrapper is the same object -- so that
+            # stays the caller's to avoid.
+            return
         self._pool.checkin(self)
 
     def _live(self):
         """The wrapped array, or an error naming the mistake."""
-        if self.state != 'IN_USE':
+        if self.state not in ('IN_USE', 'DETACHED'):
             raise BufferReleasedError(
                 "This frame's buffer has been returned to the pool and may "
                 "already hold a different frame. Copy the data before calling "
@@ -55,7 +71,13 @@ class PooledBuffer:
         return self.array
 
     def __repr__(self):
-        return f"<PooledBuffer state='{self.state}' data_ptr=0x{self.array.ctypes.data:X} pool='{self._pool.__class__.__name__}'>"
+        # NumPy exposes the address through .ctypes, CuPy through .data.ptr;
+        # reading .ctypes alone made repr() raise for every GPU buffer.
+        address = getattr(getattr(self.array, "ctypes", None), "data", None)
+        if address is None:
+            address = getattr(getattr(self.array, "data", None), "ptr", None)
+        where = f" data_ptr=0x{address:X}" if isinstance(address, int) else ""
+        return f"<PooledBuffer state='{self.state}'{where} pool='{self._pool.__class__.__name__}'>"
 
     # -- array-like surface -------------------------------------------------
 
@@ -246,9 +268,20 @@ class BaseMemoryPool:
         }
 
     def release_all_buffers(self):
-        """
-        Marks all buffers as available, effectively resetting the pool's available queue.
-        This is primarily for resetting state, not for deallocation.
+        """Make every buffer available again, without taking one from a caller.
+
+        A buffer still checked out is *detached* -- as :meth:`destroy_pool`
+        detaches it -- and replaced with a freshly allocated one. Its holder
+        keeps the array, which stays readable, and a ``release()`` that ends
+        their use of it without returning anything to the pool.
+
+        This used to mark every buffer AVAILABLE, including ones a caller still
+        held, so the next ``checkout()`` handed the same memory to a second
+        owner: the next capture wrote into a frame the first owner was still
+        reading, with nothing raising on either side.
+
+        Atomic: the replacements are allocated before anything changes, so a
+        failed allocation leaves the pool exactly as it was.
         """
         if not self._initialized:
             # Cannot release buffers if pool wasn't even initialized with them
@@ -256,17 +289,15 @@ class BaseMemoryPool:
             return
 
         with self._lock:
-            self._available_buffers.clear()
+            held = [b for b in self._buffers if b.state == 'IN_USE']
+            replacements = [PooledBuffer(array=self._create_buffer(), pool_ref=self)
+                            for _ in held]
+            for buffer_wrapper in held:
+                buffer_wrapper.state = 'DETACHED'
+            self._buffers = [b for b in self._buffers if b.state != 'DETACHED'] + replacements
             for buffer_wrapper in self._buffers:
                 buffer_wrapper.state = 'AVAILABLE'
-                self._available_buffers.append(buffer_wrapper)
-            
-            # Sanity check
-            if len(self._available_buffers) != self.num_buffers:
-                # This might indicate an issue if some buffers were lost or duplicated
-                logger.warning(f"After release_all_buffers, available count ({len(self._available_buffers)}) "
-                      f"does not match total buffers ({self.num_buffers}).")
-
+            self._available_buffers = collections.deque(self._buffers)
 
     def destroy_pool(self):
         """
@@ -275,17 +306,15 @@ class BaseMemoryPool:
         For CuPy, its internal memory pool handles GPU memory.
         """
         with self._lock:
-            # For Numpy arrays, Python's GC will handle memory when references are cleared.
-            # For CuPy arrays, CuPy's memory pool will manage the GPU memory.
-            # Explicitly deleting arrays might be needed if they hold external resources
-            # not managed by Python's GC or CuPy's pool (e.g., registered interop resources).
-            # For simple np.empty/cp.empty, clearing lists should be sufficient.
-            
+            # A buffer a caller still holds is detached, not destroyed: it keeps
+            # its array, stays readable, and its release() becomes a no-op. This
+            # used to `del buf.array` on every buffer, so a frame from grab()
+            # held across a capture rebuild raised AttributeError when read and
+            # RuntimeError when released. Idle buffers are only referenced from
+            # the pool, so clearing the lists below is what frees them.
             for buf in self._buffers:
-                # If buffers need explicit cleanup beyond GC, do it here.
-                # e.g., if PooledBuffer held a custom resource.
-                del buf.array # Remove reference to the array; let GC handle it
-            
+                buf.state = 'DETACHED' if buf.state == 'IN_USE' else 'DESTROYED'
+
             self._buffers.clear()
             self._available_buffers.clear()
             self._initialized = False
@@ -324,29 +353,7 @@ class CupyMemoryPool(BaseMemoryPool):
         import cupy as cp # Import locally to ensure it's available here
         return cp.empty(self.buffer_shape, dtype=self.dtype)
 
-    def destroy_pool(self):
-        """
-        Destroys the pool, clearing CuPy buffers.
-        CuPy's memory pool should handle deallocation, but explicit del can help.
-        """
-        with self._lock:
-            if not self._initialized:
-                return
-
-            # It's good practice to ensure CuPy arrays are explicitly deleted
-            # if there's any doubt about GC behavior with GPU resources,
-            # though CuPy's memory pool is generally effective.
-            for buf_wrapper in self._buffers:
-                # This breaks the PooledBuffer's reference to the array.
-                # CuPy's memory pool will reclaim the GPU memory when its
-                # internal reference count for that block drops to zero.
-                del buf_wrapper.array 
-            
-            self._buffers.clear()
-            self._available_buffers.clear()
-            self._initialized = False
-            # print(f"CupyMemoryPool destroyed. Buffers cleared.")
-            # Optionally, can try to clear CuPy's memory pool if aggressive cleanup is needed,
-            # but this affects all CuPy allocations:
-            # import cupy as cp
-            # cp.get_default_memory_pool().free_all_blocks()
+    # destroy_pool is the base class's. CuPy returns device memory to its own
+    # pool once the last reference to an array goes, which clearing the pool's
+    # lists does for idle buffers; a held buffer keeps its memory until the
+    # caller lets go, exactly as on the NumPy path.

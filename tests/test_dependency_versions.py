@@ -20,6 +20,11 @@ from rapidshot.processor.base import version_below
     ("5.0.0.93", "4.5.0", False),   # opencv-python's four-part versions
     ("2.0.0rc1", "1.20.0", False),  # pre-release suffix ignored
     ("1.26.4+cpu", "1.20.0", False),  # local suffix ignored
+    ("4.5", "4.5.0", False),        # two parts: 4.5 is 4.5.0, not older
+    ("1.20", "1.20.0", False),
+    ("4.5.0", "4.5", False),
+    ("4", "4.5.0", True),
+    ("4.4", "4.5.0", True),
 ])
 def test_version_below_compares_numerically(version, minimum, below):
     assert version_below(version, minimum) is below

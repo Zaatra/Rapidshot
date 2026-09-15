@@ -77,6 +77,9 @@ def _camera(pool_size=2):
     cam._last_dup_source = None
     cam.max_buffer_len = 64
     cam.nvidia_gpu = False
+    # BGRA hands the staging buffer to the caller, so the pool keeps its
+    # full size -- see ScreenCapture._staging_pool_size.
+    cam._pool_output = True
     cam.is_capturing = False
     cam._capture_thread = None
     cam._timer_handle = HANDLE
@@ -305,6 +308,7 @@ class _RecordingPool(NumpyMemoryPool):
 class _FakeOutput:
     devicename = "fake-output"
     resolution = (SHAPE[1], SHAPE[0])
+    surface_size = resolution   # unrotated, so the panel matches the desktop
     rotation_angle = 0
 
     def update_desc(self):

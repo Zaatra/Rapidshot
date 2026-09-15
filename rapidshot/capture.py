@@ -46,12 +46,45 @@ from rapidshot.util.timer import (
 # Set up logger
 logger = logging.getLogger(__name__)
 
-# Try to import CuPy for GPU acceleration
-try:
-    import cupy as cp  # type: ignore[import-not-found]
-    CUPY_AVAILABLE = True
-except ImportError:
-    CUPY_AVAILABLE = False
+# CuPy is imported on first use, not at import time.
+#
+# Importing it costs **178.8 MB** resident (measured 2026-09-14, ROADMAP § 7.0)
+# and every caller paid that merely for `import rapidshot` -- including on
+# machines with no NVIDIA GPU, and for callers who only ever touch `grab()`.
+# It was 185 of the 217 MB the package cost before its first camera existed;
+# the native extension, by comparison, is 1.3 MB.
+#
+# Nothing here needs CuPy unless `nvidia_gpu=True`, so every use below is
+# reached through `_require_cupy()` behind that flag. `CUPY_AVAILABLE` and `cp`
+# remain readable as module attributes for anything outside that imported them,
+# and resolve the same way -- lazily, via `__getattr__` at the end of this
+# module.
+_cupy = None
+_cupy_import_attempted = False
+
+
+def _require_cupy():
+    """The CuPy module, or None if it is not installed. Imported once."""
+    global _cupy, _cupy_import_attempted
+    if not _cupy_import_attempted:
+        _cupy_import_attempted = True
+        try:
+            import cupy  # type: ignore[import-not-found]
+            _cupy = cupy
+        except ImportError:
+            _cupy = None
+    return _cupy
+
+
+def _require_positive_int(name: str, value) -> None:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError(f"{name} must be a positive int, got {value!r}")
+
+
+def cupy_available() -> bool:
+    """Whether CuPy can be imported. Imports it to find out, so call it behind
+    ``nvidia_gpu`` rather than as a general capability probe."""
+    return _require_cupy() is not None
 
 class ScreenCapture:
     #: How long stop() waits for the capture thread before giving up on it.
@@ -67,7 +100,7 @@ class ScreenCapture:
         output_color: str = "RGB",
         nvidia_gpu: bool = False,
         max_buffer_len: int = 64, # This is for the continuous mode ring buffer
-        pool_size_frames: int = 4,
+        pool_size_frames: int = 2,
         pool_output: bool = True,
         timeout_ms: int = 10,
         candidate_devices: Optional[List[Device]] = None,
@@ -86,11 +119,18 @@ class ScreenCapture:
                 is a full frame (8.3 MB at 1080p BGRA), which makes this the
                 main tunable part of the process footprint: measured per-camera
                 cost is 114 MB at 10 buffers, 85 MB at 4 and 81 MB at 2, against
-                75 MB with no pool at all. The default of 4 was chosen because
-                dropping from 10 saved 29 MB with no measurable change in frame
-                rate. Raise it only if you genuinely hold several frames at
-                once. Running dry is not an error for a converting mode: it
-                falls back to allocating, which is slower but always correct.
+                75 MB with no pool at all. The default dropped 10 -> 4 for 29 MB
+                with no measurable change in frame rate, and **4 -> 2 on
+                2026-09-14** for the same reason: at 2560x1600 the process was
+                196.3 MB at 4 and 171.7 MB at 2 -- one 12.3 MB RGB buffer per
+                step, exactly linear -- at 134.4 and 139.1 fps, a difference
+                inside the run-to-run spread. Holding a rolling window of 1, 3
+                and 6 frames did not separate them either (140.8/134.5/132.6 at
+                2 against 136.5/130.7/134.9 at 4), and neither size could be
+                made to exhaust: 25 frames were held at both. Raise it only if
+                you genuinely hold several frames at once. Running dry is not an
+                error for a converting mode: it falls back to allocating, which
+                is slower but always correct.
                 ``BGRA`` has no such fallback -- the frame is the staging
                 buffer -- so ``grab()`` returns None until a buffer is
                 released.
@@ -118,6 +158,7 @@ class ScreenCapture:
             raise ValueError(
                 f"pool_size_frames must be a positive int, got {pool_size_frames!r}"
             )
+        _require_positive_int("max_buffer_len", max_buffer_len)
 
         # Initialize basic attributes first to prevent errors during cleanup if initialization fails
         self._output = output
@@ -244,9 +285,8 @@ class ScreenCapture:
             if not self._initialize_resources():
                 # Prefer the specific cause _initialize_resources recorded; the
                 # generic message is only for the case where nothing was.
-                if self._init_error is not None:
-                    raise self._init_error
-                raise RapidShotError("Initial resource initialization failed. Check logs for details.")
+                raise self._init_error or RapidShotError(
+                    "Initial resource initialization failed. Check logs for details.")
 
         except Exception as e: # Catch errors from _initialize_resources or other __init__ steps
             logger.error(f"Critical error during ScreenCapture __init__: {e}")
@@ -401,17 +441,19 @@ class ScreenCapture:
             self.nvidia_gpu = nvidia_gpu # Ensure it's set before processor/pool
 
             # Check if GPU acceleration is requested but CuPy is not available
-            if self.nvidia_gpu and not CUPY_AVAILABLE:
+            if self.nvidia_gpu and not cupy_available():
                 logger.warning("NVIDIA GPU acceleration requested but CuPy is not available. Falling back to CPU mode for re-init.")
                 self.nvidia_gpu = False # Fallback for this attempt
 
             self.width, self.height = self._output.resolution # Get current resolution
             
-            # Validate region against current width/height
-            self._region_set_by_user = current_region is not None
-            self.region = current_region
-            if self.region is None:
-                self.region = (0, 0, self.width, self.height)
+            # A rebuild keeps the region the caller asked for -- including one
+            # given to start(), which is not in _init_args. This used to reset
+            # to the constructor's region, so continuous capture of a region
+            # came back from a device loss capturing the whole screen.
+            if not is_reinit:
+                self._requested_region = current_region
+            self.region = self._fit_requested_region()
             self._validate_region(self.region) # This updates self.region and shot_w, shot_h
 
             logger.debug(f"Creating Duplicator for output: {self._output.devicename}")
@@ -445,16 +487,15 @@ class ScreenCapture:
                 logger.debug("Destroying existing memory pool before re-initialization.")
                 self.memory_pool.destroy_pool()
             
-            region_height = self.region[3] - self.region[1]
-            region_width = self.region[2] - self.region[0]
-            buffer_shape = (region_height, region_width, 4) # BGRA
+            buffer_shape = self._staging_shape(self.region)
             dtype = np.uint8
 
-            logger.debug(f"Initializing new memory pool with shape {buffer_shape}, {pool_size_frames} buffers.")
+            staging_buffers = self._staging_pool_size(pool_size_frames)
+            logger.debug(f"Initializing new memory pool with shape {buffer_shape}, {staging_buffers} buffers.")
             if self.nvidia_gpu:
-                self.memory_pool = CupyMemoryPool(buffer_shape, dtype, pool_size_frames)
+                self.memory_pool = CupyMemoryPool(buffer_shape, dtype, staging_buffers)
             else:
-                self.memory_pool = NumpyMemoryPool(buffer_shape, dtype, pool_size_frames)
+                self.memory_pool = NumpyMemoryPool(buffer_shape, dtype, staging_buffers)
             
             self._is_initialized = True
             self._needs_reinit = False # Successfully re-initialized (or initialized)
@@ -500,12 +541,9 @@ class ScreenCapture:
 
         self._reinit_attempts += 1
         logger.warning(f"Re-initialization attempt {self._reinit_attempts} of {self._max_reinit_attempts} scheduled.")
-
-        if self._reinit_attempts > self._max_reinit_attempts:
-            self._capture_permanently_failed = True
-            self._last_capture_error_message = f"Max re-initialization attempts ({self._max_reinit_attempts}) reached."
-            logger.error(self._last_capture_error_message)
-            return False
+        # No "attempts exceeded" check here: the failure of the last permitted
+        # attempt marks capture permanently failed below, and that is tested
+        # first, so the count can never pass the maximum on this path.
 
         backoff_idx = min(self._reinit_attempts - 1, len(self._reinit_backoff_seconds) - 1)
         wait_time = self._reinit_backoff_seconds[backoff_idx]
@@ -615,7 +653,12 @@ class ScreenCapture:
         behaviour of allocating a fresh array per frame, which costs ~1.6 ms on
         a 1080p RGB frame but needs no release.
         """
-        if not self._pool_output or not self._processor.converts_output:
+        if (not self._pool_output or not self._processor.converts_output
+                or not getattr(self._processor, "accepts_output_target", False)):
+            # A backend that cannot write into a target (CuPy) allocates its
+            # own result. Checking a buffer out anyway allocated a host pool of
+            # pool_size_frames full frames and took and returned one per frame
+            # for nothing.
             return None
 
         shape = (height, width, self._processor.output_channels)
@@ -634,6 +677,85 @@ class ScreenCapture:
             # capture or recycling a buffer somebody is still reading.
             logger.debug("Output pool exhausted; allocating for this frame.")
             return None
+
+    def _staging_pool_size(self, pool_size_frames: int) -> int:
+        """How many BGRA staging buffers the pool actually needs.
+
+        A **converting** mode releases its staging buffer inside the same
+        ``grab()``: the caller receives the *output* buffer and the staging one
+        is, in `_grab_locked`'s own words, "finished with either way".
+        `_grab_locked` runs under the duplication lock, so exactly one staging
+        buffer is ever in flight and the other ``pool_size_frames - 1`` are
+        unreachable. At 2560x1600 that was **49.2 MB** of buffers nothing could
+        hand out, allocated at ``create()`` for every RGB camera.
+
+        **BGRA is the exception, and the reason the pool is sized this way at
+        all.** It converts nothing, so the staging buffer *is* the frame the
+        caller receives and holds until release -- and in video mode the
+        capture thread checks out more of them to fill
+        ``_pooled_frames_deque``. Those need the full count, and
+        ``pool_size_frames`` keeps meaning exactly what it documents there.
+
+        This is the argument already made for :meth:`_scratch_staging_buffer`,
+        which is one buffer for one reason: only one grab runs at a time.
+        """
+        processor = getattr(self, "_processor", None)
+        converts = getattr(processor, "converts_output", None)
+        if converts is None:
+            # Sized before a processor exists, or one that cannot say. Assume
+            # the worst case rather than guess: guessing high wastes buffers,
+            # guessing low exhausts the pool at runtime.
+            return pool_size_frames
+        if getattr(self, "_pool_output", True) and not converts:
+            return pool_size_frames
+        return 1
+
+    def _fit_requested_region(self) -> Tuple[int, int, int, int]:
+        """The region to capture after a rebuild, at the current resolution.
+
+        The caller's explicit request -- ``create(region=...)`` or
+        ``start(region=...)`` -- when it still fits; otherwise the full screen.
+        The request itself is kept either way, so a resolution that drops and
+        comes back restores it instead of forgetting it.
+
+        Previously a rebuild reset the region to the constructor's, which lost
+        any region given to ``start()``, and an ``_on_output_change`` whose
+        user region no longer fit raised ``ValueError`` out of the rebuild.
+        """
+        full = (0, 0, self.width, self.height)
+        requested = self.__dict__.get("_requested_region")
+        if requested is None and getattr(self, "_region_set_by_user", False):
+            # Flagged as the user's without a recorded request: the region
+            # currently set is the request.
+            requested = self.region
+        self._region_set_by_user = requested is not None
+        if requested is None:
+            return full
+        left, top, right, bottom = requested
+        if right <= self.width and bottom <= self.height:
+            return tuple(requested)
+        logger.warning(
+            f"Requested region {tuple(requested)} does not fit the new "
+            f"{self.width}x{self.height} resolution; capturing the full screen "
+            "until it does.")
+        return full
+
+    def _staging_shape(self, region: Tuple[int, int, int, int]) -> Tuple[int, int, int]:
+        """(rows, columns, 4) of the BGRA staging read for a desktop *region*.
+
+        The staging surface holds the region in the **panel's** orientation --
+        ``region_to_memory_region`` of it -- and the processor rotates to the
+        desktop's afterwards. At 90 and 270 degrees those are transposed.
+
+        Every staging buffer used to be sized from the desktop region instead.
+        The processor refuses a buffer of the wrong shape, so on a rotated
+        portrait display every grab() failed: silently, as a black BGRA frame,
+        until processing errors were made to raise; after that, as None and a
+        recovery that failed the same way until capture gave up.
+        """
+        left, top, right, bottom = self.region_to_memory_region(
+            region, self.rotation_angle, self._output)
+        return (bottom - top, right - left, 4)
 
     def _scratch_staging_buffer(self, height: int, width: int):
         """A BGRA staging buffer for a region the pool does not cover.
@@ -662,31 +784,67 @@ class ScreenCapture:
 
         if not self._processor.converts_output:
             if self.nvidia_gpu:
+                cp = _require_cupy()
                 return cp.empty(shape, dtype=cp.uint8)
             return np.empty(shape, dtype=np.uint8)
 
         scratch = getattr(self, "_scratch_staging", None)
         if scratch is None or scratch.shape != shape:
             if self.nvidia_gpu:
+                cp = _require_cupy()
                 scratch = cp.empty(shape, dtype=cp.uint8)
             else:
                 scratch = np.empty(shape, dtype=np.uint8)
             self._scratch_staging = scratch
         return scratch
 
-    def _sync_accumulator_region(self, memory_region) -> None:
-        """Drop the accumulated frame when the captured region moves.
+    def _sync_accumulator(self, memory_region):
+        """Drop the accumulated frame unless this frame directly follows it.
 
-        Shape alone is not identity. Alternating between two same-sized regions
-        would otherwise patch one region's dirty rects onto the other region's
-        pixels — the accumulator would look the right size and hold a blend of
-        two places on screen.
+        Returns the identity of the current frame, which the caller records
+        with :meth:`_record_accumulator_frame` once the processor has actually
+        folded it in.
+
+        The accumulator is a converted copy of the last frame ``grab()``
+        processed, and this frame's dirty rects describe the change since the
+        *previous frame the duplicator acquired*. The two are the same frame
+        only if nothing else acquired one in between. ``shot()`` and
+        ``grab_frame()`` both do, and patching onto the accumulator after them
+        produced a frame that was 99.5% the older image: every pixel changed in
+        the frame they consumed was missed, with nothing to show for it.
+
+        Checking the sequence rather than invalidating at each of those call
+        sites covers every consumer at once, including ones added later. A new
+        duplicator (an output change or a recovery) has a new ``instance_id``,
+        so it can never be taken for a continuation of the old one either.
+
+        Shape alone is not identity for the region, too. Alternating between
+        two same-sized regions would otherwise patch one region's dirty rects
+        onto the other region's pixels.
         """
-        if getattr(self, "_accumulator_region", None) != memory_region:
+        duplicator = self._duplicator
+        serial = getattr(duplicator, "frame_serial", None)
+        frame = None if serial is None else (getattr(duplicator, "instance_id", None), serial)
+        follows = (frame is not None
+                   and getattr(self, "_accumulator_frame", None) == (frame[0], frame[1] - 1))
+        # A duplicator that cannot say which frame this is gets no benefit of
+        # the doubt: an unnecessary full conversion is slow, a wrong patch is
+        # silently wrong.
+        if getattr(self, "_accumulator_region", None) != memory_region or not follows:
             invalidate = getattr(self._processor, "invalidate_accumulator", None)
             if invalidate is not None:
                 invalidate()
             self._accumulator_region = memory_region
+        # Forgotten until the processor has absorbed this frame. If anything
+        # between here and there fails, the accumulator still holds the older
+        # frame, and it must not be recorded as holding this one.
+        self._accumulator_frame = None
+        return frame
+
+    def _record_accumulator_frame(self, frame) -> None:
+        """Note that the accumulator now reflects ``frame``, as returned by
+        :meth:`_sync_accumulator`."""
+        self._accumulator_frame = frame
 
     def _dirty_rects_for(self, memory_region) -> Optional[list]:
         """This frame's dirty rects, translated into the staging surface.
@@ -699,6 +857,12 @@ class ScreenCapture:
 
         Returns None when the metadata is unavailable, which the processor
         reads as "convert everything".
+
+        A frame whose move rects are **unknown** is treated the same way, for
+        the same reason: `None` from the duplicator means the metadata could
+        not be read, not that there was none of it -- that is `[]`. Since every
+        `None` is a genuine error rather than an ordinary empty frame, the
+        full convert it forces is rare.
 
         A frame carrying **move** rects is treated the same way. The compositor
         satisfied part of it by copying pixels already on screen, and DXGI does
@@ -714,7 +878,15 @@ class ScreenCapture:
         blit to optimise. This branch is correctness insurance for the
         configurations where that is not true, not a path this hardware takes.
         """
-        if getattr(self._duplicator, "move_rects", None):
+        # `[]` is "the frame carried no move metadata"; `None` is "it could
+        # not be read". The duplicator distinguishes them deliberately, and a
+        # truthiness check collapsed the two -- so an unreadable frame was
+        # patched by dirty rect alone, leaving any moved region showing the
+        # previous contents with nothing to say so. Unknown is treated as
+        # "there may have been moves", which is how unreadable *dirty*
+        # metadata is already treated three lines below.
+        moves = getattr(self._duplicator, "move_rects", None)
+        if moves is None or moves:
             return None
 
         rects = getattr(self._duplicator, "dirty_rects", None)
@@ -923,6 +1095,29 @@ class ScreenCapture:
         return self._generation
 
     @property
+    def last_capture_error(self) -> str:
+        """Why the most recent capture failed, or ``""`` if none has.
+
+        ``grab()`` returns None and ``shot()`` returns False both when nothing
+        changed on screen and when capture failed; this is what tells the two
+        apart. Kept until the next failure replaces it.
+        """
+        return self._last_capture_error_message
+
+    @property
+    def last_present_time(self) -> int:
+        """QPC ticks when the compositor presented the newest captured frame.
+
+        0 before the first frame, and again after a rebuild until the new
+        duplicator delivers one. ``dxcam_compat`` reads this for DXcam's
+        ``latest_frame_time``; it looked for it here, found nothing -- the value
+        only ever lived on the duplicator -- and so reported 0 on every real
+        camera. Its test passed because the fake camera it used defined the
+        attribute.
+        """
+        return int(getattr(self._duplicator, "last_present_time", 0) or 0)
+
+    @property
     def recovery_count(self) -> int:
         """Successful recoveries so far.
 
@@ -988,10 +1183,19 @@ class ScreenCapture:
 
         Raises:
             ValueError: If the destination is too small or its size is unknowable
+            NotImplementedError: On the GPU backend (``nvidia_gpu=True``)
         """
         if image_ptr is None:
             raise ValueError("image_ptr cannot be None")
         self._refuse_while_capturing("shot()")
+        processor = getattr(self, "_processor", None)
+        if processor is not None and not processor.supports_direct_output:
+            # Refused before capturing. Found later, the backend's error was a
+            # capture failure: False, and a rebuild scheduled that cannot help.
+            raise NotImplementedError(
+                "shot() writes into host memory, which the GPU backend "
+                "(nvidia_gpu=True) does not support; use grab() instead"
+            )
 
         if region is None:
             region = self.region
@@ -1026,7 +1230,12 @@ class ScreenCapture:
             ValueError: If the destination is too small, or its size is unknown
         """
         required = self.bytes_per_frame(region)
-        _, detected_size = describe_destination(image_ptr)
+        address, detected_size = describe_destination(image_ptr)
+        # 0 is an address as far as pointer_to_address is concerned, so
+        # checks for None let `shot(0, buffer_size=n)` through to a memmove
+        # into address 0: an access violation that ends the process.
+        if not address:
+            raise ValueError("shot() destination pointer is null")
 
         known_sizes = [s for s in (detected_size, buffer_size) if s is not None]
         if not known_sizes:
@@ -1142,12 +1351,34 @@ class ScreenCapture:
         """
         self._ensure_no_live_frame("shot()")
 
+        # The same contract as grab(): a capture that cannot happen returns
+        # False and says why in last_capture_error; only a caller's mistake --
+        # an unusable destination, rejected before this point -- raises. This
+        # used to handle access loss and let everything else escape, so
+        # protected content made shot() raise where grab() returned None, and a
+        # camera that had given up or was mid-recovery was used as if healthy.
+        if self._capture_permanently_failed:
+            logger.error(f"shot(): capture permanently failed: {self._last_capture_error_message}")
+            return False
+        if self._needs_reinit and not self._attempt_reinitialization():
+            return False
+        if not self._is_initialized or self._duplicator is None:
+            self._note_recovery_needed("capture resources not initialized")
+            return False
+
         try:
             duplication_healthy = self._duplicator.update_frame()
         except (RapidShotReinitError, RapidShotDeviceError) as e:
             # Access lost / device reset: rebuild, then let the caller retry.
             logger.warning(f"shot(): {e}. Rebuilding capture resources.")
+            self._last_capture_error_message = str(e)
             self._on_output_change()
+            return False
+        except RapidShotError as e:
+            # Protected content included: no rebuild can fix that while the
+            # content is on screen.
+            logger.error(f"shot(): {e}")
+            self._last_capture_error_message = str(e)
             return False
 
         if duplication_healthy:
@@ -1194,22 +1425,70 @@ class ScreenCapture:
 
                 mapped_rect = self._stagesurf.map()
                 try:
-                    self._processor.process2(
-                        image_ptr,
-                        mapped_rect,
-                        _width,
-                        _height,
-                        buffer_size,
-                    )
+                    if self.rotation_angle == 0:
+                        self._processor.process2(
+                            image_ptr,
+                            mapped_rect,
+                            _width,
+                            _height,
+                            buffer_size,
+                        )
+                    else:
+                        self._shot_rotated(image_ptr, mapped_rect, _width, _height)
                 finally:
                     self._stagesurf.unmap()
                 return True
+            except Exception as e:
+                # The destination was validated before capturing, so a failure
+                # from here on is the capture's -- a device that stopped
+                # answering, a mapping with no pointer -- and handled as grab()
+                # handles it: logged, recorded, recovery scheduled.
+                logger.error(f"shot(): capture failed: {e}")
+                self._last_capture_error_message = f"shot() failed: {e}"
+                self._note_recovery_needed("unhandled error during shot")
+                return False
             finally:
                 if frame_needs_release and self._duplicator._frame_acquired:
                     self._duplicator.release_frame()
         else:
             self._on_output_change()
             return False
+
+    def _shot_rotated(self, image_ptr, mapped_rect, width: int, height: int) -> None:
+        """shot() on a rotated display: turn the frame, then copy it across.
+
+        The direct path converts straight into the caller's memory, but it
+        writes the staging surface as-is -- the panel's orientation. On a
+        rotated display that is not what grab() returns, which is the promise
+        shot() makes: at 180 degrees every pixel was in the wrong place, and at
+        90 and 270 the bytes were a transposed image the caller's
+        ``(height, width, channels)`` view would shear.
+
+        Rotating in place is not possible (90 and 270 change the shape), so
+        this takes the processor's rotated frame and copies it. One frame-sized
+        allocation, on a path that was producing wrong pixels without it.
+
+        The size is re-checked rather than assumed. ``_validate_destination``
+        sizes the buffer before capturing and the rotated frame should have
+        exactly that many bytes -- but "should" was the whole argument, and
+        ``describe_destination`` was already returning the size this then threw
+        away. Getting it wrong writes past the end of the caller's memory,
+        which is the failure `shot()` itself refuses two checks earlier.
+        """
+        frame, _ = self._processor.process(
+            mapped_rect, width, height, (0, 0, width, height),
+            self.rotation_angle, None)
+        frame = np.ascontiguousarray(frame)
+        address, detected_size = describe_destination(image_ptr)
+        if not address:
+            raise ValueError("Invalid destination pointer for shot copy")
+        if detected_size is not None and detected_size < frame.nbytes:
+            raise ValueError(
+                f"Destination buffer is too small for shot() on a rotated "
+                f"display: {detected_size} bytes provided, {frame.nbytes} "
+                f"needed for the rotated {frame.shape} frame."
+            )
+        ctypes.memmove(address, frame.ctypes.data, frame.nbytes)
 
     def _grab(self, region: Optional[Tuple[int, int, int, int]] = None) -> Optional[np.ndarray]:
         """_grab_locked() under the duplication lock.
@@ -1253,14 +1532,9 @@ class ScreenCapture:
             output_array_for_region = None
             can_use_pool = False
 
+            staging_shape = self._staging_shape(region)
             if self.memory_pool:
-                region_h = region[3] - region[1]
-                region_w = region[2] - region[0]
-                if (
-                    self.memory_pool.buffer_shape[0] == region_h
-                    and self.memory_pool.buffer_shape[1] == region_w
-                    and self.memory_pool.buffer_shape[2] == 4
-                ):
+                if tuple(self.memory_pool.buffer_shape) == staging_shape:
                     can_use_pool = True
 
             if can_use_pool:
@@ -1271,7 +1545,7 @@ class ScreenCapture:
                     f"Region {region} not matching pool config. Using temporary buffer for this grab."
                 )
                 output_array_for_region = self._scratch_staging_buffer(
-                    region[3] - region[1], region[2] - region[0]
+                    staging_shape[0], staging_shape[1]
                 )
 
             try:
@@ -1385,7 +1659,7 @@ class ScreenCapture:
                     self._duplicator.release_frame()
                     frame_needs_release = False
 
-                self._sync_accumulator_region(memory_region)
+                accumulator_frame = self._sync_accumulator(memory_region)
                 output_wrapper = self._checkout_output_buffer(region_width, region_height)
                 mapped_rect = self._stagesurf.map()
                 final_array, is_pooled_buffer_still_valid = self._processor.process(
@@ -1398,6 +1672,7 @@ class ScreenCapture:
                     dirty_rects=self._dirty_rects_for(memory_region),
                     output_target=None if output_wrapper is None else output_wrapper.array,
                 )
+                self._record_accumulator_frame(accumulator_frame)
             finally:
                 if mapped_rect is not None:
                     self._stagesurf.unmap()
@@ -1452,11 +1727,16 @@ class ScreenCapture:
             import traceback
 
             logger.error(traceback.format_exc())
-            if 'pooled_buffer_wrapper' in locals() and pooled_buffer_wrapper:
-                try:
-                    pooled_buffer_wrapper.release()
-                except Exception as rel_e:
-                    logger.error(f"Error releasing buffer during exception handling in _grab: {rel_e}")
+            # Both buffers: the converted-output one is checked out before the
+            # processor runs, so a processor that raises would otherwise leak
+            # one output buffer per failed frame.
+            for wrapper in (locals().get('pooled_buffer_wrapper'),
+                            locals().get('output_wrapper')):
+                if wrapper and wrapper.state == 'IN_USE':
+                    try:
+                        wrapper.release()
+                    except Exception as rel_e:
+                        logger.error(f"Error releasing buffer during exception handling in _grab: {rel_e}")
             self._note_recovery_needed("unhandled error during grab")
             self._last_capture_error_message = f"Unexpected error in _grab: {str(e)}"
             return None
@@ -1498,8 +1778,7 @@ class ScreenCapture:
 
         self._output.update_desc()
         self.width, self.height = self._output.resolution
-        if self.region is None or not self._region_set_by_user:
-            self.region = (0, 0, self.width, self.height)
+        self.region = self._fit_requested_region()
         self._validate_region(self.region)
         self.rotation_angle = self._output.rotation_angle
         if self.is_capturing:
@@ -1621,8 +1900,18 @@ class ScreenCapture:
         if delay != 0:
             time.sleep(delay)
             self._on_output_change()
+        # Checked again here as well as at construction: it is a public
+        # attribute, and 0 used to build a zero-length queue whose first
+        # eviction raised IndexError inside the thread, failing capture for
+        # good with "deque index out of range".
+        _require_positive_int("max_buffer_len", self.max_buffer_len)
         if region is None:
             region = self.region
+        else:
+            # Explicitly requested, so a later rebuild restores it; see
+            # _fit_requested_region.
+            self._requested_region = self._normalize_region(region)
+            self._region_set_by_user = True
         self._validate_region(region)
         self.is_capturing = True
         
@@ -1671,7 +1960,7 @@ class ScreenCapture:
 
         pool = getattr(self, "memory_pool", None)
         pool_size = (pool.num_buffers if pool is not None
-                     else self._init_args.get("pool_size_frames", 4))
+                     else self._init_args.get("pool_size_frames", 2))
         if pool_size < 2:
             logger.warning(
                 f"pool_size_frames={pool_size} leaves no buffer free while a "
@@ -1788,7 +2077,10 @@ class ScreenCapture:
         try:
             frame_array = self._frame_array(frame)
 
-            if self.nvidia_gpu and CUPY_AVAILABLE and isinstance(frame_array, cp.ndarray):
+            # Guarded by the flag first: probing CuPy on a CPU camera would
+            # import it, which is the cost this module defers.
+            cp = _require_cupy() if self.nvidia_gpu else None
+            if cp is not None and isinstance(frame_array, cp.ndarray):
                 # asnumpy() already copies to the host; only the stay-on-device
                 # path still needs one.
                 return cp.asnumpy(frame_array) if as_numpy else frame_array.copy()
@@ -1941,13 +2233,35 @@ class ScreenCapture:
                             # Plain array (non-BGRA output): copy directly, the
                             # pool's BGRA buffers are the wrong shape for it.
                             duplicate_frame = source_array.copy()
+                        if self.nvidia_gpu:
+                            # A device copy is only queued by the assignment
+                            # above. The check below is about when the copy
+                            # *read* the source, so it has to have run first.
+                            self._wait_for_device_copy()
 
                         evicted_buffer = None
+                        taken_during_copy = False
                         with self._capture_lock:
-                            if len(self._pooled_frames_deque) == self._pooled_frames_deque.maxlen:
-                                evicted_buffer = self._pooled_frames_deque[0]
-                            self._pooled_frames_deque.append(duplicate_frame)
-                            self._last_dup_source = duplicate_frame
+                            # The copy ran outside the lock, and in that window
+                            # get_latest_frame_buffer() may have handed the
+                            # source to a consumer, whose buffer it then is --
+                            # theirs to draw on or release. Anything copied out
+                            # of it after that is not a frame this producer
+                            # owned. Handing it out clears _last_dup_source, so
+                            # checked here, in the same lock that publishes the
+                            # duplicate, it says exactly whether that happened.
+                            if self._last_dup_source is not dup_source:
+                                taken_during_copy = True
+                            else:
+                                if len(self._pooled_frames_deque) == self._pooled_frames_deque.maxlen:
+                                    evicted_buffer = self._pooled_frames_deque[0]
+                                self._pooled_frames_deque.append(duplicate_frame)
+                                self._last_dup_source = duplicate_frame
+                        if taken_during_copy:
+                            # The consumer has the frame; the next real one
+                            # starts duplication again.
+                            self._discard_frame(duplicate_frame)
+                            continue
                         self._discard_frame(evicted_buffer)  # Outside the lock, see above
                         self._frame_available_event.set()
                         self._frame_count += 1
@@ -1958,10 +2272,10 @@ class ScreenCapture:
                         logger.error(f"Video_mode: Error duplicating frame: {dup_e}")
                         self._discard_frame(duplicate_frame)
             
-            except RapidShotReinitError as e: # Should be caught by _grab now
-                logger.warning(f"Capture thread: Re-init error caught: {e}. _needs_reinit should be True.")
-            except RapidShotDeviceError as e: # Should be caught by _grab now
-                logger.error(f"Capture thread: Device error caught: {e}. _needs_reinit should be True.")
+            # _grab_locked turns every exception into a None return and a
+            # scheduled rebuild, so what reaches here is a fault in this loop
+            # itself. The RapidShotReinitError/DeviceError clauses that sat
+            # above this could not be reached.
             except Exception as e: 
                 import traceback
                 logger.error(f"Error in capture thread: {e}\n{traceback.format_exc()}")
@@ -1992,6 +2306,14 @@ class ScreenCapture:
             logger.info(f"ScreenCapture continuous mode stopped. Captured {self._frame_count} frames in {capture_duration:.2f}s (FPS: {actual_fps:.2f}).")
         else:
             logger.info(f"ScreenCapture continuous mode stopped. No frames captured or capture time was zero.")
+
+    @staticmethod
+    def _wait_for_device_copy() -> None:
+        """Block until work queued on the current CUDA stream has run."""
+        cp = _require_cupy()
+        get_stream = getattr(getattr(cp, "cuda", None), "get_current_stream", None)
+        if get_stream is not None:
+            get_stream().synchronize()
 
     def _drain_frame_queue(self) -> None:
         """Return every queued frame to its pool and empty the queue.
@@ -2055,13 +2377,17 @@ class ScreenCapture:
         if region is None:
             region = self.region
 
-        frame_shape = (region[3] - region[1], region[2] - region[0], 4)  # BGRA
+        frame_shape = self._staging_shape(region)  # BGRA, panel orientation
 
         # Return queued buffers to the pool before it is torn down, otherwise
         # the wrappers outlive their pool and their release() targets a dead one.
         self._drain_frame_queue()
 
-        pool_size = self._init_args.get("pool_size_frames", 10)
+        # 2, matching the constructor. This read 10 -- the default two
+        # releases ago -- so a rebuilt pool was five times the size of the one
+        # it replaced, for any camera that did not pass the argument.
+        pool_size = self._staging_pool_size(
+            self._init_args.get("pool_size_frames", 2))
         if self.memory_pool is not None:
             if tuple(self.memory_pool.buffer_shape) == frame_shape:
                 return  # Shape unchanged, existing pool is still correct
@@ -2069,7 +2395,7 @@ class ScreenCapture:
             self.memory_pool = None
 
         logger.debug(f"Rebuilding memory pool for new frame shape {frame_shape}.")
-        if self.nvidia_gpu and CUPY_AVAILABLE:
+        if self.nvidia_gpu and cupy_available():
             self.memory_pool = CupyMemoryPool(frame_shape, np.uint8, pool_size)
         else:
             self.memory_pool = NumpyMemoryPool(frame_shape, np.uint8, pool_size)
@@ -2211,3 +2537,17 @@ class ScreenCapture:
             )
         except Exception:
             return "<ScreenCapture: initialization incomplete>"
+
+
+def __getattr__(name):
+    """Keep `capture.CUPY_AVAILABLE` and `capture.cp` working.
+
+    Both were module-level names until CuPy's import was deferred. Reading
+    either still answers correctly; it just pays for the import at that
+    point rather than at `import rapidshot`.
+    """
+    if name == "CUPY_AVAILABLE":
+        return cupy_available()
+    if name == "cp":
+        return _require_cupy()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

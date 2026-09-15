@@ -62,14 +62,11 @@ def setup_logging(
     # Get log level from environment variable if set
     env_log_level = os.environ.get(LOG_LEVEL_ENV_VAR)
     if env_log_level:
-        try:
-            env_log_level = env_log_level.upper()
-            if env_log_level in ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]:
-                console_level = getattr(logging, env_log_level)
-            elif env_log_level.isdigit():
-                console_level = int(env_log_level)
-        except (ValueError, AttributeError):
-            pass
+        env_log_level = env_log_level.upper()
+        if env_log_level in ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]:
+            console_level = getattr(logging, env_log_level)
+        elif env_log_level.isdigit():
+            console_level = int(env_log_level)
     
     # Set default values if not provided
     console_level = console_level if console_level is not None else DEFAULT_CONSOLE_LEVEL
@@ -135,5 +132,11 @@ def get_logger(name: str) -> logging.Logger:
     return logger
 
 
-# Initialize logging when module is imported
-setup_logging()
+# A NullHandler, and nothing else, on import. This used to call setup_logging()
+# here, so `import rapidshot` attached a stdout handler and a DEBUG-level
+# rotating file under ~/.rapidshot/logs in every process that imported it --
+# per-frame debug messages included, 55 MB in two days on the dev machine. That
+# is the application's decision. Warnings still reach stderr through Python's
+# last-resort handler when nothing is configured; call setup_logging() to opt in
+# to the console and file output.
+logging.getLogger("rapidshot").addHandler(logging.NullHandler())

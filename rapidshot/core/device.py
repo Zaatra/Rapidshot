@@ -1,6 +1,5 @@
 import ctypes
 import logging
-import sys
 from dataclasses import dataclass
 from typing import List, Optional
 import comtypes  # type: ignore[import-untyped]
@@ -10,8 +9,10 @@ from rapidshot._libs.dxgi import *
 # Configure logging
 logger = logging.getLogger("rapidshot.core.device")
 
-# Define D3D11CreateDevice function with correct argument types
-_D3D11CreateDevice = ctypes.windll.d3d11.D3D11CreateDevice
+# On a private handle: ctypes.windll shares one function object per DLL across
+# the whole process, so declaring argtypes there changes D3D11CreateDevice for
+# every other library that calls it. See util/io.py.
+_D3D11CreateDevice = ctypes.WinDLL("d3d11").D3D11CreateDevice
 _D3D11CreateDevice.restype = ctypes.c_long
 _D3D11CreateDevice.argtypes = [
     ctypes.c_void_p,                     # pAdapter
@@ -44,174 +45,92 @@ class Device:
 
         logger.info(f"Initializing Device for adapter: {self.desc.Description}")
         
-        # Try different feature levels with flexible error handling
-        self._create_device_with_multiple_fallbacks()
+        self._create_device()
 
-    def _create_device_with_multiple_fallbacks(self) -> None:
-        """
-        Create D3D11 device with enhanced fallback support to maximize compatibility.
-        """
-        # Define feature levels to try in order
-        feature_levels = [
-            # Try higher feature levels first
-            D3D_FEATURE_LEVEL_11_1,
-            D3D_FEATURE_LEVEL_11_0,
-            D3D_FEATURE_LEVEL_10_1,
-            D3D_FEATURE_LEVEL_10_0,
-            D3D_FEATURE_LEVEL_9_3,
-            D3D_FEATURE_LEVEL_9_2,
-            D3D_FEATURE_LEVEL_9_1,
-        ]
-        
-        # Filter to only include actually defined feature levels
-        available_feature_levels = []
-        for level in feature_levels:
-            if hasattr(sys.modules[__name__], f'D3D_FEATURE_LEVEL_{level >> 12}_{(level >> 8) & 0xF}'):
-                available_feature_levels.append(level)
-        
-        if not available_feature_levels:
-            # If no feature levels matched constants, use values directly (failsafe)
-            available_feature_levels = feature_levels
-            
-        logger.debug(f"Using feature levels: {[hex(level) for level in available_feature_levels]}")
-        
-        # Convert feature levels to C array
-        feature_levels_array = (ctypes.c_uint * len(available_feature_levels))(*available_feature_levels)
-        
-        # Try different driver types for more compatibility
-        driver_types = [
-            D3D_DRIVER_TYPE_UNKNOWN,
-            D3D_DRIVER_TYPE_HARDWARE,
-            D3D_DRIVER_TYPE_WARP,      # Software fallback
-            D3D_DRIVER_TYPE_REFERENCE,
-            D3D_DRIVER_TYPE_SOFTWARE
-        ]
-        
-        # Device creation flags - start with basic flags
-        base_flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT
-        
-        # Add debug flag in debug mode
+    # Every attempt is made on this adapter. Creation used to fall back to
+    # pAdapter=None -- the *default* adapter -- and then to WARP, REFERENCE and
+    # SOFTWARE, while this object went on reporting this adapter's description.
+    # That turned "this adapter will not open" into a device living somewhere
+    # else under this adapter's name, and on a multi-adapter machine the factory
+    # would offer it for duplication as if it were this adapter. Failing
+    # instead lets RapidshotFactory record the adapter in device_failures and
+    # name it in its error, which is the report that can actually be acted on.
+    #
+    # What does vary is only what the same adapter may legitimately refuse:
+    # the debug layer, which exists only where the SDK layers are installed,
+    # and feature level 11.1, which a runtime predating it rejects with
+    # E_INVALIDARG rather than skipping.
+    _FEATURE_LEVELS = (
+        D3D_FEATURE_LEVEL_11_1,
+        D3D_FEATURE_LEVEL_11_0,
+        D3D_FEATURE_LEVEL_10_1,
+        D3D_FEATURE_LEVEL_10_0,
+        D3D_FEATURE_LEVEL_9_3,
+        D3D_FEATURE_LEVEL_9_2,
+        D3D_FEATURE_LEVEL_9_1,
+    )
+
+    def _creation_attempts(self):
+        """(flags, feature levels) to try, most capable first, no duplicates."""
+        flag_sets = [D3D11_CREATE_DEVICE_BGRA_SUPPORT]
         if logger.getEffectiveLevel() <= logging.DEBUG:
-            # Try with debug flag, but it's optional
-            debug_flag = D3D11_CREATE_DEVICE_DEBUG
-        else:
-            debug_flag = 0
-            
-        # Create combinations of flags to try
-        flag_combinations = [
-            base_flags,                # Standard flags
-            base_flags | debug_flag,   # With debug flag (if applicable)
-            0                          # No flags
-        ]
-        
-        # Try combinations of driver types, feature levels, and flags
-        created = False
+            flag_sets.insert(0, D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_DEBUG)
+        # No flags last: BGRA_SUPPORT is for Direct2D interop, and a driver that
+        # refuses it can still copy the duplicated BGRA surface.
+        flag_sets.append(0)
+        level_sets = [self._FEATURE_LEVELS, self._FEATURE_LEVELS[1:]]
+        return [(flags, levels) for levels in level_sets for flags in flag_sets]
+
+    def _create_device(self) -> None:
+        """Create the D3D11 device on this adapter, or raise naming why not."""
         last_error = None
-        
-        for driver_type in driver_types:
-            if created:
-                break
-                
-            for flags in flag_combinations:
-                if created:
-                    break
-                    
-                try:
-                    # Initialize output pointers - FIXED: Using void pointers for D3D11CreateDevice
-                    device_ptr = ctypes.c_void_p()
-                    feature_level = ctypes.c_uint(0)
-                    context_ptr = ctypes.c_void_p()
-                    
-                    # Log the current attempt
-                    logger.debug(f"Trying driver type {driver_type} with flags {flags}")
-                    
-                    # Create device with current parameters
-                    adapter_ptr = self.adapter
-                    if driver_type == D3D_DRIVER_TYPE_UNKNOWN and adapter_ptr:
-                        # Make sure adapter is a valid pointer before using it
-                        if not bool(adapter_ptr):
-                            logger.warning("Adapter pointer is null, skipping this attempt")
-                            continue
-                            
-                        # Use specific adapter
-                        result = _D3D11CreateDevice(
-                            adapter_ptr,
-                            driver_type,
-                            None,
-                            flags,
-                            feature_levels_array,
-                            len(available_feature_levels),
-                            D3D11_SDK_VERSION,
-                            ctypes.byref(device_ptr),
-                            ctypes.byref(feature_level),
-                            ctypes.byref(context_ptr)
-                        )
-                        
-                        # Check result code
-                        if result != 0:  # non-zero = error
-                            logger.debug(f"D3D11CreateDevice returned error code: {result:#x}")
-                            # Convert to COMError to be caught below
-                            raise comtypes.COMError(result, None, f"D3D11CreateDevice failed with code {result:#x}")
-                    else:
-                        # Use driver type
-                        result = _D3D11CreateDevice(
-                            None,
-                            driver_type,
-                            None,
-                            flags,
-                            feature_levels_array,
-                            len(available_feature_levels),
-                            D3D11_SDK_VERSION,
-                            ctypes.byref(device_ptr),
-                            ctypes.byref(feature_level),
-                            ctypes.byref(context_ptr)
-                        )
-                        
-                        # Check result code
-                        if result != 0:  # non-zero = error
-                            logger.debug(f"D3D11CreateDevice returned error code: {result:#x}")
-                            # Convert to COMError to be caught below
-                            raise comtypes.COMError(result, None, f"D3D11CreateDevice failed with code {result:#x}")
-                    
-                    # CRITICAL: Verify pointers are valid
-                    if not device_ptr.value or not context_ptr.value:
-                        logger.warning("Device or context pointer is null after D3D11CreateDevice")
-                        continue
-                    
-                    # Convert void pointers to the correct interface types
-                    self.device = ctypes.cast(device_ptr, ctypes.POINTER(ID3D11Device))
-                    self.context = ctypes.cast(context_ptr, ctypes.POINTER(ID3D11DeviceContext))
-                    
-                    # Get immediate context
-                    im_context_ptr = ctypes.POINTER(ID3D11DeviceContext)()
-                    self.device.GetImmediateContext(ctypes.byref(im_context_ptr))
-                    if not bool(im_context_ptr):
-                        logger.warning("Failed to get immediate context")
-                        raise RuntimeError("Failed to get immediate context")
-                    self.im_context = im_context_ptr
-                    
-                    self.feature_level = feature_level.value
-                    
-                    # Log success
-                    logger.info(f"Successfully created device with feature level {self.feature_level_to_str(self.feature_level)}")
-                    created = True
-                    break
-                
-                except comtypes.COMError as ce:
-                    last_error = ce
-                    logger.debug(f"Failed to create device with driver {driver_type}, flags {flags}: {ce}")
-                    continue
-                    
-                except Exception as e:
-                    last_error = e
-                    logger.debug(f"Exception creating device: {e}")
-                    continue
-        
-        # If all attempts failed
-        if not created:
-            error_msg = f"Failed to create D3D11 device after trying all options. Last error: {last_error}"
-            logger.error(error_msg)
-            raise RuntimeError(error_msg)
+        for flags, levels in self._creation_attempts():
+            levels_array = (ctypes.c_uint * len(levels))(*levels)
+            device_ptr = ctypes.c_void_p()
+            feature_level = ctypes.c_uint(0)
+            context_ptr = ctypes.c_void_p()
+            logger.debug(f"D3D11CreateDevice flags={flags:#x} levels={len(levels)}")
+            try:
+                result = _D3D11CreateDevice(
+                    self.adapter,
+                    D3D_DRIVER_TYPE_UNKNOWN,   # required when an adapter is given
+                    None,
+                    flags,
+                    levels_array,
+                    len(levels),
+                    D3D11_SDK_VERSION,
+                    ctypes.byref(device_ptr),
+                    ctypes.byref(feature_level),
+                    ctypes.byref(context_ptr),
+                )
+                if result != 0:
+                    raise comtypes.COMError(
+                        result, None,
+                        f"D3D11CreateDevice failed with code {result & 0xFFFFFFFF:#010x}")
+                if not device_ptr.value or not context_ptr.value:
+                    raise RuntimeError("D3D11CreateDevice succeeded but returned no device")
+
+                self.device = ctypes.cast(device_ptr, ctypes.POINTER(ID3D11Device))
+                self.context = ctypes.cast(context_ptr, ctypes.POINTER(ID3D11DeviceContext))
+                im_context_ptr = ctypes.POINTER(ID3D11DeviceContext)()
+                self.device.GetImmediateContext(ctypes.byref(im_context_ptr))
+                if not bool(im_context_ptr):
+                    raise RuntimeError("Failed to get immediate context")
+                self.im_context = im_context_ptr
+                self.feature_level = feature_level.value
+                logger.info(
+                    "Created device with feature level "
+                    f"{self.feature_level_to_str(self.feature_level)}")
+                return
+            except Exception as e:
+                last_error = e
+                logger.debug(f"Device creation attempt failed: {e}")
+
+        error_msg = (
+            f"Failed to create a D3D11 device on {self.desc.Description}. "
+            f"Last error: {last_error}")
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
 
     def feature_level_to_str(self, feature_level):
         """Convert feature level to string representation"""
@@ -278,30 +197,6 @@ class Device:
             self.vram_size // 1048576 if self.vram_size else 0,
             self.vendor_id,
         )
-        
-    @classmethod
-    def create(cls, adapter_idx=0):
-        """
-        Create a new Device instance for the given adapter index.
-        
-        Args:
-            adapter_idx: Index of the adapter to use
-            
-        Returns:
-            New Device instance
-        """
-        from rapidshot.util.io import enum_dxgi_adapters
-        
-        adapters = enum_dxgi_adapters()
-        if not adapters:
-            logger.error("No DXGI adapters found")
-            raise RuntimeError("No DXGI adapters found")
-            
-        if adapter_idx >= len(adapters):
-            logger.error(f"Adapter index {adapter_idx} out of range, found {len(adapters)} adapters")
-            raise IndexError(f"Adapter index {adapter_idx} out of range, found {len(adapters)} adapters")
-            
-        return cls(adapters[adapter_idx])
         
     def release(self):
         """

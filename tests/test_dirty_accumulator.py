@@ -165,7 +165,9 @@ class TestFallbacks:
 
         out, _ = run(proc, current, dirty_rects=[(0, 0, 8, 8)], rotation=90)
 
-        expected = np.ascontiguousarray(np.rot90(reference(proc, current), k=1))
+        # Clockwise, as DXGI_MODE_ROTATION_ROTATE90 means; see
+        # test_cupy_rotation.desktop_from_texture for the reference.
+        expected = np.ascontiguousarray(np.rot90(reference(proc, current), k=-1))
         assert np.array_equal(out, expected)
 
     def test_bgra_keeps_the_zero_copy_path(self):

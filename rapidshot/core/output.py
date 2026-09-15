@@ -32,7 +32,7 @@ def _ensure_process_dpi_awareness() -> None:
     _dpi_awareness_attempted = True
 
     try:
-        shcore = ctypes.windll.shcore
+        shcore = ctypes.WinDLL("shcore")   # private handle; see util/io.py
         shcore.SetProcessDpiAwareness.argtypes = [ctypes.c_int]
         shcore.SetProcessDpiAwareness.restype = ctypes.c_long
         hresult = shcore.SetProcessDpiAwareness(_PROCESS_DPI_PER_MONITOR)

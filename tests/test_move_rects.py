@@ -154,11 +154,34 @@ def test_without_move_rects_the_dirty_rects_are_used():
     assert camera._dirty_rects_for((0, 0, 100, 100)) == [(0, 0, 10, 10)]
 
 
-def test_unreadable_move_metadata_does_not_force_a_full_convert():
-    """None means 'could not read', and the dirty rects are still usable."""
+def test_unreadable_move_metadata_forces_a_full_convert():
+    """`None` means the move rects could not be *read*, so whether the frame
+    carried any is unknown -- and DXGI does not repeat moved regions in the
+    dirty rects. Patching by dirty rect alone would leave a moved region
+    showing the previous frame, with nothing anywhere to say so.
+
+    This test asserted the opposite until 2026-09-15, on the reasoning that the
+    dirty rects are probably still usable. What changed the decision is what it
+    costs: a frame that simply carries no move metadata returns `[]`, not
+    `None`, so every `None` is a genuine metadata error and rare. And three
+    lines below, unreadable *dirty* metadata has always meant "convert
+    everything" -- the same uncertainty was being handled two opposite ways in
+    one function.
+    """
     camera = _camera(_Duplicator(dirty=[(0, 0, 10, 10)], move=None))
 
-    assert camera._dirty_rects_for((0, 0, 100, 100)) == [(0, 0, 10, 10)]
+    assert camera._dirty_rects_for((0, 0, 100, 100)) is None
+
+
+def test_no_move_metadata_is_not_the_same_as_unreadable():
+    """The distinction the duplicator goes to the trouble of making: `[]` is
+    "the frame carried none", `None` is "could not be read". Collapsing them
+    with a truthiness check is what made the unreadable case silent."""
+    usable = _camera(_Duplicator(dirty=[(0, 0, 10, 10)], move=[]))
+    unknown = _camera(_Duplicator(dirty=[(0, 0, 10, 10)], move=None))
+
+    assert usable._dirty_rects_for((0, 0, 100, 100)) == [(0, 0, 10, 10)]
+    assert unknown._dirty_rects_for((0, 0, 100, 100)) is None
 
 
 # --------------------------------------------------------------------------

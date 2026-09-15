@@ -49,6 +49,36 @@ def numpy_backed_processor(color_mode):
     return processor
 
 
+def desktop_from_texture(texture, rotation_angle):
+    """The desktop image a rotated texture shows, built pixel by pixel.
+
+    Independent of np.rot90 on purpose. The old expectation was
+    ``np.rot90(pattern, k)`` -- the implementation restated -- so it passed
+    while both processors turned 90/270 frames the wrong way. This follows
+    Microsoft's Desktop Duplication sample (DisplayManager::SetDirtyVert), the
+    same reference test_region_mapping.py checks region mapping against: at 90
+    degrees texel (u, v) lands at desktop (W - 1 - v, u), W the desktop width.
+    """
+    height, width = texture.shape[:2]
+    if rotation_angle in (90, 270):
+        out = np.empty((width, height) + texture.shape[2:], texture.dtype)
+    else:
+        out = np.empty_like(texture)
+    desk_h, desk_w = out.shape[:2]
+    for v in range(height):
+        for u in range(width):
+            if rotation_angle == 90:
+                x, y = desk_w - 1 - v, u
+            elif rotation_angle == 180:
+                x, y = desk_w - 1 - u, desk_h - 1 - v
+            elif rotation_angle == 270:
+                x, y = v, desk_h - 1 - u
+            else:
+                x, y = u, v
+            out[y, x] = texture[v, u]
+    return out
+
+
 def bgra_pattern(height=6, width=10):
     """Distinct per-pixel values, so a torn or transposed frame cannot pass."""
     rng = np.random.default_rng(20260911)
@@ -100,7 +130,7 @@ def test_rotated_frame_holds_the_rotated_pixels(rotation_angle):
 
     result, _, _ = run(processor, pattern, rotation_angle)
 
-    expected = np.rot90(pattern, k=(rotation_angle // 90) % 4)
+    expected = desktop_from_texture(pattern, rotation_angle)
     assert result.shape == expected.shape
     assert np.array_equal(result, expected), (
         f"{rotation_angle} degrees did not produce the rotated frame")
@@ -145,7 +175,7 @@ def test_converted_and_rotated_frame_matches_the_numpy_path(mode):
     channels = NumpyProcessor(mode).output_channels
     converted = np.empty((*pattern.shape[:2], channels), dtype=np.uint8)
     NumpyProcessor(mode).convert_into(pattern, converted)
-    expected = np.rot90(converted, k=1)
+    expected = desktop_from_texture(converted, 90)
 
     assert still_pooled is False
     assert not np.shares_memory(result, pooled)
@@ -162,3 +192,35 @@ def test_unrotated_frame_still_hands_back_the_pooled_buffer():
     assert still_pooled is True
     assert result is pooled
     assert np.array_equal(result, pattern)
+
+
+def test_cupy_process_refuses_a_pitch_narrower_than_a_row():
+    """The same guard as the NumPy path, and missing for the same reason: only
+    `shot()` ever had it. Runs with NumPy standing in for `self.cp`, so it needs
+    no GPU."""
+    bgra = np.zeros((4, 6, 4), dtype=np.uint8)
+    height, width = bgra.shape[:2]
+    rect = FakeMappedRect(bgra)
+    rect.Pitch = width * 4 - 4
+
+    processor = CupyProcessor("BGRA")
+    processor.cp = np
+
+    with pytest.raises(ValueError, match="pitch"):
+        processor.process(rect, width, height, (0, 0, width, height), 0)
+
+
+def test_cupy_process_reads_an_offset_region_from_a_padded_surface():
+    """Padded pitch and a non-zero left edge together -- the two conditions
+    that send the read down its per-row branch."""
+    bgra = np.arange(4 * 6 * 4, dtype=np.uint8).reshape(4, 6, 4)
+    height, width = bgra.shape[:2]
+    left, top = 2, 1
+    rect = FakeMappedRect(bgra, pitch=width * 4 + 12)
+
+    processor = CupyProcessor("BGRA")
+    processor.cp = np
+    out, _pooled = processor.process(
+        rect, width, height, (left, top, width, height), 0)
+
+    np.testing.assert_array_equal(np.asarray(out), bgra[top:, left:])

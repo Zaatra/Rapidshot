@@ -53,6 +53,15 @@ from rapidshot.util.errors import (
 logger = logging.getLogger(__name__)
 
 # Error constants for better reporting
+# Upper bounds on the buffer sizes the driver reports. These fields are
+# allocated from directly, so a corrupt value -- a garbage frame info after a
+# driver fault -- would otherwise become a multi-gigabyte ctypes allocation on
+# the capture thread. Real values are orders of magnitude smaller: metadata is
+# 16-24 bytes per rect, and the largest cursor Windows draws is a few hundred
+# kilobytes of pixels.
+MAX_METADATA_BUFFER_BYTES = 16 * 1024 * 1024
+MAX_POINTER_SHAPE_BUFFER_BYTES = 16 * 1024 * 1024
+
 CURSOR_ERRORS = {
     "NO_SHAPE": "No cursor shape available",
     "SHAPE_BUFFER_EMPTY": "Cursor shape buffer is empty",
@@ -188,6 +197,13 @@ class Duplicator:
     # DXGI_OUTDUPL_FRAME_INFO and are what Stage 3's Frame metadata is built on.
     last_present_time: int = 0
     accumulated_frames: int = 0
+    # Counts acquired frames that carried new content, whoever consumed them:
+    # grab(), shot(), grab_frame() or the capture thread. A frame's dirty rects
+    # describe the change since the *previous* such frame, so anything that
+    # patches a converted copy by dirty rect needs to know that no frame went
+    # by in between -- and a frame taken by a different entry point is exactly
+    # that. Paired with instance_id, (instance_id, frame_serial) names a frame.
+    frame_serial: int = 0
     # Regions the compositor redrew, in desktop coordinates. None means the
     # metadata could not be read, which is not the same as an empty list.
     dirty_rects: Optional[List[Tuple[int, int, int, int]]] = None
@@ -398,13 +414,10 @@ class Duplicator:
             else:
                 self.protected_content_detected = False
 
-            # FIX: Handle both LARGE_INTEGER and int types for LastMouseUpdateTime
-            # Get the mouse update time safely
-            if hasattr(info.LastMouseUpdateTime, 'QuadPart'):
-                mouse_update_time = info.LastMouseUpdateTime.QuadPart
-            else:
-                # Handle case where LastMouseUpdateTime is already an integer
-                mouse_update_time = info.LastMouseUpdateTime
+            # LARGE_INTEGER is declared as wintypes.LARGE_INTEGER, a c_longlong,
+            # so ctypes hands these fields back as plain ints. The QuadPart
+            # branches that used to sit here could not run.
+            mouse_update_time = info.LastMouseUpdateTime
             
             # Update cursor information if available
             if mouse_update_time > 0:
@@ -419,14 +432,8 @@ class Duplicator:
                 self.cursor.PointerPositionInfo = info.PointerPosition
                 self.cursor_visible = info.PointerPosition.Visible
             
-            # FIX: Handle both LARGE_INTEGER and int types for LastPresentTime
-            # Get the last present time safely
-            if hasattr(info.LastPresentTime, 'QuadPart'):
-                last_present_time = info.LastPresentTime.QuadPart
-            else:
-                # Handle case where LastPresentTime is already an integer
-                last_present_time = info.LastPresentTime
-                
+            last_present_time = info.LastPresentTime
+
             # No new frames
             if last_present_time == 0:
                 logger.debug("No new frame content")
@@ -435,6 +442,10 @@ class Duplicator:
 
             self.last_present_time = last_present_time
             self.accumulated_frames = info.AccumulatedFrames
+            # Counted here, before anything below can fail: once acquired, this
+            # frame's dirty rects are consumed whether or not the texture is
+            # usable, so a later frame's rects no longer chain to the one before.
+            self.frame_serial += 1
             # Read while the frame is still acquired: the metadata belongs to
             # this frame and is gone after ReleaseFrame. Move rects first, the
             # order Microsoft's Desktop Duplication sample uses -- they occupy
@@ -672,6 +683,8 @@ class Duplicator:
 
         try:
             for _ in range(2):
+                if capacity > MAX_METADATA_BUFFER_BYTES:
+                    return self._refuse_metadata_size("move", capacity)
                 count = max(1, capacity // rect_size)
                 buffer = (DXGI_OUTDUPL_MOVE_RECT * count)()
                 used = ctypes.c_uint(0)
@@ -708,6 +721,15 @@ class Duplicator:
                 raise
             return None
 
+    def _refuse_metadata_size(self, kind: str, capacity: int) -> None:
+        """Record a metadata size too large to be real; the rects are unknown."""
+        self.last_error = (
+            f"{kind} rect metadata of {capacity} bytes exceeds the "
+            f"{MAX_METADATA_BUFFER_BYTES}-byte limit; treating it as unreadable"
+        )
+        logger.warning(self.last_error)
+        return None
+
     def get_frame_dirty_rects(self, frame_info) -> Optional[List[Tuple[int, int, int, int]]]:
         """
         Regions the compositor redrew in this frame, in desktop coordinates.
@@ -738,6 +760,8 @@ class Duplicator:
 
         try:
             for _ in range(2):
+                if capacity > MAX_METADATA_BUFFER_BYTES:
+                    return self._refuse_metadata_size("dirty", capacity)
                 count = max(1, capacity // rect_size)
                 buffer = (RECT * count)()
                 used = ctypes.c_uint(0)
@@ -789,16 +813,21 @@ class Duplicator:
         # Skip if no pointer shape
         if frame_info.PointerShapeBufferSize == 0:
             return False, False, CURSOR_ERRORS["NO_SHAPE"]
+        if frame_info.PointerShapeBufferSize > MAX_POINTER_SHAPE_BUFFER_BYTES:
+            # Refused before allocating. The caller keeps the shape it holds.
+            error_msg = (
+                f"pointer shape of {frame_info.PointerShapeBufferSize} bytes exceeds the "
+                f"{MAX_POINTER_SHAPE_BUFFER_BYTES}-byte limit"
+            )
+            logger.warning(error_msg)
+            self.last_error = error_msg
+            return False, False, error_msg
             
         # Allocate buffer for pointer shape
         pointer_shape_info = DXGI_OUTDUPL_POINTER_SHAPE_INFO()  
         buffer_size_required = ctypes.c_uint()
         
         try:
-            # Verify buffer size
-            if frame_info.PointerShapeBufferSize <= 0:
-                return False, False, CURSOR_ERRORS["SHAPE_BUFFER_EMPTY"]
-                
             # Allocate buffer
             pointer_shape_buffer = (ctypes.c_byte * frame_info.PointerShapeBufferSize)()
             

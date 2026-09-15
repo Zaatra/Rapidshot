@@ -173,3 +173,44 @@ def test_held_frames_do_not_share_storage(mode):
                 release()
         camera.release()
         rapidshot.reset()
+
+
+# -- the fused GRAY kernel against the portable form ----------------------
+
+
+@pytest.mark.parametrize("shape", [(1, 1), (7, 13), (64, 64), (271, 373)])
+def test_the_fused_gray_kernel_matches_the_portable_one(shape):
+    """Two implementations of the same arithmetic now exist, and only because
+    one of them has to run under NumPy so the class stays testable without a
+    GPU. That duplication is only safe while they agree exactly -- the fused
+    kernel is 6-10x faster, which is worth nothing if it shifts a level.
+
+    Odd sizes included deliberately: an ElementwiseKernel over strided channel
+    views is where a tail element would be missed.
+    """
+    from rapidshot.processor import cupy_processor as backend
+
+    height, width = shape
+    rng = np.random.default_rng(width * height)
+    host = rng.integers(0, 256, (height, width, 4), dtype=np.uint8)
+    image = cp.asarray(host)
+
+    kernel = backend._gray_kernel(cp)
+    assert kernel is not None, "CuPy should provide ElementwiseKernel"
+    fused = kernel(image[..., 0], image[..., 1], image[..., 2])[..., cp.newaxis]
+    portable = backend._gray_chained(cp, image)
+
+    assert fused.shape == portable.shape
+    assert fused.dtype == portable.dtype
+    assert cp.array_equal(fused, portable)
+
+
+def test_numpy_standing_in_for_cupy_takes_the_portable_path():
+    """The substitution `test_cupy_rotation` depends on: NumPy has no
+    ElementwiseKernel, and asking for one must yield the fallback rather than
+    an AttributeError from inside the conversion."""
+    from rapidshot.processor import cupy_processor as backend
+
+    assert backend._gray_kernel(np) is None
+    host = np.arange(2 * 3 * 4, dtype=np.uint8).reshape(2, 3, 4)
+    assert backend._gray_chained(np, host).shape == (2, 3, 1)

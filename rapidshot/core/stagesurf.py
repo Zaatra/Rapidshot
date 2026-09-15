@@ -1,5 +1,5 @@
 import ctypes
-from dataclasses import dataclass, InitVar
+from dataclasses import dataclass, field, InitVar
 from typing import Tuple, Optional
 from rapidshot._libs.d3d11 import *
 from rapidshot._libs.dxgi import *
@@ -15,7 +15,9 @@ class StageSurface:
     width: ctypes.c_uint32 = 0
     height: ctypes.c_uint32 = 0
     dxgi_format: ctypes.c_uint32 = DXGI_FORMAT_B8G8R8A8_UNORM
-    desc: D3D11_TEXTURE2D_DESC = D3D11_TEXTURE2D_DESC()
+    # A factory, not a default instance: a ctypes struct default is created
+    # once and shared, so every StageSurface wrote into the same description.
+    desc: D3D11_TEXTURE2D_DESC = field(default_factory=D3D11_TEXTURE2D_DESC)
     texture: ctypes.POINTER(ID3D11Texture2D) = None
     interface: Optional[ctypes.POINTER(IDXGISurface)] = None
     output: InitVar[Output] = None

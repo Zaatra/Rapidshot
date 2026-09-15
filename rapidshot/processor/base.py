@@ -12,17 +12,24 @@ def version_below(version: str, minimum: str) -> bool:
     Comparing the strings directly is wrong as soon as a component reaches two
     digits: ``"12.3.0" < "9.0.0"`` is True, which made every import on Pillow 12
     warn that Pillow was too old. Pre-release and local suffixes are ignored.
+    Missing components count as zero, so ``"4.5"`` is not below ``"4.5.0"``.
     """
     def parts(text: str) -> tuple:
-        return tuple(int(n) for n in re.findall(r"\d+", str(text).split("+")[0])[:3])
+        numbers = [int(n) for n in re.findall(r"\d+", str(text).split("+")[0])[:3]]
+        return tuple(numbers + [0] * (3 - len(numbers)))
     return parts(version) < parts(minimum)
 
 
 class ProcessorBackends(enum.Enum):
     """
     Enumeration of available processor backends.
+
+    There was a PIL member, backed by a PillowProcessor that could only be
+    selected if importing NumPy failed -- impossible, since the package imports
+    NumPy throughout. It was deleted rather than tested: it sized a padded
+    surface's image by pitch after repacking the rows to width, and ignored
+    the output buffer. The values are unchanged.
     """
-    PIL = 0
     NUMPY = 1
     CUPY = 2
 
@@ -138,14 +145,6 @@ class Processor:
             pass
             
         try:
-            from PIL import Image, __version__ as pil_version
-            if version_below(pil_version, "9.0.0"):
-                logger.warning(
-                    f"Using Pillow {pil_version}; 9.0.0 or higher is recommended.")
-        except (ImportError, AttributeError):
-            pass
-            
-        try:
             import cv2  # type: ignore[import-not-found]
             version = cv2.__version__
             if version_below(version, "4.5.0"):
@@ -173,20 +172,18 @@ class Processor:
         Returns:
             Processed frame
         """
-        # Passed through only to backends that accept them. CuPy and Pillow have
-        # their own process() signatures, and forwarding an argument they do not
+        # Passed through only to backends that accept them. CuPy has its own
+        # process() signature, and forwarding an argument they do not
         # take would raise a TypeError that _grab()'s catch-all turns into a
-        # silent None -- capture stops with no usable diagnostic.
-        if self.backend_supports_dirty_rects:
-            extra = {}
-            if dirty_rects is not None:
-                extra["dirty_rects"] = dirty_rects
-            if output_target is not None:
-                extra["output_target"] = output_target
-            if extra:
-                return self.backend.process(rect, width, height, region,
-                                            rotation_angle, output_buffer, **extra)
-        return self.backend.process(rect, width, height, region, rotation_angle, output_buffer)
+        # silent None -- capture stops with no usable diagnostic. Each is
+        # gated on its own capability rather than one standing in for both.
+        extra = {}
+        if dirty_rects is not None and self.backend_supports_dirty_rects:
+            extra["dirty_rects"] = dirty_rects
+        if output_target is not None and self.accepts_output_target:
+            extra["output_target"] = output_target
+        return self.backend.process(rect, width, height, region, rotation_angle,
+                                    output_buffer, **extra)
 
     @property
     def converts_output(self) -> bool:
@@ -199,6 +196,16 @@ class Processor:
         and never here.
         """
         return self.color_mode not in (None, "BGRA")
+
+    @property
+    def accepts_output_target(self) -> bool:
+        """Whether this backend can convert into a caller-supplied array."""
+        return bool(getattr(self.backend, "ACCEPTS_OUTPUT_TARGET", False))
+
+    @property
+    def supports_direct_output(self) -> bool:
+        """Whether this backend can convert straight into caller memory (shot())."""
+        return hasattr(self.backend, "shot")
 
     @property
     def backend_supports_dirty_rects(self) -> bool:
@@ -235,7 +242,7 @@ class Processor:
                 without it there is no way to detect an undersized buffer
                 before writing to it.
         """
-        if hasattr(self.backend, 'shot'):
+        if self.supports_direct_output:
             return self.backend.shot(image_ptr, rect, width, height, buffer_size)
         raise NotImplementedError("Direct buffer processing not supported by this backend")
 
@@ -250,14 +257,9 @@ class Processor:
             Initialized backend
         """
         if backend == ProcessorBackends.NUMPY:
-            try:
-                from rapidshot.processor.numpy_processor import NumpyProcessor
-                return NumpyProcessor(self.color_mode)
-            except ImportError:
-                logger.warning("NumPy backend not available, falling back to PIL")
-                backend = ProcessorBackends.PIL
-                self._active_backend_type = backend
-        
+            from rapidshot.processor.numpy_processor import NumpyProcessor
+            return NumpyProcessor(self.color_mode)
+
         if backend == ProcessorBackends.CUPY:
             try:
                 from rapidshot.processor.cupy_processor import CupyProcessor
@@ -268,12 +270,5 @@ class Processor:
                 backend = ProcessorBackends.NUMPY
                 self._active_backend_type = backend
                 return NumpyProcessor(self.color_mode)
-        
-        if backend == ProcessorBackends.PIL:
-            try:
-                from rapidshot.processor.pillow_processor import PillowProcessor
-                return PillowProcessor(self.color_mode)
-            except ImportError:
-                raise ImportError("No available backend. Please install either NumPy or PIL.")
-        
+
         raise ValueError(f"Unknown backend: {backend}")

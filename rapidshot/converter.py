@@ -28,6 +28,7 @@ verified for that release.
 from __future__ import annotations
 
 import ctypes
+import logging
 from typing import Optional, Sequence, Tuple
 
 from . import native
@@ -36,6 +37,8 @@ from . import native
 from .native import _texture_crop, _validate_crop
 
 __all__ = ["GpuConverter", "GpuTensor", "TensorTransfer", "CrossAdapterRequired"]
+
+logger = logging.getLogger(__name__)
 
 # Mirrors examples/gpu_tensor_to_cupy.py, which stays as the worked example.
 CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE = 5
@@ -227,7 +230,17 @@ class _CudaView:
 
         self._cp = cp
         self._cuda = ctypes.WinDLL("nvcuda.dll")
+        # Declared so ctypes converts each argument to the width the driver
+        # reads, instead of guessing from the Python value.
         self._cuda.cuMemFree.argtypes = [ctypes.c_ulonglong]
+        self._cuda.cuImportExternalMemory.argtypes = [
+            ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(_ExternalMemoryHandleDesc)
+        ]
+        self._cuda.cuExternalMemoryGetMappedBuffer.argtypes = [
+            ctypes.POINTER(ctypes.c_ulonglong), ctypes.c_void_p,
+            ctypes.POINTER(_ExternalMemoryBufferDesc),
+        ]
+        self._cuda.cuDestroyExternalMemory.argtypes = [ctypes.c_void_p]
         self._ext = ctypes.c_void_p()
         self._device_ptr = None
         # Hold the tensor so the D3D12 resource and its shared handle outlive
@@ -285,12 +298,18 @@ class _CudaView:
             self._cp.cuda.runtime.deviceSynchronize()
 
     def close(self) -> None:
+        # Teardown carries on past a failure -- the handles are dropped either
+        # way -- but says so, rather than leaking a mapping without a trace.
         if self._device_ptr is not None:
             self.sync()
-            self._cuda.cuMemFree(ctypes.c_ulonglong(self._device_ptr))
+            code = self._cuda.cuMemFree(ctypes.c_ulonglong(self._device_ptr))
+            if code:
+                logger.warning(f"cuMemFree failed with CUDA error {code}")
             self._device_ptr = None
         if self._ext:
-            self._cuda.cuDestroyExternalMemory(self._ext)
+            code = self._cuda.cuDestroyExternalMemory(self._ext)
+            if code:
+                logger.warning(f"cuDestroyExternalMemory failed with CUDA error {code}")
             self._ext = ctypes.c_void_p()
 
     def __del__(self) -> None:
@@ -305,9 +324,10 @@ def _check(code: int, what: str) -> None:
         raise RuntimeError(f"{what} failed with CUDA error {code}")
 
 
-def _cuda_device_luid(cuda, ordinal: int) -> Optional[bytes]:
-    """LUID of a CUDA device as the full 8 bytes, or None if the driver
-    declines to say.
+def _cuda_device_luid(cuda, ordinal: int) -> bytes:
+    """LUID of a CUDA device as the full 8 bytes.
+
+    Raises RuntimeError naming the call and code if the driver cannot say.
 
     Read from the driver API rather than CuPy's device properties, which
     cannot be trusted for this. CuPy converts the fixed-size ``char luid[8]``
@@ -317,12 +337,11 @@ def _cuda_device_luid(cuda, ordinal: int) -> Optional[bytes]:
     Comparing that against a real LUID never matches, on any adapter.
     """
     dev = ctypes.c_int()
-    if cuda.cuDeviceGet(ctypes.byref(dev), ordinal) != 0:
-        return None
+    _check(cuda.cuDeviceGet(ctypes.byref(dev), ordinal), f"cuDeviceGet({ordinal})")
     buf = (ctypes.c_char * 8)()
     node_mask = ctypes.c_uint()
-    if cuda.cuDeviceGetLuid(buf, ctypes.byref(node_mask), dev) != 0:
-        return None
+    _check(cuda.cuDeviceGetLuid(buf, ctypes.byref(node_mask), dev),
+           f"cuDeviceGetLuid({ordinal})")
     return bytes(buf)
 
 
@@ -335,16 +354,30 @@ def _device_for_adapter(cp, luid: bytes) -> int:
     """
     count = cp.cuda.runtime.getDeviceCount()
     cuda = ctypes.WinDLL("nvcuda.dll")
-    # Harmless once CuPy has already initialised the driver; required when it
-    # has not, because a device query before cuInit fails.
-    cuda.cuInit(0)
+    cuda.cuInit.argtypes = [ctypes.c_uint]
     cuda.cuDeviceGet.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_int]
     cuda.cuDeviceGetLuid.argtypes = [
         ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint), ctypes.c_int
     ]
+    # Harmless once CuPy has already initialised the driver; required when it
+    # has not, because a device query before cuInit fails. Checked, because a
+    # driver that will not start is not a hybrid laptop and must not be
+    # reported as one.
+    _check(cuda.cuInit(0), "cuInit")
+    failures = []
     for index in range(count):
-        if _cuda_device_luid(cuda, index) == luid[:8]:
-            return index
+        try:
+            if _cuda_device_luid(cuda, index) == luid[:8]:
+                return index
+        except RuntimeError as e:
+            failures.append(str(e))
+    if failures:
+        # A device that could not be described may be the one on this
+        # adapter, so "no device here" has not been established.
+        raise RuntimeError(
+            f"could not match a CUDA device to the adapter holding this tensor "
+            f"(LUID {luid.hex()}): {'; '.join(failures)}"
+        )
     raise CrossAdapterRequired(
         f"no CUDA device is on the adapter holding this tensor (LUID {luid.hex()}); "
         f"{count} CUDA device(s) present, none matching. This is the ordinary "

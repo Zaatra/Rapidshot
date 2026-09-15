@@ -257,21 +257,28 @@ def test_pool_size_frames_is_reachable_from_create():
     for fn in (rapidshot.create, rapidshot.RapidshotFactory.create):
         params = inspect.signature(fn).parameters
         assert "pool_size_frames" in params, fn
-        assert params["pool_size_frames"].default == 4
+        assert params["pool_size_frames"].default == 2
 
 
-def test_pool_default_is_four_not_ten():
-    """Measured: 10 buffers cost 173.6 MB per camera, 4 cost 113.6 MB.
+def test_pool_default_is_two():
+    """The default has moved twice, each time on a measurement.
 
-    Dropping the default saved 60 MB for -1.8% frame rate, which is inside
-    run-to-run noise. Pinned so the number is a decision rather than a drift.
+    10 -> 4 saved 60 MB per camera for -1.8% frame rate. 4 -> 2, measured
+    2026-09-14 at 2560x1600, saved a further 24.6 MB -- one 12.3 MB RGB buffer
+    per step, exactly linear -- at 139.1 fps against 134.4, a difference inside
+    the run-to-run spread. Holding a rolling window of 1, 3 and 6 frames did
+    not separate the two either, and neither could be made to exhaust: 25
+    frames were held at both, because a converting mode falls back to
+    allocating rather than refusing.
+
+    Pinned so the number stays a decision rather than a drift.
     """
     import inspect
 
     from rapidshot.capture import ScreenCapture
 
     assert inspect.signature(ScreenCapture.__init__).parameters[
-        "pool_size_frames"].default == 4
+        "pool_size_frames"].default == 2
 
 
 @pytest.mark.parametrize("bad", [0, -1, 2.5, "4", None, True])

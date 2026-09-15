@@ -105,8 +105,13 @@ def test_numpy_pool_release_all_buffers():
     stats = pool.get_stats()
     assert stats['available'] == 2
     assert stats['in_use'] == 0
-    assert buf1.state == 'AVAILABLE'
-    assert buf2.state == 'AVAILABLE'
+    # Still held by this test, so detached rather than handed out again.
+    assert buf1.state == 'DETACHED'
+    assert buf2.state == 'DETACHED'
+    fresh = [pool.checkout(), pool.checkout()]
+    assert not any(f is b for f in fresh for b in (buf1, buf2))
+    buf1.release()
+    buf2.release()
     pool.destroy_pool()
 
 # --- CuPy Memory Pool Tests (Conditional) ---
@@ -191,8 +196,13 @@ def test_cupy_pool_release_all_buffers():
     stats = pool.get_stats()
     assert stats['available'] == 2
     assert stats['in_use'] == 0
-    assert buf1.state == 'AVAILABLE'
-    assert buf2.state == 'AVAILABLE'
+    # Still held by this test, so detached rather than handed out again.
+    assert buf1.state == 'DETACHED'
+    assert buf2.state == 'DETACHED'
+    fresh = [pool.checkout(), pool.checkout()]
+    assert not any(f is b for f in fresh for b in (buf1, buf2))
+    buf1.release()
+    buf2.release()
     pool.destroy_pool()
 
 def test_numpy_pool_destroy():

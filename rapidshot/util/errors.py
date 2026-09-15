@@ -14,8 +14,9 @@ class RapidShotDXGIError(RapidShotError):
     def __str__(self):
         if self.hresult is not None:
             try:
-                # Try to format hresult as hex, fallback if it's not an int
-                hresult_str = f" (HRESULT: {self.hresult:#010x})"
+                # Unsigned: comtypes reports HRESULTs as signed ints, which
+                # printed as -0x7785ffda instead of the 0x887a0026 people look up.
+                hresult_str = f" (HRESULT: {self.hresult & 0xFFFFFFFF:#010x})"
             except (TypeError, ValueError):
                 hresult_str = f" (HRESULT: {self.hresult})"
             return f"{self.message}{hresult_str}"

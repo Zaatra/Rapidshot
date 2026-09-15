@@ -263,7 +263,7 @@ class RapidshotFactory(metaclass=Singleton):
         prefer_integrated: bool = False,  # New parameter to force integrated GPU
         pool_output: bool = True,
         timeout_ms: int = 10,
-        pool_size_frames: int = 4,
+        pool_size_frames: int = 2,
     ) -> "ScreenCapture":
         """
         Create a ScreenCapture instance.
@@ -285,7 +285,10 @@ class RapidshotFactory(metaclass=Singleton):
                 See ScreenCapture.timeout_ms for the measured curve.
             pool_size_frames: Buffers kept for grab() to hand out. Each is a
                 full frame, so this is the main tunable part of the process
-                footprint. Raise it only if you hold several frames at once.
+                footprint. The default is 2; raising it costs one full frame per
+                step and bought no measurable throughput when measured (see
+                ``ScreenCapture.__init__``). Raise it only if you hold several
+                frames at once.
 
         Returns:
             ScreenCapture instance
@@ -316,8 +319,10 @@ class RapidshotFactory(metaclass=Singleton):
                     "duplication is set up."
                 )
         
-        # Validate device index
-        if device_idx >= len(self.devices):
+        # Validate device index. Negative too: Python indexing would make -1
+        # the last device under a cache key distinct from its positive index,
+        # so one output could get two cameras competing for its duplication.
+        if not 0 <= device_idx < len(self.devices):
             error_msg = f"Invalid device index: {device_idx}, max index is {len(self.devices)-1}"
             logger.error(error_msg)
             raise DeviceError(error_msg)
@@ -337,7 +342,7 @@ class RapidshotFactory(metaclass=Singleton):
             else:
                 output_idx = output_idx_list[0]
                 logger.info(f"Using primary monitor (output index {output_idx})")
-        elif output_idx >= len(self.outputs[device_idx]):
+        elif not 0 <= output_idx < len(self.outputs[device_idx]):
             error_msg = f"Invalid output index: {output_idx}, max index is {len(self.outputs[device_idx])-1}"
             logger.error(error_msg)
             raise OutputError(error_msg)
@@ -469,7 +474,10 @@ class RapidshotFactory(metaclass=Singleton):
             for idx, output in enumerate(outputs):
                 ret += f"Device[{didx}] Output[{idx}]: "
                 ret += f"Resolution:{output.resolution} Rotation:{output.rotation_angle} "
-                ret += f"Primary:{self.output_metadata.get(output.devicename)[1]}\n"
+                # An output attached after the metadata was read has no entry;
+                # create() already tolerates that, and this raised TypeError.
+                metadata = self.output_metadata.get(output.devicename)
+                ret += f"Primary:{metadata[1] if metadata else 'unknown'}\n"
         return ret
 
     def clean_up(self) -> None:
@@ -528,7 +536,7 @@ def create(
     prefer_integrated: bool = False,  # New parameter passed to factory
     pool_output: bool = True,
     timeout_ms: int = 10,
-    pool_size_frames: int = 4,
+    pool_size_frames: int = 2,
 ) -> "ScreenCapture":
     """
     Create a ScreenCapture instance.

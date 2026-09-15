@@ -150,6 +150,8 @@ class NumpyProcessor:
     """
     # Class attribute to identify the backend type
     BACKEND_TYPE = ProcessorBackends.NUMPY
+    # process() takes output_target and writes the converted frame into it.
+    ACCEPTS_OUTPUT_TARGET = True
 
     def __init__(self, color_mode):
         """
@@ -202,8 +204,8 @@ class NumpyProcessor:
         """
         Convert a BGRA source image into a pre-allocated destination array.
 
-        Unlike :meth:`process_cvtcolor` this never allocates a result array, so
-        it can write straight into a caller-supplied buffer.
+        Never allocates a result array, so it can write straight into a
+        caller-supplied buffer.
 
         Args:
             src: (H, W, 4) uint8 BGRA source
@@ -253,66 +255,6 @@ class NumpyProcessor:
         else:  # pragma: no cover - construction validates the mode
             raise ValueError(f"Unsupported color mode: {mode!r}")
 
-    def process_cvtcolor(self, image):
-        """
-        Convert color format with robust error handling.
-        
-        Args:
-            image: Image to convert
-            
-        Returns:
-            Converted image
-        """
-        # Fixed region handling patch applied
-        # Skip color conversion if image is None or empty
-        if image is None or image.size == 0:
-            logger.warning("Received empty image for color conversion")
-            return np.zeros((480, 640, 3), dtype=np.uint8)
-            
-        # Ensure image has proper shape and type
-        if not isinstance(image, np.ndarray):
-            try:
-                image = np.array(image)
-            except Exception as e:
-                logger.warning(f"Failed to convert image to numpy array: {e}")
-                return np.zeros((480, 640, 3), dtype=np.uint8)
-                
-        # Handle images with no channels or wrong number of channels
-        if len(image.shape) < 3 or image.shape[2] < 3:
-            try:
-                import cv2  # type: ignore[import-not-found]
-                # Convert grayscale to BGR if needed
-                if len(image.shape) == 2:
-                    image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-                return image
-            except Exception as e:
-                logger.warning(f"Failed to convert image format: {e}")
-                return np.zeros((image.shape[0] if len(image.shape) > 0 else 480, 
-                                image.shape[1] if len(image.shape) > 1 else 640, 3), dtype=np.uint8)
-        
-        try:
-            # Every mode is handled in pure NumPy -- OpenCV is not required.
-            # The result is always a freshly allocated, C-contiguous array that
-            # owns its data. Returning a view (as this used to for RGB/BGR)
-            # aliased the caller's frame to a pooled buffer that grab() had
-            # already checked back in, so the next capture silently rewrote it.
-            converted = np.empty(
-                (image.shape[0], image.shape[1], self.output_channels),
-                dtype=np.uint8,
-            )
-            self.convert_into(image, converted)
-            return converted
-
-        except Exception as e:
-            logger.warning(f"Color conversion error for mode '{self.color_mode}': {e}")
-            # Fallback: return BGR from BGRA if possible, or original image
-            if image.ndim == 3 and image.shape[2] == 4: # BGRA
-                return image[..., :3] # Return BGR part
-            elif image.ndim == 3 and image.shape[2] == 3: # Already 3 channels
-                return image
-            # If it's grayscale or some other format, return as is or a placeholder
-            return image # Or np.zeros(...) as per previous logic for severe errors
-
     def shot(self, image_ptr, rect, width, height, buffer_size=None):
         """
         Process directly into a caller-provided memory buffer.
@@ -347,7 +289,7 @@ class NumpyProcessor:
         required_bytes = width * height * channels
 
         dst_address, detected_size = describe_destination(image_ptr)
-        if dst_address is None:
+        if not dst_address:   # 0 as well: memmove would fault
             raise ValueError("Invalid destination pointer for shot copy")
 
         if detected_size is None and buffer_size is None:
@@ -371,7 +313,7 @@ class NumpyProcessor:
         pitch = int(rect.Pitch)
         src_row_bytes = width * 4
         src_address = pointer_to_address(rect.pBits)
-        if src_address is None:
+        if not src_address:
             raise ValueError("Invalid source pointer for shot copy")
 
         if pitch < src_row_bytes:
@@ -385,12 +327,19 @@ class NumpyProcessor:
             if pitch == src_row_bytes:
                 ctypes.memmove(dst_address, src_address, src_row_bytes * height)
             else:
-                for row in range(height):
-                    ctypes.memmove(
-                        dst_address + row * src_row_bytes,
-                        src_address + row * pitch,
-                        src_row_bytes,
-                    )
+                # One strided copy rather than a `memmove` per row. The loop
+                # this replaces cost 2.4-2.7x the contiguous case purely in
+                # Python call overhead -- 1.83 ms against 0.68 at 2560x1600,
+                # 1600 calls against one. The converting branch below already
+                # worked this way, which is why *it* showed no padding penalty
+                # at all while BGRA did.
+                src_rows = np.ctypeslib.as_array(
+                    (ctypes.c_ubyte * (pitch * height)).from_address(src_address)
+                ).reshape(height, pitch)
+                dst_rows = np.ctypeslib.as_array(
+                    (ctypes.c_ubyte * (src_row_bytes * height)).from_address(dst_address)
+                ).reshape(height, src_row_bytes)
+                np.copyto(dst_rows, src_rows[:, :src_row_bytes])
             return True
 
         # Converting modes: wrap both sides as NumPy views and convert directly
@@ -504,12 +453,16 @@ class NumpyProcessor:
         self._accum_valid = False
 
     def _read_rows(self, dest_view, src_view, top, bottom, start, end, pitch, row_bytes):
-        """Copy one horizontal band out of the mapped staging surface."""
-        if pitch == row_bytes and start == 0:
-            dest_view[top:bottom] = src_view[top:bottom, :row_bytes]
-        else:
-            for row in range(top, bottom):
-                dest_view[row, :] = src_view[row, start:end]
+        """Copy one horizontal band out of the mapped staging surface.
+
+        One strided slice, which covers the padded and offset cases as well as
+        the plain one: where `pitch == row_bytes` and `start == 0`, `start:end`
+        *is* `:row_bytes`. The special case it replaces was guarded by exactly
+        that condition and everything else fell to a Python loop over rows --
+        including **every region camera**, whose left edge makes `start`
+        non-zero regardless of how the driver pitches the surface.
+        """
+        dest_view[top:bottom] = src_view[top:bottom, start:end]
 
     def _read_patch_rows(self, dest_view, src_view, left, top, right, bottom,
                          start, end, pitch, row_bytes):
@@ -583,8 +536,18 @@ class NumpyProcessor:
 
             pitch = int(rect.Pitch)
             src_address = pointer_to_address(rect.pBits)
-            if src_address is None:
+            if not src_address:
                 raise ValueError("Mapped rect does not contain a valid pointer")
+
+            # `shot()` has refused this since it was written. A pitch smaller
+            # than a row makes the strided view below span past the end of the
+            # mapped surface, so the last rows read whatever follows it --
+            # with nothing in the result's shape, dtype or range to show it.
+            if pitch < width * 4:
+                raise ValueError(
+                    f"Mapped surface pitch {pitch} is smaller than a {width}px BGRA row "
+                    f"({width * 4} bytes); refusing to read out of bounds."
+                )
 
             region_left, region_top, region_right, region_bottom = region
             if not (0 <= region_left < region_right <= width) or not (0 <= region_top < region_bottom <= height):
@@ -681,20 +644,43 @@ class NumpyProcessor:
             if rotation_angle != 0:
                 k = (rotation_angle // 90) % 4
                 if k != 0:
+                    # Clockwise, hence the negated k: np.rot90 turns
+                    # counter-clockwise. DXGI_MODE_ROTATION_ROTATE90 puts the
+                    # texture's top row down the desktop's right-hand edge --
+                    # the direction Microsoft's Desktop Duplication sample
+                    # draws in, and the one region_to_memory_region already
+                    # followed. Turning the other way returned 90/270 frames
+                    # upside down, and made a region grab read the wrong part
+                    # of the screen.
+                    #
                     # np.rot90 returns a view; materialise it so the result is
                     # contiguous and independent of the buffer it came from.
-                    current_array = np.ascontiguousarray(
-                        np.rot90(current_array, k=k))
+                    #
+                    # `.copy()` rather than `ascontiguousarray`, which hands
+                    # back its argument unchanged when the view is already
+                    # contiguous -- true of a 1x1 region, where every rotation
+                    # is a no-op. That returned the pooled buffer itself while
+                    # `is_still_pooled_buffer` below says False, which is
+                    # exactly the aliasing the pool exists to prevent.
+                    # `CupyProcessor` documents the same case and has always
+                    # copied.
+                    current_array = np.rot90(current_array, k=-k).copy()
                     is_still_pooled_buffer = False
 
             return current_array, is_still_pooled_buffer
 
         except Exception as e:
+            # Raise, do not return the buffer -- the fix CupyProcessor.process
+            # already carries, which this path had missed.
+            #
+            # This used to zero output_buffer and return it with False. To
+            # _grab() False means "a fresh array the caller may keep", so an
+            # RGB or GRAY capture received a black 4-channel BGRA frame that
+            # was also the staging buffer just checked back into the pool --
+            # overwritten by the next grab -- and no recovery was flagged.
+            #
+            # A failure part-way through a dirty-rect patch leaves the
+            # accumulator half-updated, so it is no longer a sound base.
+            self.invalidate_accumulator()
             logger.error(f"Frame processing error in NumpyProcessor: {e}")
-            # Ensure output_buffer is zeroed out in case of any error, then return it with False flag
-            if output_buffer is not None and hasattr(output_buffer, 'fill'):
-                try:
-                    output_buffer.fill(0)
-                except Exception as fill_e:
-                    logger.error(f"Error filling output_buffer after another error: {fill_e}")
-            return output_buffer, False # Indicate buffer might be invalid or is not the result
+            raise

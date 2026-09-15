@@ -29,6 +29,13 @@ class FakeMappedRect:
         self.pBits = ctypes.cast(self._backing, ctypes.c_void_p)
 
 
+def convert(processor, bgra):
+    """A freshly converted copy, via the same convert_into the capture path uses."""
+    out = np.empty(bgra.shape[:2] + (processor.output_channels,), dtype=np.uint8)
+    processor.convert_into(bgra, out)
+    return out
+
+
 def make_bgra(height=4, width=6):
     """Deterministic BGRA test image with a distinct value per channel."""
     rng = np.random.default_rng(1234)
@@ -332,7 +339,7 @@ def test_gray_does_not_require_opencv(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", no_cv2)
 
     processor = NumpyProcessor("GRAY")
-    converted = processor.process_cvtcolor(make_bgra())
+    converted = convert(processor, make_bgra())
     assert converted.shape[2] == 1
 
 
@@ -342,7 +349,7 @@ def test_gray_does_not_require_opencv(monkeypatch):
 
 def test_rgba_swaps_red_and_blue():
     bgra = make_bgra()
-    rgba = NumpyProcessor("RGBA").process_cvtcolor(bgra)
+    rgba = convert(NumpyProcessor("RGBA"), bgra)
     assert np.array_equal(rgba[..., 0], bgra[..., 2])  # R
     assert np.array_equal(rgba[..., 1], bgra[..., 1])  # G
     assert np.array_equal(rgba[..., 2], bgra[..., 0])  # B
@@ -351,7 +358,7 @@ def test_rgba_swaps_red_and_blue():
 
 def test_rgb_channel_order():
     bgra = make_bgra()
-    rgb = NumpyProcessor("RGB").process_cvtcolor(bgra)
+    rgb = convert(NumpyProcessor("RGB"), bgra)
     assert rgb.shape[2] == 3
     assert np.array_equal(rgb[..., 0], bgra[..., 2])
     assert np.array_equal(rgb[..., 2], bgra[..., 0])
@@ -359,7 +366,7 @@ def test_rgb_channel_order():
 
 def test_bgr_channel_order():
     bgra = make_bgra()
-    bgr = NumpyProcessor("BGR").process_cvtcolor(bgra)
+    bgr = convert(NumpyProcessor("BGR"), bgra)
     assert np.array_equal(bgr, bgra[..., :3])
 
 
@@ -377,7 +384,7 @@ def test_shot_writes_requested_color_mode(mode):
     dest = np.zeros((height, width, channels), dtype=np.uint8)
     assert processor.shot(dest, FakeMappedRect(bgra), width, height) is True
 
-    expected = processor.process_cvtcolor(bgra) if mode != "BGRA" else bgra
+    expected = convert(processor, bgra) if mode != "BGRA" else bgra
     assert np.array_equal(dest, expected.reshape(dest.shape))
 
 

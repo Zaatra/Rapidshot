@@ -39,6 +39,17 @@ from typing import Any, List, Optional, Sequence, Tuple
 
 from . import converter as _converter
 
+#: A `grab_frame()` that returns faster than this did not block, so the wait
+#: loop is spinning rather than being paced by the camera. The blocking default
+#: is `timeout_ms=10`, an order of magnitude above it.
+_BLOCKING_THRESHOLD_S = 0.001
+
+#: Windows rounds any non-zero sleep up to roughly half a millisecond, so this
+#: asks for the smallest thing that still yields the core. `sleep(0)` returns
+#: in 0.2 us and leaves the loop burning a full core, which is the problem
+#: rather than the fix.
+_SPIN_YIELD_S = 0.00005
+
 __all__ = ["TensorStream"]
 
 
@@ -136,6 +147,7 @@ class TensorStream:
                 reason = getattr(self._camera, "_last_capture_error_message", "") or "unknown"
                 raise RuntimeError(f"capture has permanently failed: {reason}")
 
+            started = time.perf_counter()
             frame = self._camera.grab_frame()
             if frame is not None:
                 return frame
@@ -145,6 +157,14 @@ class TensorStream:
                     "reports only changed content, so an idle screen yields "
                     "nothing; protected content also blanks capture."
                 )
+            # What paces this loop is the camera blocking inside
+            # AcquireNextFrame. With `timeout_ms=0` it does not block, and this
+            # measured 10.3 million calls a second against a still screen -- a
+            # core burned re-asking a question whose answer had not changed.
+            # Yield only when the call came back instantly, so the blocking
+            # default keeps its latency and pays nothing for this.
+            if time.perf_counter() - started < _BLOCKING_THRESHOLD_S:
+                time.sleep(_SPIN_YIELD_S)
 
     def _convert(self, frame) -> "_converter.GpuTensor":
         source = getattr(frame, "source_id", None)
