@@ -69,8 +69,23 @@ def test_gpu_resize_matches_full_image_reference(harness, shape):
     actual = bench._gpu_to_tensor(image, harness.gpu)
     reference = bench.reference_tensor(image, np)
     assert actual.shape == bench.TARGET_SHAPE
-    assert actual.dtype == np.float32
+    assert actual.dtype == np.dtype(bench.TARGET_DTYPE)
     np.testing.assert_allclose(actual, reference, atol=1 / 255, rtol=0)
+
+
+@pytest.mark.parametrize("dtype", bench.DTYPES)
+def test_target_dtype_is_honoured_and_stays_within_tolerance(harness, monkeypatch, dtype):
+    """Both settings must produce their own dtype and still match the float64
+    reference. FP16 quantises to about 0.0005 near 1.0, well inside the 1/255
+    the comparison allows -- so switching the target cannot quietly start
+    measuring a different picture."""
+    monkeypatch.setattr(bench, "TARGET_DTYPE", dtype)
+    image = patterned(21, 29)
+    actual = bench._gpu_to_tensor(image, harness.gpu)
+    assert actual.dtype == np.dtype(dtype)
+    np.testing.assert_allclose(actual, bench.reference_tensor(image, np),
+                               atol=1 / 255, rtol=0)
+    assert bench.validate_tensor(actual, image, np)["verified"] is True
 
 
 def test_resize_includes_bottom_of_1600_row_screen(harness, monkeypatch):
@@ -86,7 +101,7 @@ def test_resize_includes_bottom_of_1600_row_screen(harness, monkeypatch):
 @pytest.mark.parametrize("corrupt", ["dtype", "black", "channels", "nan", "shape", "range"])
 def test_verification_rejects_incorrect_tensor(harness, corrupt):
     image = patterned(13, 17)
-    result = bench.reference_tensor(image, np)
+    result = bench.reference_tensor(image, np).astype(bench.TARGET_DTYPE)
     if corrupt == "dtype":
         result = result.astype(np.float64)
     elif corrupt == "black":
@@ -166,7 +181,8 @@ def test_cleanup_failure_is_reported(harness):
     image = patterned(3, 5)
     def close():
         raise RuntimeError("close failed")
-    harness.install(lambda: bench.Sample(bench.reference_tensor(image, np), image), close)
+    harness.install(lambda: bench.Sample(
+        bench.reference_tensor(image, np).astype(bench.TARGET_DTYPE), image), close)
     result = bench.verify_path("mss")
     assert result["error"] == "adapter cleanup failed"
     assert "close failed" in result["cleanup_errors"][0]
@@ -472,3 +488,443 @@ def test_worker_interrupt_stops_process(process_env, monkeypatch):
     with pytest.raises(KeyboardInterrupt):
         bench.spawn("mss", 1, 1, False, logs=process_env.logs)
     assert process_env.process.terminated
+
+
+# -- what a path is allowed to refuse ------------------------------------
+#
+# A path that cannot run here and a path that is broken need opposite
+# reactions: one is a skip, the other fails the run. The distinction is
+# `PathUnavailable`, and it only earns its keep if the harness actually treats
+# the two differently -- so that is what these check, not the exception itself.
+
+
+@pytest.mark.parametrize("image, why", [
+    (np.zeros((4, 4, 3), np.uint8), "three channels"),
+    (np.zeros((4, 4), np.uint8), "no channel axis"),
+    (np.zeros((0, 4, 4), np.uint8), "empty"),
+    (np.zeros((4, 4, 4), np.float32), "not uint8"),
+])
+def test_bgra_input_is_checked_before_it_is_resized(image, why):
+    """A wrong-shaped source produces a correctly shaped tensor of nonsense,
+    which is the failure mode this whole file exists to make impossible."""
+    with pytest.raises(ValueError):
+        bench._check_bgra(image)
+
+
+def transfer_stub(**overrides):
+    fields = {"total_bytes": 3 * bench.OUT * bench.OUT * 2,
+              "destination_is_software": False}
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+def test_a_transfer_carrying_the_wrong_payload_is_a_bug_not_a_skip(harness):
+    """Size is how this path knows it moved the tensor rather than the frame.
+    Getting it wrong means the benchmark is timing something else."""
+    monkey = transfer_stub(total_bytes=16 * 1024 * 1024)
+    with pytest.raises(ValueError, match="bytes"):
+        bench._validate_tensor_transfer(monkey, np)
+
+
+def test_a_target_that_cannot_be_viewed_is_refused(harness, monkeypatch):
+    """The CUDA import maps 4-byte words and the result is viewed back to its
+    own dtype, so a target size that is not a whole number of words cannot be
+    read at all. An odd output square in FP16 is 6*OUT^2 bytes, which is 2 mod
+    4 -- reachable only because this is checked before the arrival is."""
+    monkeypatch.setattr(bench, "OUT", 3)
+    monkeypatch.setattr(bench, "TARGET_DTYPE", "float16")
+    with pytest.raises(ValueError, match="4-byte words"):
+        bench._validate_tensor_transfer(transfer_stub(total_bytes=54), np)
+
+
+def test_a_warp_destination_is_a_skip_not_a_failure(harness):
+    """'no host-to-device transfer' is only meaningful against a real second
+    GPU. Against WARP it measures a system-memory copy, so the row would be a
+    confident lie rather than an error."""
+    with pytest.raises(bench.PathUnavailable, match="WARP"):
+        bench._validate_tensor_transfer(transfer_stub(destination_is_software=True), np)
+
+
+def test_a_transfer_of_exactly_the_tensor_is_accepted(harness):
+    monkeypatch_dtype = bench.TARGET_DTYPE
+    size = 3 * bench.OUT * bench.OUT * np.dtype(monkeypatch_dtype).itemsize
+    bench._validate_tensor_transfer(transfer_stub(total_bytes=size), np)
+
+
+def test_an_unavailable_path_is_skipped_rather_than_failed(harness):
+    """`run_path` reports `skipped`; nothing writes `error`, because the run
+    should not go red for a machine that simply cannot host the path."""
+    def produce():
+        raise bench.PathUnavailable("capture adapter has no CUDA device")
+
+    harness.install(produce)
+    result = bench.run_path("mss", 1, 1)
+    assert "error" not in result
+    assert "no CUDA device" in result["skipped"]
+    assert harness.events.count("close") == 1
+
+
+def test_an_unavailable_path_is_skipped_during_verification_too(harness):
+    def produce():
+        raise bench.PathUnavailable("capture adapter has no CUDA device")
+
+    harness.install(produce)
+    result = bench.verify_path("mss")
+    assert "error" not in result
+    assert "no CUDA device" in result["skipped"]
+
+
+def test_an_ordinary_failure_is_still_an_error(harness):
+    """The skip must not swallow real breakage -- that would turn every bug on
+    a GPU path into a quiet green run."""
+    def produce():
+        raise RuntimeError("the adapter is broken")
+
+    harness.install(produce)
+    result = bench.run_path("mss", 1, 1)
+    assert "skipped" not in result
+    assert "the adapter is broken" in result["error"]
+
+
+# -- what the worker is told ----------------------------------------------
+
+
+def test_the_worker_is_told_which_harness_and_which_dtype(process_env):
+    """A worker is a fresh process. `ai_ingestion.py` as a script dispatches to
+    section7's pixel-age harness, so without `--call-duration` the worker runs
+    a different benchmark than the parent thinks; without `--dtype` it measures
+    the module default while the parent reports the requested one."""
+    commands = []
+    original = bench.subprocess.Popen
+
+    def popen(*args, **kwargs):
+        commands.append(list(args[0]))
+        return original(*args, **kwargs)
+
+    bench.subprocess.Popen = popen
+    try:
+        bench.spawn("mss", 1, 1, False, logs=process_env.logs, dtype="float32")
+    finally:
+        bench.subprocess.Popen = original
+    command, = commands
+    assert "--call-duration" in command
+    assert command[command.index("--dtype") + 1] == "float32"
+    assert command[command.index("--worker") + 1] == "mss"
+
+
+def test_the_dtype_flag_is_omitted_when_not_asked_for(process_env):
+    """So a caller that does not care keeps whatever the module defaults to,
+    rather than having the parent's default silently pinned into the child."""
+    commands = []
+    original = bench.subprocess.Popen
+
+    def popen(*args, **kwargs):
+        commands.append(list(args[0]))
+        return original(*args, **kwargs)
+
+    bench.subprocess.Popen = popen
+    try:
+        bench.spawn("mss", 1, 1, False, logs=process_env.logs)
+    finally:
+        bench.subprocess.Popen = original
+    assert "--dtype" not in commands[0]
+
+
+# -- the adapters that had no tests --------------------------------------
+#
+# Their conversion is shared and covered above; what was not covered is each
+# one's *control flow* -- what it does when no frame arrives, and whether the
+# frame gets released. A leaked frame is the expensive one: DXGI cannot acquire
+# the next surface while a reference is outstanding, so capture stops dead
+# rather than slowing down.
+
+
+def test_dxcam_reports_no_frame_rather_than_an_empty_one(harness, monkeypatch):
+    """DXcam returns None when nothing changed. Turning that into a Sample
+    would report a capture rate the screen never produced."""
+    camera = SimpleNamespace(grab=lambda: None,
+                             release=lambda: harness.events.append("close"))
+    monkeypatch.setitem(sys.modules, "dxcam",
+                        SimpleNamespace(create=lambda **kw: camera))
+    produce, close, meta = bench._adapter_dxcam(harness.gpu, np)
+    assert produce() is None
+    assert meta["h2d_bytes_per_frame"] == 3 * bench.OUT * bench.OUT
+    close()
+    assert harness.events[-1] == "close"
+
+
+def test_rapidshot_cpu_reports_no_frame_rather_than_an_empty_one(harness, monkeypatch):
+    camera = SimpleNamespace(grab=lambda: None,
+                             release=lambda: harness.events.append("close"))
+    monkeypatch.setitem(sys.modules, "rapidshot",
+                        SimpleNamespace(create=lambda **kw: camera))
+    produce, close, meta = bench._adapter_rapidshot_cpu(harness.gpu, np)
+    assert produce() is None
+    assert meta["h2d_bytes_per_frame"] == 3 * bench.OUT * bench.OUT
+    close()
+
+
+def test_rapidshot_cpu_releases_the_frame_when_conversion_raises(harness, monkeypatch):
+    """The `finally` that makes this safe. Without it one bad frame stops
+    capture for the rest of the run, and the benchmark reports whatever it had
+    managed before that rather than an error."""
+    released = []
+    frame = SimpleNamespace(release=lambda: released.append("release"))
+    camera = SimpleNamespace(grab=lambda: frame, release=lambda: None)
+    monkeypatch.setitem(sys.modules, "rapidshot",
+                        SimpleNamespace(create=lambda **kw: camera))
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("conversion failed")
+
+    monkeypatch.setattr(bench, "_cpu_sample", explode)
+    produce, close, _ = bench._adapter_rapidshot_cpu(harness.gpu, np)
+    with pytest.raises(RuntimeError, match="conversion failed"):
+        produce()
+    assert released == ["release"]
+    close()
+
+
+def test_rapidshot_cpu_releases_the_frame_it_converted(harness, monkeypatch):
+    released = []
+    frame = SimpleNamespace(release=lambda: released.append("release"))
+    camera = SimpleNamespace(grab=lambda: frame, release=lambda: None)
+    monkeypatch.setitem(sys.modules, "rapidshot",
+                        SimpleNamespace(create=lambda **kw: camera))
+    monkeypatch.setattr(bench, "_cpu_sample", lambda *a, **kw: bench.Sample("t"))
+    produce, close, _ = bench._adapter_rapidshot_cpu(harness.gpu, np)
+    assert produce().tensor == "t"
+    assert released == ["release"]
+    close()
+
+
+def test_async_transfer_waits_before_the_frame_is_released(harness, monkeypatch):
+    """The hazard async introduces over the blocking call, and the reason the
+    wait sits inside the `with`. `transfer_async` returns before the copy that
+    reads the surface has run; releasing first hands the surface back to DXGI
+    to overwrite while the copy is still reading it.
+    """
+    storage = np.zeros(64, dtype=np.uint8)
+    trans = transfer()
+    trans.shared_destination_handle = 7
+    trans.transfer_async = lambda frame: harness.events.append("submit") or 11
+    trans.wait_shared_fence = lambda value: harness.events.append(f"wait({value})")
+
+    class Frame:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            harness.events.append("frame-release")
+
+    class View:
+        def __init__(self, owner, shape, device):
+            self.array = storage.view(np.float32)
+
+        def close(self):
+            harness.events.append("view-close")
+
+    camera = SimpleNamespace(grab_frame=lambda: Frame(),
+                             release=lambda: harness.events.append("camera-close"))
+    monkeypatch.setitem(sys.modules, "rapidshot", SimpleNamespace(
+        create=lambda: camera,
+        native=SimpleNamespace(cross_adapter_transfer=lambda f: trans)))
+    monkeypatch.setitem(sys.modules, "gpu_tensor_to_cupy",
+                        SimpleNamespace(CudaTensor=View))
+
+    produce, close, meta = bench._adapter_rapidshot_xadapter_async(harness.gpu, np)
+    produce()
+    assert meta["h2d_bytes_per_frame"] == 0
+    order = harness.events
+    assert order.index("submit") < order.index("wait(11)") < order.index("frame-release")
+    close()
+
+
+# -- the 2.6 paths, and the small helpers everything leans on -------------
+
+
+def converter_env(harness, monkeypatch, *, to_cupy=None, software=False):
+    """A fake rapidshot whose converter and transfer record what was asked."""
+    calls = []
+
+    class Tensor:
+        def to_cupy(self):
+            if to_cupy is not None:
+                raise to_cupy
+            return np.zeros(bench.TARGET_SHAPE, dtype=bench.TARGET_DTYPE)
+
+    class Converter:
+        def __init__(self, frame, size, **kwargs):
+            calls.append(("converter", size, kwargs))
+
+        def process(self, frame):
+            calls.append(("process",))
+            return Tensor()
+
+    class Transfer:
+        total_bytes = 3 * bench.OUT * bench.OUT * np.dtype(bench.TARGET_DTYPE).itemsize
+        destination_is_software = software
+        shared_destination_handle = 9
+
+        def __init__(self, converter):
+            calls.append(("transfer-built",))
+
+        def transfer(self):
+            calls.append(("transfer",))
+
+    class Frame:
+        width = height = 8
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            calls.append(("frame-release",))
+            harness.events.append("frame-release")
+
+    class View:
+        def __init__(self, owner, shape, device):
+            self.array = np.zeros(shape, dtype=np.float32)
+
+        def close(self):
+            harness.events.append("view-close")
+
+    camera = SimpleNamespace(grab_frame=lambda: Frame(),
+                             release=lambda: harness.events.append("camera-close"))
+
+    class Required(RuntimeError):
+        pass
+
+    monkeypatch.setitem(sys.modules, "rapidshot", SimpleNamespace(
+        create=lambda: camera, GpuConverter=Converter, TensorTransfer=Transfer,
+        CrossAdapterRequired=Required, native=SimpleNamespace()))
+    monkeypatch.setitem(sys.modules, "gpu_tensor_to_cupy",
+                        SimpleNamespace(CudaTensor=View))
+    return SimpleNamespace(calls=calls, Required=Required)
+
+
+def test_the_converter_is_asked_for_the_benchmarks_own_target(harness, monkeypatch):
+    """Every path must produce the same tensor or the comparison measures
+    different work, so the converter is configured from the module's target
+    rather than from anything of its own."""
+    env = converter_env(harness, monkeypatch)
+    produce, close, meta = bench._adapter_rapidshot_converter_xadapter(harness.gpu, np)
+    produce()
+    (_, size, kwargs), = [c for c in env.calls if c[0] == "converter"]
+    assert size == (bench.OUT, bench.OUT)
+    assert kwargs["dtype"] == bench.TARGET_DTYPE
+    assert kwargs["layout"] == "nchw" and kwargs["normalize"] is True
+    assert meta["h2d_bytes_per_frame"] == 0
+    close()
+
+
+def test_the_converted_payload_crosses_after_it_is_converted(harness, monkeypatch):
+    """Ordering B is the whole point: convert first, move the small result."""
+    env = converter_env(harness, monkeypatch)
+    produce, close, _ = bench._adapter_rapidshot_converter_xadapter(harness.gpu, np)
+    produce()
+    names = [c[0] for c in env.calls]
+    # One list, so the order is actually comparable: convert, then move the
+    # result, and only then let the frame go -- the copy reads the surface.
+    assert names.index("process") < names.index("transfer") < names.index("frame-release")
+    close()
+
+
+def test_a_warp_destination_skips_the_converter_path(harness, monkeypatch):
+    converter_env(harness, monkeypatch, software=True)
+    produce, close, _ = bench._adapter_rapidshot_converter_xadapter(harness.gpu, np)
+    with pytest.raises(bench.PathUnavailable, match="WARP"):
+        produce()
+    close()
+
+
+def test_the_direct_export_returns_the_tensor_where_it_already_is(harness, monkeypatch):
+    """No transfer at all, which is what makes this the fastest shape of the
+    path -- and only possible when capture and CUDA are the same adapter."""
+    converter_env(harness, monkeypatch)
+    produce, close, meta = bench._adapter_rapidshot_converter(harness.gpu, np)
+    assert produce().tensor.shape == bench.TARGET_SHAPE
+    assert meta["h2d_bytes_per_frame"] == 0
+    close()
+
+
+def test_the_direct_export_reports_cross_adapter_as_a_skip(harness, monkeypatch):
+    env = converter_env(harness, monkeypatch)
+    required = sys.modules["rapidshot"].CrossAdapterRequired("no CUDA device here")
+
+    class Tensor:
+        def to_cupy(self):
+            raise required
+
+    monkeypatch.setattr(sys.modules["rapidshot"], "GpuConverter",
+                        lambda frame, size, **kw: SimpleNamespace(
+                            process=lambda f: Tensor()))
+    produce, close, _ = bench._adapter_rapidshot_converter(harness.gpu, np)
+    with pytest.raises(bench.PathUnavailable, match="no CUDA device"):
+        produce()
+    close()
+
+
+@pytest.mark.parametrize("camera, expected", [
+    (SimpleNamespace(release=lambda: None), None),
+    (SimpleNamespace(stop=lambda: None), None),
+])
+def test_a_camera_is_closed_by_whichever_method_it_offers(camera, expected):
+    """mss stops, the others release. Picking wrong leaks the device."""
+    assert bench._close_camera(camera) is expected
+
+
+def test_a_camera_with_no_cleanup_is_refused_loudly():
+    """Silently skipping cleanup leaks a duplication device, and the next
+    camera on that output fails for an unrelated-looking reason."""
+    with pytest.raises(RuntimeError, match="cleanup"):
+        bench._close_camera(SimpleNamespace())
+
+
+@pytest.mark.parametrize("seconds, warmup", [
+    (0, 1), (-1, 1), (float("inf"), 1), (float("nan"), 1), (1, -1)])
+def test_nonsense_durations_are_refused_before_a_camera_is_opened(seconds, warmup):
+    with pytest.raises(ValueError):
+        bench._validate_options(seconds, warmup)
+
+
+def test_a_child_that_ignores_terminate_is_killed():
+    """A source that will not stop holds the display and the next path
+    measures against it."""
+    events = []
+
+    class Proc:
+        def __init__(self):
+            self.alive = True
+
+        def poll(self):
+            return None if self.alive else 0
+
+        def terminate(self):
+            events.append("terminate")
+
+        def wait(self, timeout=None):
+            if "kill" not in events:
+                raise bench.subprocess.TimeoutExpired("cmd", timeout)
+            return 0
+
+        def kill(self):
+            events.append("kill")
+
+    bench.stop_process(Proc())
+    assert events == ["terminate", "kill"]
+
+
+def test_an_already_finished_child_is_left_alone():
+    proc = SimpleNamespace(poll=lambda: 0,
+                           terminate=lambda: pytest.fail("terminated a dead child"))
+    bench.stop_process(proc)
+    bench.stop_process(None)
+
+
+def test_children_inherit_utf8_and_no_console():
+    """A console window steals focus mid-run, which changes what is on screen
+    and therefore what is being measured."""
+    options = bench._child_options()
+    assert options["env"]["PYTHONIOENCODING"] == "utf-8"
+    assert "creationflags" in options

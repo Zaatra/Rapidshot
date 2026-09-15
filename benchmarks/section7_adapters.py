@@ -5,12 +5,16 @@ import sys
 import time
 
 from benchmark_contract import (canonical_rgb, normalized_tensor, decode_marker,
-                                pipeline_rgb)
+                                pipeline_rgb, CELL, MARKER_BITS, MARKER_HEIGHT, OUT)
 
 PATHS = ("mss", "dxcam", "dxcam-wgc", "rapidshot-cpu", "rapidshot-cupy",
          "rapidshot-xadapter", "rapidshot-xadapter-async", "rapidshot-xadapter-semaphore",
-         "rapidshot-direct")
+         "rapidshot-direct", "rapidshot-converter-xadapter", "rapidshot-converter")
 CPU_PATHS = PATHS[:4]
+
+#: The frame-ID marker is 48 cells of 8 px read from row 8, so it only decodes
+#: at 1:1. 384x16 BGRA is ~24 kB.
+MARKER_CROP = (0, 0, MARKER_BITS * CELL, MARKER_HEIGHT)
 
 
 @dataclass
@@ -27,6 +31,9 @@ class Adapter:
     def __init__(self, path, cp, np, verify=False, agent=False):
         self.path, self.cp, self.np, self.verify, self.agent = path, cp, np, verify, agent
         self.cam = self.view = self.transfer = self.sem = self.pre = None
+        self.converter = self.marker_converter = None
+        self.tensor_transfer = self.marker_transfer = self.marker_view = None
+        self.reference_transfer = None
         self.closed = False
         if agent and path not in CPU_PATHS:
             raise ValueError("agent benchmark uses CPU capture paths")
@@ -81,6 +88,8 @@ class Adapter:
                 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples"))
                 from gpu_tensor_to_cupy import CudaTensor
                 from rapidshot import native
+                if self.path.startswith("rapidshot-converter"):
+                    return self._converter_capture(frame, stages, CudaTensor)
                 t0 = time.perf_counter()
                 if self.path == "rapidshot-direct":
                     if self.pre is None:
@@ -170,12 +179,91 @@ class Adapter:
             if frame is not None and hasattr(frame, "release"):
                 frame.release()
 
+    def _heap_view(self, transfer, CudaTensor):
+        """A CUDA view of a TensorTransfer's destination heap."""
+        from types import SimpleNamespace
+        owner = SimpleNamespace(
+            shared_output_handle=transfer.shared_destination_handle,
+            output_byte_size=transfer.total_bytes, transfer=transfer,
+            cuda_handle_type=4, cuda_dedicated=False)
+        return CudaTensor(owner, (transfer.total_bytes // 4,), device=0)
+
+    def _converter_capture(self, frame, stages, CudaTensor):
+        """2.6's convert-on-the-capture-adapter path, in pixel-age terms.
+
+        Every other path here carries the whole frame to wherever the tensor is
+        built, so the frame-ID marker arrives for free. This one deliberately
+        does not -- the resize happens *before* anything crosses, and a
+        640-square resize destroys a marker whose cells are 8 px wide and read
+        from row 8. So the marker travels as its own 1:1 uint8 crop, ~24 kB,
+        converted in the same dispatch style and moved beside the tensor.
+
+        That second conversion is a real cost of this ordering and is left in
+        the timings rather than subtracted. It is also small: 24 kB against the
+        2.46 MB tensor, and against the 16.38 MB whole frame the other paths
+        move to get the same marker.
+        """
+        import rapidshot
+        from rapidshot import native
+        from ai_ingestion import _pitched_bgra, _validate_transfer
+        cp, np = self.cp, self.np
+        crossing = self.path.endswith("xadapter")
+
+        if self.converter is None:
+            self.converter = rapidshot.GpuConverter(
+                frame, (OUT, OUT), dtype="float16", layout="nchw", normalize=True)
+            self.marker_converter = rapidshot.GpuConverter(
+                frame, (MARKER_CROP[2], MARKER_CROP[3]), dtype="uint8",
+                layout="nhwc", crop=MARKER_CROP, sampling="nearest")
+            if crossing:
+                self.tensor_transfer = rapidshot.TensorTransfer(self.converter)
+                self.marker_transfer = rapidshot.TensorTransfer(self.marker_converter)
+                self.view = self._heap_view(self.tensor_transfer, CudaTensor)
+                self.marker_view = self._heap_view(self.marker_transfer, CudaTensor)
+
+        t0 = time.perf_counter()
+        tensor_handle = self.converter.process(frame)
+        marker_handle = self.marker_converter.process(frame)
+        stages["d3d_convert_ms"] = (time.perf_counter() - t0) * 1000
+
+        if crossing:
+            t0 = time.perf_counter()
+            self.tensor_transfer.transfer()
+            self.marker_transfer.transfer()
+            stages["transfer_submit_or_block_ms"] = (time.perf_counter() - t0) * 1000
+            tensor = self.view.array.view(cp.float16).reshape(1, 3, OUT, OUT)
+            marker = self.marker_view.array.view(cp.uint8).reshape(
+                MARKER_CROP[3], MARKER_CROP[2], 4)
+        else:
+            # No transfer at all: only possible when capture and CUDA are the
+            # same adapter. `to_cupy()` raises CrossAdapterRequired otherwise,
+            # which section7's worker already records as unavailable.
+            tensor = tensor_handle.to_cupy().reshape(1, 3, OUT, OUT)
+            marker = marker_handle.to_cupy()[0]
+
+        reference = None
+        if self.verify:
+            # The converted tensor cannot yield the source pixels the reference
+            # needs, so the same frame is read a second way. Untimed.
+            if self.reference_transfer is None:
+                self.reference_transfer = native.cross_adapter_transfer(frame)
+                _validate_transfer(self.reference_transfer)
+            raw = self.reference_transfer.transfer_with_reference(frame)
+            reference = _pitched_bgra(
+                np.frombuffer(raw, dtype=np.uint8), self.reference_transfer).copy()
+
+        t0 = time.perf_counter()
+        frame_id = decode_marker(marker, cp)
+        stages["marker_decode_ms"] = (time.perf_counter() - t0) * 1000
+        self.sync()
+        return Captured(tensor, frame_id, stages, 0, reference)
+
     def close(self):
         if self.closed:
             return
         self.sync()
         errors = []
-        for resource in (self.sem, self.view, self.cam):
+        for resource in (self.sem, self.view, self.marker_view, self.cam):
             if resource is None:
                 continue
             try:
@@ -189,3 +277,5 @@ class Adapter:
             raise RuntimeError("; ".join(errors))
         self.closed = True
         self.sem = self.view = self.transfer = self.pre = self.cam = None
+        self.marker_view = self.converter = self.marker_converter = None
+        self.tensor_transfer = self.marker_transfer = self.reference_transfer = None

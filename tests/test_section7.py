@@ -105,7 +105,7 @@ def test_cleanup_is_idempotent():
     adapter = object.__new__(section7_adapters.Adapter)
     adapter.closed = False
     adapter.sync = lambda: calls.append("sync")
-    adapter.sem = adapter.view = None
+    adapter.sem = adapter.view = adapter.marker_view = None
     adapter.cam = SimpleNamespace(release=lambda: calls.append("release"))
     adapter.close()
     adapter.close()
@@ -185,3 +185,238 @@ def test_symbolic_axes_are_pinned_in_the_session_not_the_file():
     assert ai_pipeline.symbolic_overrides([1, 3, 640, 640]) == {}
     # An unnamed axis cannot be overridden by name; it is left to ORT.
     assert ai_pipeline.symbolic_overrides([None, 3, "h", "w"]) == {"h": 640, "w": 640}
+
+
+# -- the shared clock and the model pin ----------------------------------
+
+
+def test_qpc_reports_a_frequency_and_a_counter_that_advances():
+    """Pixel age is a difference of two QPC readings taken in different
+    processes, so the frequency has to be read rather than assumed -- it is not
+    nanoseconds and is not fixed across machines."""
+    now, hz = contract.qpc_clock()
+    assert hz > 0
+    first = now()
+    assert now() >= first
+    assert isinstance(first, int)
+
+
+def test_qpc_refuses_a_frequency_it_cannot_read(monkeypatch):
+    """Returning 0 would make every later division a crash, or worse a silent
+    infinity in a latency figure."""
+    class Kernel:
+        def __getattr__(self, name):
+            def call(pointer):
+                pointer._obj.value = 0
+                return 1
+            call.argtypes = None
+            return call
+
+    monkeypatch.setattr(contract.ctypes, "WinDLL", lambda *a, **kw: Kernel())
+    with pytest.raises(OSError, match="QueryPerformanceFrequency"):
+        contract.qpc_clock()
+
+
+def test_sha256_matches_the_published_digest(tmp_path):
+    """The model is pinned by digest, so this is what decides whether the
+    benchmark ran the weights it claims to have run."""
+    path = tmp_path / "w.bin"
+    path.write_bytes(b"abc")
+    assert contract.sha256(path) == (
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+
+
+def test_sha256_reads_a_file_larger_than_one_block(tmp_path):
+    """Read in 1 MiB blocks, so a model-sized file exercises the loop rather
+    than a single read -- and a loop that dropped a block would still return a
+    plausible-looking digest."""
+    import hashlib
+
+    payload = bytes(range(256)) * 12_000          # ~3 MB, several blocks
+    path = tmp_path / "big.bin"
+    path.write_bytes(payload)
+    assert contract.sha256(path) == hashlib.sha256(payload).hexdigest()
+
+
+# -- the guard that stops live work on failing hardware -------------------
+
+
+class FakeLogs:
+    def __init__(self):
+        self.events = []
+        self.directory = Path(".")
+
+    def event(self, name, **fields):
+        self.events.append((name, fields))
+
+
+def guard(monkeypatch, readings):
+    """A HealthGuard whose WHEA query returns each reading in turn."""
+    values = list(readings)
+    monkeypatch.setattr(section7.HealthGuard, "query",
+                        staticmethod(lambda: values.pop(0)))
+    logs = FakeLogs()
+    return section7.HealthGuard(logs), logs
+
+
+def test_the_baseline_whea_state_is_recorded_at_construction(monkeypatch):
+    """Without a baseline there is nothing to compare against, and a machine
+    that was already faulting would look healthy."""
+    g, logs = guard(monkeypatch, [{"latest": 5, "count": 5}] * 2)
+    assert g.baseline == {"latest": 5, "count": 5}
+    assert logs.events[0][0] == "health-baseline"
+
+
+def test_a_new_whea_record_stops_live_benchmarks(monkeypatch):
+    """This machine's CPU is degrading (ROADMAP § 2). A run that continues past
+    a machine-check exception produces numbers from hardware that is failing,
+    and they are indistinguishable from good ones."""
+    g, logs = guard(monkeypatch, [{"latest": 5, "count": 5},
+                                  {"latest": 6, "count": 6}])
+    with pytest.raises(section7.MotionError, match="WHEA"):
+        g.check(force=True)
+    assert logs.events[-1][0] == "hardware-error-or-log-change"
+
+
+def test_an_unchanged_log_lets_the_run_continue(monkeypatch):
+    g, _ = guard(monkeypatch, [{"latest": 5, "count": 5}] * 2)
+    g.check(force=True)
+
+
+def test_checks_are_throttled_unless_forced(monkeypatch):
+    """The query shells out to PowerShell, which costs far more than a frame.
+    Polling it per frame would change what is being measured."""
+    values = [{"latest": 5, "count": 5}, {"latest": 9, "count": 9}]
+    calls = []
+
+    def query():
+        calls.append(1)
+        return values.pop(0) if values else {"latest": 9, "count": 9}
+
+    monkeypatch.setattr(section7.HealthGuard, "query", staticmethod(query))
+    monkeypatch.setattr(section7.time, "monotonic", lambda: 100.0)
+    g = section7.HealthGuard(FakeLogs())
+    g.last = 100.0
+    g.check()                      # within 5 s of `last`: must not re-query
+    assert len(calls) == 1
+
+
+# -- the display mode, and the source that follows it ---------------------
+
+
+def test_the_primary_display_mode_is_reported():
+    """Read rather than assumed: ENUM_CURRENT_SETTINGS (0xFFFFFFFF) is the
+    mode in force, and the benchmark paces its source from it. A stored or
+    default value would describe some other machine."""
+    mode = section7.display_mode()
+    assert mode["width"] > 0 and mode["height"] > 0
+    assert mode["refresh_hz"] > 0
+    assert set(mode) == {"width", "height", "refresh_hz"}
+
+
+def test_a_display_query_that_fails_is_not_silently_zero(monkeypatch):
+    """Zero would flow into the source's fps argument, which the latency source
+    refuses with 'fps outside 1..240' -- an error about the wrong thing, one
+    layer away from the cause."""
+    class User:
+        def __getattr__(self, name):
+            def call(device, index, mode):
+                return 0
+            call.argtypes = None
+            return call
+
+    monkeypatch.setattr(section7.ctypes, "WinDLL", lambda *a, **kw: User())
+    with pytest.raises(OSError, match="EnumDisplaySettingsW"):
+        section7.display_mode()
+
+
+class FakeSource:
+    """Stands in for the built binary: a Path instance refuses attribute
+    patching, and `str()` resolves on the type rather than the instance."""
+
+    def __init__(self, exists=True):
+        self.exists = exists
+
+    def is_file(self):
+        return self.exists
+
+    def __str__(self):
+        return "latency_source.exe"
+
+
+def test_the_source_is_launched_with_the_requested_mode(monkeypatch, tmp_path):
+    """Resolution, refresh and workload all reach the binary, because a run
+    labelled 2560x1600 at 165 Hz that quietly launched something else is worse
+    than no run."""
+    commands = []
+
+    class Proc:
+        pid = 4242
+
+        def __init__(self, *args, **kwargs):
+            commands.append(list(args[0]))
+            self.stdin = None
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(section7.subprocess, "Popen", Proc)
+    monkeypatch.setattr(section7, "SOURCE", FakeSource())
+    logs = section7.RunLogs(tmp_path)
+    args = SimpleNamespace(width=2560, height=1600, motion_fps=165.0,
+                           workload="scroll")
+    guard = SimpleNamespace(check=lambda force=False: None)
+    source = section7.VisualSource(logs, args, guard)
+    source.ready = True          # readiness itself is covered by MotionSource
+    source.start()
+    command = commands[0]
+    assert command[1:5] == ["2560", "1600", "165.0", "scroll"]
+    assert command[5].endswith("presents.jsonl")
+
+
+def test_a_silent_source_does_not_hang_the_run(monkeypatch, tmp_path):
+    class Proc:
+        pid = 4243
+
+        def __init__(self, *args, **kwargs):
+            self.stdin = None
+
+        def poll(self):
+            return None
+
+    # Unbounded: construction and every `check()` read the clock too, so a
+    # fixed list runs out before the deadline is reached.
+    ticks = {"n": 0}
+
+    def monotonic():
+        ticks["n"] += 1
+        return 0.0 if ticks["n"] <= 2 else 1000.0
+
+    monkeypatch.setattr(section7.subprocess, "Popen", Proc)
+    monkeypatch.setattr(section7, "SOURCE", FakeSource())
+    monkeypatch.setattr(section7.time, "monotonic", monotonic)
+    monkeypatch.setattr(section7.time, "sleep", lambda _s: None)
+    logs = section7.RunLogs(tmp_path)
+    args = SimpleNamespace(width=900, height=700, motion_fps=60.0, workload="static")
+    source = section7.VisualSource(logs, args,
+                                   SimpleNamespace(check=lambda force=False: None))
+    with pytest.raises(section7.MotionError, match="readiness timeout"):
+        source.start()
+
+
+def test_the_source_defers_to_the_health_guard(monkeypatch, tmp_path):
+    """`VisualSource.check` consults the guard before anything else, so a WHEA
+    record that appears mid-run stops the source rather than being measured
+    through."""
+    logs = section7.RunLogs(tmp_path)
+    args = SimpleNamespace(width=900, height=700, motion_fps=60.0, workload="static")
+    calls = []
+
+    def refuse(force=False):
+        calls.append("guard")
+        raise section7.MotionError("WHEA log changed")
+
+    source = section7.VisualSource(logs, args, SimpleNamespace(check=refuse))
+    with pytest.raises(section7.MotionError, match="WHEA"):
+        source.check()
+    assert calls == ["guard"]

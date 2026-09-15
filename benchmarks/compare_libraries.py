@@ -392,7 +392,14 @@ def run_worker(library: str, scenario: str, colour: str,
                 misses += 1
             else:
                 deltas.append((now - previous) * 1000.0)
-            previous = now
+                # Only on a frame. This used to advance on every call, so a
+                # delta was the duration of the one call that returned a frame
+                # rather than the time since the previous frame: a polling
+                # library, whose misses are cheap, reported ms_p50 1.59 ms at
+                # ~100 fps while the blocking default reported 9.96 ms at the
+                # same rate. p50, p99 and jitter describe frame intervals, as
+                # the jitter comment below says they do.
+                previous = now
         elapsed = time.perf_counter() - start
 
     try:
@@ -418,6 +425,9 @@ def run_worker(library: str, scenario: str, colour: str,
         "frames": len(deltas),
         "misses": misses,
         "fps_mean": round(len(deltas) / elapsed, 1),
+        # Records made before the fix above carry no such field, and their
+        # ms_* values are per-call durations; do not compare the two.
+        "ms_basis": "frame_interval",
         "ms_mean": round(statistics.fmean(deltas), 3),
         "ms_p50": pct(0.50),
         "ms_p95": pct(0.95),

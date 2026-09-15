@@ -1,0 +1,113 @@
+{
+  "schema_version": 3,
+  "target": {
+    "shape": [
+      1,
+      3,
+      640,
+      640
+    ],
+    "dtype": "float16",
+    "resize": "bilinear-half-pixel"
+  },
+  "machine": "Machine B: Intel UHD capture -> RTX 4060 Laptop CUDA, 2560x1600, driver 616.92",
+  "method": "benchmarks/ai_ingestion.py --call-duration --with-motion --seconds 8; medians across 3 independent passes; CUDA synchronised before every sample, so these are completion times. Not P-core-pinned, matching how ai-ingestion-machineB.json was recorded -- see ROADMAP section 2. Every path verified separately against an independent float64 NumPy reference from the same frame.",
+  "companion": "benchmarks/ai-ingestion-machineB.json is the FP32 recording. Rows are not comparable across dtypes: the payload that crosses the bus is a different size.",
+  "results": [
+    {
+      "path": "mss",
+      "runs_pooled": 3,
+      "fps_median": 32.4,
+      "ms_p50_median": 30.4,
+      "ms_p95_median": 35.9,
+      "ms_p99_median": 37.85,
+      "ms_jitter_stdev_median": 1.73,
+      "cpu_percent_median": 53.9,
+      "cpu_ms_per_frame": 16.78,
+      "vram_used_mb_median": 1157.1,
+      "h2d_bytes_per_frame": 1228800
+    },
+    {
+      "path": "dxcam",
+      "runs_pooled": 3,
+      "fps_median": 103.7,
+      "ms_p50_median": 9.46,
+      "ms_p95_median": 11.96,
+      "ms_p99_median": 13.58,
+      "ms_jitter_stdev_median": 1.37,
+      "cpu_percent_median": 92.0,
+      "cpu_ms_per_frame": 8.65,
+      "vram_used_mb_median": 1157.1,
+      "h2d_bytes_per_frame": 1228800
+    },
+    {
+      "path": "rapidshot-cpu",
+      "runs_pooled": 3,
+      "fps_median": 139.2,
+      "ms_p50_median": 6.61,
+      "ms_p95_median": 10.48,
+      "ms_p99_median": 11.9,
+      "ms_jitter_stdev_median": 1.57,
+      "cpu_percent_median": 100.2,
+      "cpu_ms_per_frame": 7.2,
+      "vram_used_mb_median": 1164.1,
+      "h2d_bytes_per_frame": 1228800
+    },
+    {
+      "path": "rapidshot-cupy",
+      "runs_pooled": 3,
+      "fps_median": 130.5,
+      "ms_p50_median": 7.32,
+      "ms_p95_median": 10.82,
+      "ms_p99_median": 12.4,
+      "ms_jitter_stdev_median": 1.6,
+      "cpu_percent_median": 59.8,
+      "cpu_ms_per_frame": 4.68,
+      "vram_used_mb_median": 1331.8,
+      "h2d_bytes_per_frame": 0
+    },
+    {
+      "path": "rapidshot-xadapter",
+      "runs_pooled": 3,
+      "fps_median": 102.3,
+      "ms_p50_median": 9.72,
+      "ms_p95_median": 13.18,
+      "ms_p99_median": 14.14,
+      "ms_jitter_stdev_median": 2.08,
+      "cpu_percent_median": 47.0,
+      "cpu_ms_per_frame": 4.58,
+      "vram_used_mb_median": 1273.1,
+      "h2d_bytes_per_frame": 0
+    },
+    {
+      "path": "rapidshot-xadapter-async",
+      "runs_pooled": 3,
+      "fps_median": 98.1,
+      "ms_p50_median": 10.32,
+      "ms_p95_median": 13.45,
+      "ms_p99_median": 14.38,
+      "ms_jitter_stdev_median": 2.12,
+      "cpu_percent_median": 43.9,
+      "cpu_ms_per_frame": 4.35,
+      "vram_used_mb_median": 1273.1,
+      "h2d_bytes_per_frame": 0
+    },
+    {
+      "path": "rapidshot-converter-xadapter",
+      "runs_pooled": 3,
+      "fps_median": 165.0,
+      "ms_p50_median": 6.06,
+      "ms_p95_median": 7.21,
+      "ms_p99_median": 7.63,
+      "ms_jitter_stdev_median": 0.66,
+      "cpu_percent_median": 15.2,
+      "cpu_ms_per_frame": 0.92,
+      "vram_used_mb_median": 1150.4,
+      "h2d_bytes_per_frame": 0
+    },
+    {
+      "path": "rapidshot-converter",
+      "skipped": "capture adapter has no CUDA device: no CUDA device is on the adapter holding this tensor (LUID 1730010000000000); 1 CUDA device(s) present, none matching. This is the ordinary hybrid-laptop case: capture is on the integrated GPU. Transfer the frame to the CUDA adapter first."
+    }
+  ]
+}

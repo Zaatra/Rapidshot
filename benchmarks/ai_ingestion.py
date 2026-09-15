@@ -1,4 +1,4 @@
-"""Measure screen pixels -> (1, 3, 640, 640) FP32 RGB on CUDA.
+"""Measure screen pixels -> (1, 3, 640, 640) FP16 (or FP32) RGB on CUDA.
 
     python benchmarks/ai_ingestion.py --seconds 8 --with-motion --out results.json
     python benchmarks/ai_ingestion.py --verify --with-motion
@@ -34,10 +34,31 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 OUT = 640
 TARGET_SHAPE = (1, 3, OUT, OUT)
-TARGET_BYTES = 3 * OUT * OUT * 4
 PIXEL_TOLERANCE = 2.0 / 255.0
+
+#: Element type every path must produce. ROADMAP § 7.0 specifies **FP16** — it
+#: is half the bytes and what production inference consumes — and this script
+#: measured FP32 until 2026-09-14, which is the representation § 6.1 found on
+#: the *losing* side of the convert-first question at 1080p. FP32 stays
+#: selectable so the 2026-09-10 recording remains reproducible. The dtype is
+#: recorded in the results: **rows taken at different dtypes are not
+#: comparable**, because the payload that crosses the bus is a different size.
+DTYPES = ("float16", "float32")
+TARGET_DTYPE = "float16"
+
 PATHS = ("mss", "dxcam", "rapidshot-cpu", "rapidshot-cupy", "rapidshot-xadapter",
-         "rapidshot-xadapter-async")
+         "rapidshot-xadapter-async", "rapidshot-converter-xadapter",
+         "rapidshot-converter")
+
+
+class PathUnavailable(RuntimeError):
+    """This path cannot run on this machine, and that is not a failure.
+
+    Kept distinct from an error because the two deserve different reactions. A
+    CUDA export on an Optimus laptop is refused *by design* — capture is on the
+    iGPU and CUDA is on the discrete GPU — whereas a path that breaks is a bug.
+    Recorded as a skip so it neither fails the run nor silently disappears.
+    """
 
 
 @dataclass
@@ -79,7 +100,10 @@ def _gpu_to_tensor(bgra, cp):
     bottom = bottom_left + (bottom_right - bottom_left) * wx
     small = cp.rint(top + (bottom - top) * wy).clip(0, 255).astype(cp.uint8)
     chw = cp.ascontiguousarray(small[:, :, 2::-1].transpose(2, 0, 1))
-    return (chw.astype(cp.float32) / cp.float32(255)).reshape(TARGET_SHAPE)
+    # Normalise in FP32 and narrow once: FP16's precision then applies to
+    # the result rather than to the arithmetic that produced it.
+    scaled = chw.astype(cp.float32) / cp.float32(255)
+    return scaled.astype(TARGET_DTYPE).reshape(TARGET_SHAPE)
 
 
 def _cpu_to_tensor(bgra, cp, np):
@@ -88,7 +112,8 @@ def _cpu_to_tensor(bgra, cp, np):
     _check_bgra(bgra)
     small = cv2.resize(bgra, (OUT, OUT), interpolation=cv2.INTER_LINEAR)
     chw = np.ascontiguousarray(small[:, :, 2::-1].transpose(2, 0, 1))
-    return (cp.asarray(chw).astype(cp.float32) / cp.float32(255)).reshape(TARGET_SHAPE)
+    scaled = cp.asarray(chw).astype(cp.float32) / cp.float32(255)
+    return scaled.astype(TARGET_DTYPE).reshape(TARGET_SHAPE)
 
 
 def reference_tensor(bgra, np):
@@ -114,11 +139,12 @@ def reference_tensor(bgra, np):
 def validate_tensor(array, source, np):
     expected = reference_tensor(source, np)
     shape_ok = tuple(array.shape) == TARGET_SHAPE
-    dtype_ok = array.dtype == np.dtype("float32")
+    dtype_ok = array.dtype == np.dtype(TARGET_DTYPE)
     finite = bool(np.isfinite(array).all())
     range_ok = bool(array.size and finite and array.min() >= -1e-6
                     and array.max() <= 1 + 1e-6)
     out = {"shape": list(array.shape), "dtype": str(array.dtype),
+           "target_dtype": TARGET_DTYPE,
            "shape_ok": shape_ok, "dtype_ok": dtype_ok, "range_ok": range_ok,
            "reference_shape": list(source.shape), "pixel_tolerance": PIXEL_TOLERANCE}
     if array.size and finite:
@@ -130,7 +156,8 @@ def validate_tensor(array, source, np):
                              and out["max_abs_error"] <= PIXEL_TOLERANCE)
     out["verified"] = all((shape_ok, dtype_ok, range_ok, out["content_ok"]))
     if not out["verified"]:
-        out["error"] = "tensor failed shape, FP32, range, or same-frame content validation"
+        out["error"] = (f"tensor failed shape, {TARGET_DTYPE}, range, or "
+                        "same-frame content validation")
     return out
 
 
@@ -370,9 +397,161 @@ def _adapter_rapidshot_xadapter_async(cp, np, verify=False):
                                "note": "transfer_async + CPU-side fence wait"}
 
 
+def _validate_tensor_transfer(transfer, np):
+    """The payload must be the tensor's own size, on a real second GPU."""
+    expected = 3 * OUT * OUT * np.dtype(TARGET_DTYPE).itemsize
+    # Checked against `expected`, not against what arrived: CudaTensor maps
+    # 4-byte words and the result is viewed back to its own dtype, so a target
+    # whose size is not a whole number of words cannot be read at all. Testing
+    # the arrival instead made this unreachable -- the size check below would
+    # already have rejected anything that failed it.
+    if expected % 4:
+        raise ValueError(
+            f"{TARGET_SHAPE} {TARGET_DTYPE} is {expected} bytes, which is not a "
+            "whole number of 4-byte words and cannot be viewed after transfer")
+    if transfer.total_bytes != expected:
+        raise ValueError(
+            f"TensorTransfer carries {transfer.total_bytes} bytes; "
+            f"{TARGET_SHAPE} {TARGET_DTYPE} is {expected}")
+    if transfer.destination_is_software:
+        raise PathUnavailable(
+            "the only second adapter is WARP, so 'no host-to-device transfer' "
+            "would be measuring a system-memory copy rather than a GPU bus")
+
+
+def _adapter_rapidshot_converter_xadapter(cp, np, verify=False):
+    """2.6 ordering B: convert on the capture adapter, move the small result.
+
+    `rapidshot-xadapter` moves the whole frame - 16.38 MB at 2560x1600 - and
+    resizes it on the destination with CuPy. This moves the *finished* tensor,
+    2.46 MB at FP16, with the resize done by a shader on the capture adapter.
+    Both rows end with a CUDA tensor imported from a shared D3D12 heap, so what
+    differs between them is the ordering and the kernel, not the interop.
+    """
+    sys.path.insert(0, str(REPO / "examples"))
+    import rapidshot
+    from rapidshot import native
+    from gpu_tensor_to_cupy import CudaTensor
+
+    if rapidshot.GpuConverter is None:
+        raise PathUnavailable("the native extension is not available")
+
+    cam = rapidshot.create()
+    state = {"converter": None, "transfer": None, "view": None, "reference": None}
+
+    class TensorSource:
+        cuda_handle_type = 4  # CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_HEAP
+        cuda_dedicated = False
+
+        def __init__(self, transfer):
+            self._transfer = transfer  # Own the heap for the import's lifetime.
+            self.shared_output_handle = transfer.shared_destination_handle
+            self.output_byte_size = transfer.total_bytes
+
+    def produce():
+        frame = cam.grab_frame()
+        if frame is None:
+            return None
+        source = None
+        with frame:
+            if state["converter"] is None:
+                converter = rapidshot.GpuConverter(
+                    frame, (OUT, OUT), dtype=TARGET_DTYPE, layout="nchw",
+                    normalize=True)
+                transfer = rapidshot.TensorTransfer(converter)
+                _validate_tensor_transfer(transfer, np)
+                state.update(converter=converter, transfer=transfer)
+                # CudaTensor maps float32 words; the result is viewed back to
+                # its own dtype below, as the whole-frame path views uint8.
+                state["view"] = CudaTensor(
+                    TensorSource(transfer), (transfer.total_bytes // 4,), device=0)
+            state["converter"].process(frame)
+            state["transfer"].transfer()
+            if verify:
+                # The converted tensor cannot yield the source pixels the
+                # reference needs, so the same frame is read a second way.
+                # Untimed: verification runs in its own pass.
+                if state["reference"] is None:
+                    reference = native.cross_adapter_transfer(frame)
+                    _validate_transfer(reference)
+                    state["reference"] = reference
+                raw = state["reference"].transfer_with_reference(frame)
+                source = _pitched_bgra(
+                    np.frombuffer(raw, dtype=np.uint8), state["reference"]).copy()
+        tensor = state["view"].array.view(cp.dtype(TARGET_DTYPE)).reshape(TARGET_SHAPE)
+        return Sample(tensor, source)
+
+    def teardown():
+        try:
+            if state["view"] is not None:
+                state["view"].close()
+        finally:
+            state.update(view=None, transfer=None, converter=None, reference=None)
+            cam.release()
+
+    return produce, teardown, {
+        "h2d_bytes_per_frame": 0,
+        "note": "GpuConverter then TensorTransfer; the converted payload crosses, not the frame"}
+
+
+def _adapter_rapidshot_converter(cp, np, verify=False):
+    """2.6's one-call export: convert, and hand CUDA the tensor where it is.
+
+    No transfer at all, which is only possible when capture and CUDA are the
+    same adapter. On a hybrid laptop they are not - capture is on the iGPU -
+    and `to_cupy()` refuses with `CrossAdapterRequired`. That is the design,
+    not a fault, so it is reported as a skip.
+    """
+    sys.path.insert(0, str(REPO))
+    import rapidshot
+    from rapidshot import native
+
+    if rapidshot.GpuConverter is None:
+        raise PathUnavailable("the native extension is not available")
+
+    cam = rapidshot.create()
+    state = {"converter": None, "reference": None}
+
+    def produce():
+        frame = cam.grab_frame()
+        if frame is None:
+            return None
+        source = None
+        with frame:
+            if state["converter"] is None:
+                state["converter"] = rapidshot.GpuConverter(
+                    frame, (OUT, OUT), dtype=TARGET_DTYPE, layout="nchw",
+                    normalize=True)
+            tensor = state["converter"].process(frame)
+            try:
+                array = tensor.to_cupy()
+            except rapidshot.CrossAdapterRequired as exc:
+                raise PathUnavailable(
+                    f"capture adapter has no CUDA device: {exc}") from None
+            if verify:
+                if state["reference"] is None:
+                    reference = native.cross_adapter_transfer(frame)
+                    _validate_transfer(reference)
+                    state["reference"] = reference
+                raw = state["reference"].transfer_with_reference(frame)
+                source = _pitched_bgra(
+                    np.frombuffer(raw, dtype=np.uint8), state["reference"]).copy()
+        return Sample(array.reshape(TARGET_SHAPE), source)
+
+    def teardown():
+        state.update(converter=None, reference=None)
+        cam.release()
+
+    return produce, teardown, {
+        "h2d_bytes_per_frame": 0,
+        "note": "GpuConverter only; requires capture and CUDA on one adapter"}
+
+
 ADAPTERS = dict(zip(PATHS, (_adapter_mss, _adapter_dxcam, _adapter_rapidshot_cpu,
                           _adapter_rapidshot_cupy, _adapter_rapidshot_xadapter,
-                          _adapter_rapidshot_xadapter_async)))
+                          _adapter_rapidshot_xadapter_async,
+                          _adapter_rapidshot_converter_xadapter,
+                          _adapter_rapidshot_converter)))
 
 
 def _cleanup(result, teardown, sync):
@@ -466,6 +645,8 @@ def run_path(path: str, seconds: float, warmup: int) -> dict:
             result["vram_used_mb"] = round((total - free) / 1e6, 1)
         except Exception as exc:
             result["memory_stats_error"] = str(exc)
+    except PathUnavailable as exc:
+        result["skipped"] = str(exc)
     except Exception as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"
     finally:
@@ -497,6 +678,8 @@ def verify_path(path: str) -> dict:
         if sample.reference is None:
             raise RuntimeError("adapter did not provide a same-frame reference")
         result.update(validate_tensor(cp.asnumpy(sample.tensor), sample.reference, np))
+    except PathUnavailable as exc:
+        result["skipped"] = str(exc)
     except Exception as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"
     finally:
@@ -650,13 +833,19 @@ def _worker_result(path, verify, returncode, stdout, stderr):
 
 
 def spawn(path: str, seconds: float, warmup: int, verify: bool, *, logs=None,
-          motion=None, index=0, command=None, result_parser=None) -> dict:
+          motion=None, index=0, command=None, result_parser=None,
+          dtype=None) -> dict:
     logs = logs if logs is not None else RunLogs()
     stem = f"{index:02d}-{path}"
     stdout_path = logs.directory / (stem + ".stdout.log")
     stderr_path = logs.directory / (stem + ".stderr.log")
-    cmd = [sys.executable, "-u", str(Path(__file__).resolve()), "--worker", path,
-           "--seconds", str(seconds), "--warmup", str(warmup)]
+    cmd = [sys.executable, "-u", str(Path(__file__).resolve()), "--call-duration",
+           "--worker", path, "--seconds", str(seconds), "--warmup", str(warmup)]
+    # A worker is a fresh process, so the dtype has to travel with it or the
+    # child silently measures the module default while the parent reports the
+    # requested one.
+    if dtype:
+        cmd += ["--dtype", dtype]
     if verify:
         cmd.append("--verify")
     if command is not None:
@@ -713,9 +902,12 @@ def save_results(path, payload):
 
 
 def main(argv=None) -> int:
+    global TARGET_DTYPE
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--worker", choices=PATHS)
+    parser.add_argument("--dtype", choices=DTYPES, default=TARGET_DTYPE,
+                        help="tensor element type (default: %(default)s)")
     parser.add_argument("--paths", nargs="+", choices=PATHS, default=list(PATHS))
     parser.add_argument("--seconds", type=float, default=8.0)
     parser.add_argument("--warmup", type=int, default=30)
@@ -726,6 +918,7 @@ def main(argv=None) -> int:
     parser.add_argument("--log-dir", type=Path, help="parent directory for unique run logs")
     parser.add_argument("--out", type=Path)
     args = parser.parse_args(argv)
+    TARGET_DTYPE = args.dtype
     try:
         _validate_options(args.seconds, args.warmup)
         if not math.isfinite(args.motion_fps) or args.motion_fps < 0:
@@ -740,10 +933,13 @@ def main(argv=None) -> int:
 
     logs = RunLogs(args.log_dir, args.out)
     print(f"Diagnostics: {logs.directory}", flush=True)
-    print(f"AI ingestion: full-image bilinear -> {TARGET_SHAPE} FP32 RGB", flush=True)
+    print(f"AI ingestion: full-image bilinear -> {TARGET_SHAPE} {TARGET_DTYPE} RGB",
+          flush=True)
     rows = []
-    payload = {"schema_version": 2, "target": {"shape": list(TARGET_SHAPE), "dtype": "float32",
-               "resize": "bilinear-half-pixel"}, "results": rows, "logs": str(logs.directory)}
+    payload = {"schema_version": 3,
+               "target": {"shape": list(TARGET_SHAPE), "dtype": TARGET_DTYPE,
+                          "resize": "bilinear-half-pixel"},
+               "results": rows, "logs": str(logs.directory)}
     motion = MotionSource(logs, args.motion_fps) if args.with_motion else None
     interrupted = False
     try:
@@ -752,12 +948,14 @@ def main(argv=None) -> int:
         for index, path in enumerate(args.paths):
             print(f"  [{path}] ...", flush=True)
             row = spawn(path, args.seconds, args.warmup, args.verify,
-                        logs=logs, motion=motion, index=index)
+                        logs=logs, motion=motion, index=index, dtype=args.dtype)
             rows.append(row)
             if motion:
                 payload["motion"] = motion.summary()
             save_results(args.out, payload)
-            if "error" in row:
+            if "skipped" in row:
+                print(f"    SKIPPED: {row['skipped']}", flush=True)
+            elif "error" in row:
                 print(f"    ERROR: {row['error']}", flush=True)
             elif args.verify:
                 print(f"    verified; max pixel error {row['max_abs_error']:.6f}", flush=True)
@@ -794,5 +992,13 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
+    # This file is two benchmarks. `section7.py`'s pixel-age harness is the
+    # default, because pixel age is what ROADMAP § 7.0 actually asks for. The
+    # call-duration harness in `main()` above stays reachable behind a flag --
+    # without it `main()`, `run_path()` and `ADAPTERS` are dead from the
+    # command line, including for the workers `spawn()` starts.
+    if "--call-duration" in sys.argv:
+        sys.argv.remove("--call-duration")
+        raise SystemExit(main())
     from section7 import main as section7_main
     raise SystemExit(section7_main("ingestion"))
