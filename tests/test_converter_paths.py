@@ -313,8 +313,22 @@ class FakeArray:
         count = len(range(*key.indices(self.shape[0])))
         return FakeArray((count,) + self.shape[1:], self.dtype, self.memptr)
 
-    def toDlpack(self):
+    def __dlpack__(self, *, stream=None):
+        """The protocol method, which is what `to_dlpack()` calls now.
+
+        CuPy's `toDlpack()` is deprecated and warned on every call, so the
+        library moved to `__dlpack__()`. `stream` is accepted and ignored: the
+        DLPack spec passes it, and a fake that rejected it would fail for a
+        reason the real array would not.
+        """
         return ("dlpack", self.shape)
+
+    def toDlpack(self):
+        """Kept so a caller still on the deprecated name is not silently broken
+        by this double, and so a regression back to it fails loudly instead."""
+        raise AssertionError(
+            "to_dlpack() must use __dlpack__(); toDlpack() is deprecated in CuPy"
+        )
 
 
 def fake_cupy(device_count=1):
@@ -336,6 +350,7 @@ def fake_cupy(device_count=1):
         MemoryPointer=lambda memory, offset: ("pointer", memory, offset),
         runtime=types.SimpleNamespace(
             getDeviceCount=lambda: device_count,
+            free=lambda ptr: events.append(("context", ptr)),
             deviceSynchronize=lambda: events.append("synchronize")),
     )
     return types.SimpleNamespace(cuda=cuda, ndarray=FakeArray, dtype=np.dtype, events=events)
@@ -351,7 +366,8 @@ def cuda(monkeypatch, ext):
         cp = fake_cupy(device_count if device_count is not None else len(luids))
         monkeypatch.setitem(__import__("sys").modules, "cupy", cp)
         monkeypatch.setattr(converter_module.ctypes, "WinDLL",
-                            lambda name: nvcuda if name == "nvcuda.dll" else ctypes.WinDLL(name))
+                            lambda name: nvcuda if name == "nvcuda.dll" else ctypes.WinDLL(name),
+                            raising=False)
         return nvcuda, cp
     return install
 
@@ -426,6 +442,29 @@ def test_a_driver_that_will_not_initialise_is_not_cross_adapter(cuda):
     assert nvcuda.cuDeviceGet.calls == []
 
 
+def test_the_context_exists_before_the_import(cuda):
+    """A fresh process calling to_cupy() first failed with CUDA error 201.
+
+    cuImportExternalMemory is a driver-API call and needs a current context.
+    Entering ``cp.cuda.Device`` does not create one, so a script whose first
+    CUDA work was to_cupy() had none -- the live tests passed only because
+    earlier tests in the same process had already made one.
+    """
+    nvcuda, cp = cuda()
+    real_import = nvcuda.cuImportExternalMemory.body
+
+    def import_memory(ext_ref, desc_ref):
+        cp.events.append("import")
+        return real_import(ext_ref, desc_ref)
+
+    nvcuda.cuImportExternalMemory.body = import_memory
+    GpuConverter(frame(), (8, 4)).process(frame()).to_cupy()
+
+    assert cp.events.index(("context", 0)) < cp.events.index("import")
+    assert cp.events.index(("enter", 0)) < cp.events.index(("context", 0)), (
+        "initialised on the device being imported into, not whichever is current")
+
+
 def test_the_cuda_calls_declare_their_argument_types(cuda):
     nvcuda, _ = cuda()
     GpuConverter(frame(), (8, 4)).process(frame()).to_cupy()
@@ -473,7 +512,17 @@ def test_import_failures_name_the_cuda_call(cuda, codes, what):
 
 def test_dlpack_torch_sync_and_close(cuda, monkeypatch):
     nvcuda, cp = cuda()
-    torch = types.SimpleNamespace(from_dlpack=lambda capsule: ("torch", capsule))
+
+    def from_dlpack(obj):
+        # Real `torch.from_dlpack` takes either a capsule or an object
+        # implementing `__dlpack__`, and `to_torch()` now hands it the array so
+        # Torch calls the protocol itself — which avoids CuPy's deprecated
+        # `toDlpack()` and a single-use capsule. The fake resolves it the same
+        # way, so this still asserts a working `__dlpack__` reached Torch rather
+        # than merely that *something* did.
+        return ("torch", obj.__dlpack__() if hasattr(obj, "__dlpack__") else obj)
+
+    torch = types.SimpleNamespace(from_dlpack=from_dlpack)
     monkeypatch.setitem(__import__("sys").modules, "torch", torch)
     conv = GpuConverter(frame(), (8, 4))
     tensor = conv.process(frame())

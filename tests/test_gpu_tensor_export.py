@@ -156,6 +156,46 @@ def test_to_cupy_is_byte_equal_to_the_readback(cuda_tensor):
     assert np.array_equal(cp.asnumpy(array), cuda_tensor.numpy())
 
 
+_FIRST_CUDA_WORK = r"""
+import json, sys
+import numpy as np
+import rapidshot
+
+camera = rapidshot.create(output_color="BGRA")
+frame = None
+for _ in range(600):
+    frame = camera.grab_frame()
+    if frame is not None:
+        break
+if frame is None:
+    print(json.dumps({"skip": "no frame captured"}))
+    sys.exit(0)
+tensor = rapidshot.GpuConverter(frame, (64, 64), dtype="float16").process(frame)
+array = tensor.to_cupy()          # the first CUDA work in this process
+print(json.dumps({"equal": bool(np.array_equal(array.get(), tensor.numpy()))}))
+frame.release()
+camera.release()
+"""
+
+
+def test_to_cupy_works_as_the_first_cuda_call_in_a_process(cuda_tensor):
+    """A fresh script doing capture, convert, to_cupy() failed with CUDA error
+    201. The import needs a current context and nothing had made one; every
+    other test here passes regardless, because this process has long since done
+    CUDA work. So this one runs in a process that has not."""
+    import json
+    import subprocess
+    import sys
+
+    done = subprocess.run([sys.executable, "-c", _FIRST_CUDA_WORK],
+                          capture_output=True, text=True, timeout=120)
+    assert done.returncode == 0, done.stderr[-2000:]
+    result = json.loads(done.stdout.strip().splitlines()[-1])
+    if "skip" in result:
+        pytest.skip(result["skip"])
+    assert result["equal"] is True
+
+
 def test_to_torch_shares_the_same_memory(cuda_tensor):
     """Zero-copy: the point of the export is that no pixels move."""
     torch = pytest.importorskip("torch", reason="PyTorch not installed")
@@ -171,3 +211,34 @@ def test_to_dlpack_round_trips_through_cupy(cuda_tensor):
     """DLPack is the vendor-neutral capsule, so it must carry the same bytes."""
     back = cp.from_dlpack(cuda_tensor.to_dlpack())
     assert np.array_equal(cp.asnumpy(back), cuda_tensor.numpy())
+
+
+# -- when there is no CUDA driver at all ---------------------------------
+
+
+def test_a_missing_cuda_driver_is_named_rather_than_its_dll(monkeypatch):
+    """`ctypes.WinDLL("nvcuda.dll")` on a machine with no NVIDIA driver raises
+    `OSError: [WinError 126] The specified module could not be found`, which
+    names a file and not the situation.
+
+    This module already separates the two answers a caller needs to tell
+    apart -- `CrossAdapterRequired`, routine on a hybrid laptop, and an import
+    failure, which is a bug. A driver that is simply not installed is a third,
+    and it was getting the least useful message of the three.
+    """
+    from rapidshot import converter as backend
+
+    def refuse(name):
+        raise OSError(126, "The specified module could not be found")
+
+    monkeypatch.setattr(backend.ctypes, "WinDLL", refuse, raising=False)
+    with pytest.raises(RuntimeError, match="NVIDIA CUDA driver"):
+        backend._load_cuda_driver()
+
+
+def test_the_driver_loader_hands_back_the_library_when_present(monkeypatch):
+    from rapidshot import converter as backend
+
+    sentinel = object()
+    monkeypatch.setattr(backend.ctypes, "WinDLL", lambda name: sentinel, raising=False)
+    assert backend._load_cuda_driver() is sentinel

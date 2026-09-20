@@ -61,6 +61,27 @@ class CrossAdapterRequired(RuntimeError):
     """
 
 
+def _load_cuda_driver():
+    """``nvcuda.dll``, or an error naming the situation rather than the file.
+
+    This module already separates the two answers a caller has to tell apart:
+    :class:`CrossAdapterRequired`, which is routine on a hybrid laptop, and an
+    import failure, which is a bug. A machine with no NVIDIA driver at all is a
+    third case, and it was getting the least useful message of the three --
+    ``OSError: [WinError 126] The specified module could not be found``, which
+    names a DLL and not the reason it is missing.
+    """
+    try:
+        return ctypes.WinDLL("nvcuda.dll")
+    except OSError as exc:
+        raise RuntimeError(
+            "the NVIDIA CUDA driver (nvcuda.dll) is not present on this "
+            "machine, so a GPU tensor cannot be exported to CUDA. This is "
+            "not the hybrid-laptop case CrossAdapterRequired describes: there "
+            "is no CUDA driver to reach at all."
+        ) from exc
+
+
 class _Win32Handle(ctypes.Structure):
     _fields_ = [("handle", ctypes.c_void_p), ("name", ctypes.c_void_p)]
 
@@ -181,8 +202,14 @@ class GpuTensor:
         actually reach: DirectML consumers bind
         :attr:`GpuConverter.output_resource_address` instead, and that is the
         vendor-neutral route ROADMAP § 8 documents.
+
+        Uses ``__dlpack__()`` rather than CuPy's ``toDlpack()``, which is
+        deprecated and emitted a ``VisibleDeprecationWarning`` on every call.
+        The return type is unchanged -- both hand back a PyCapsule, and
+        ``cupy.from_dlpack`` and ``torch.from_dlpack`` accept it either way
+        (checked against CuPy 14.1.1 and Torch 2.11).
         """
-        return self.to_cupy().toDlpack()
+        return self.to_cupy().__dlpack__()
 
     def to_torch(self, device: Optional[int] = None):
         """Zero-copy ``torch.Tensor`` sharing this tensor's memory.
@@ -198,7 +225,12 @@ class GpuTensor:
         # from_dlpack is the documented zero-copy route; torch.as_tensor over
         # __cuda_array_interface__ would also work but copies on some versions,
         # which would silently undo the point of this method.
-        return torch.from_dlpack(array.toDlpack())
+        #
+        # The array is passed directly rather than as a capsule: Torch then
+        # calls `__dlpack__` itself, which avoids CuPy's deprecated
+        # `toDlpack()` and its per-call warning. A capsule is also single-use,
+        # so handing over the object is the more forgiving of the two.
+        return torch.from_dlpack(array)
 
     def sync(self) -> None:
         """Block until CUDA work against this memory has finished.
@@ -229,7 +261,7 @@ class _CudaView:
         import cupy as cp
 
         self._cp = cp
-        self._cuda = ctypes.WinDLL("nvcuda.dll")
+        self._cuda = _load_cuda_driver()
         # Declared so ctypes converts each argument to the width the driver
         # reads, instead of guessing from the Python value.
         self._cuda.cuMemFree.argtypes = [ctypes.c_ulonglong]
@@ -264,6 +296,14 @@ class _CudaView:
         desc.flags = CUDA_EXTERNAL_MEMORY_DEDICATED
 
         with cp.cuda.Device(self._device):
+            # The import below is a driver-API call, and it needs a current
+            # context. Entering the Device block does not create one: when this
+            # is the first CUDA work in the process -- a fresh script doing
+            # capture, convert, to_cupy() -- nothing has made the primary
+            # context current yet, and the import fails with CUDA error 201
+            # (INVALID_CONTEXT). cudaFree(0) is the runtime's documented way to
+            # initialise it, and a no-op once it exists.
+            cp.cuda.runtime.free(0)
             _check(
                 self._cuda.cuImportExternalMemory(ctypes.byref(self._ext), ctypes.byref(desc)),
                 "cuImportExternalMemory",
@@ -353,7 +393,7 @@ def _device_for_adapter(cp, luid: bytes) -> int:
     LUIDs is what distinguishes "pick device 0" from "there is no device here".
     """
     count = cp.cuda.runtime.getDeviceCount()
-    cuda = ctypes.WinDLL("nvcuda.dll")
+    cuda = _load_cuda_driver()
     cuda.cuInit.argtypes = [ctypes.c_uint]
     cuda.cuDeviceGet.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_int]
     cuda.cuDeviceGetLuid.argtypes = [
@@ -419,9 +459,8 @@ class TensorTransfer:
     """
 
     def __init__(self, converter: "GpuConverter") -> None:
-        ext = native.require()
         self._converter = converter
-        self._impl = ext.TensorTransfer(converter._impl)
+        self._impl = native.require_feature("TensorTransfer")(converter._impl)
 
     def transfer(self) -> None:
         """Copy the converter's current output across. Blocks until complete.
@@ -580,7 +619,7 @@ class GpuConverter:
         full_range: bool = False,
         batch: int = 1,
     ) -> None:
-        ext = native.require()
+        gpu_converter = native.require_feature("GpuConverter12")
         width, height = int(size[0]), int(size[1])
         self._crop = None if crop is None else _validate_crop(frame, crop)
 
@@ -630,7 +669,7 @@ class GpuConverter:
             dtype, layout, native_dtype = self._tensor_format(dtype, layout)
             native_layout = layout
 
-        self._impl = ext.GpuConverter12(
+        self._impl = gpu_converter(
             native._texture_address(frame),
             width,
             height,
