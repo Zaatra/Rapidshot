@@ -32,13 +32,15 @@ Four things, each with the measurement behind it:
   `.to_cupy()`, `.to_dlpack()`, zero-copy, replacing roughly sixty lines of
   `ctypes` in `examples/gpu_tensor_to_cupy.py`. Verified byte-equal against a
   readback on hardware where capture and CUDA share an adapter.
+- **Convert-before-transfer on hybrid GPUs** — preprocess on the capture
+  adapter, then move the finished tensor instead of the whole frame: **2.46 MB
+  rather than 16.38 MB** at 2560×1600. Verified on real Optimus hardware
+  (Intel UHD Graphics → RTX 4060) on 2026-09-20, including **CUDA importing
+  the transferred buffer** from the shared D3D12 heap on the discrete GPU.
 
-**Not claimed in this release:** a hybrid-GPU performance figure for
-convert-before-transfer. The path is implemented and API-verified, and the
-byte-equal cross-adapter transfer was confirmed on Intel -> RTX 4060 on
-2026-09-14 — but `TensorTransfer`'s destination-device consumer handle, changed
-after that, has only been exercised against WARP. The hybrid figure moves to a
-later release rather than shipping ahead of its evidence.
+**Correctness is claimed; a hybrid throughput figure is not.** The hybrid
+performance recording is 2.5-era and will be re-recorded, so no latency or
+frames-per-second number for this path appears in this release.
 
 ### Stage 7.2 — GPU transform and framework interop (2.6)
 
@@ -70,13 +72,15 @@ byte-equal to a readback of the same tensor. `to_torch()` and `to_dlpack()` pass
 alongside it, and `to_cupy()` works as a process's first CUDA call, which is the
 bug **Fixed** records.
 
-**One claim is still unverified, and is not made here.** `TensorTransfer`'s
-consumer handle is now minted on the destination device, and that change has had
-`cargo test --lib` and a WARP destination only — CUDA importing an
-NVIDIA-minted handle needs hybrid mode, which a MUX switch away from
-discrete-only would provide. Until that runs, the convert-before-transfer path
-is described below as implemented and API-verified, and **no hybrid performance
-figure is quoted for it**.
+**The last gate closed on 2026-09-20.** `TensorTransfer`'s consumer handle is
+minted on the destination device, and that change had faced only `cargo test
+--lib` and a WARP destination — precisely the configuration that hid the bug it
+fixes, since with WARP the consumer imported the *capture* GPU's own memory and
+the path reported a crossing that never happened. Re-run in hybrid mode on real
+hardware: Intel UHD Graphics capture, RTX 4060 destination, CUDA importing the
+transferred tensor, verified against an independent reference at a maximum
+deviation of 1 RGB8 level — the documented bilinear rounding tolerance. The four
+cross-adapter tests that skip on a single-GPU machine all ran and passed.
 
 #### Added
 

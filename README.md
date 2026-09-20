@@ -45,10 +45,10 @@ Four things, each with the measurement behind it:
   `.to_dlpack()`, zero-copy. This replaces roughly sixty lines of `ctypes` that
   the 2.5 README asked you to copy.
 - **Convert-before-transfer on hybrid GPUs** — preprocess on the capture
-  adapter, then move the small tensor rather than the whole frame. This path is
-  **[experimental in 2.6](#hybrid-gpu-laptops-experimental)**: it is implemented
-  and API-verified, but its current form has not been re-run on real hybrid
-  hardware, so no performance claim is made for it here.
+  adapter, then move the finished tensor rather than the whole frame: **2.46 MB
+  instead of 16.38 MB** at 2560×1600. Verified end to end on real Optimus
+  hardware (Intel UHD → RTX 4060), CUDA importing the transferred buffer — see
+  [Hybrid GPU laptops](#hybrid-gpu-laptops).
 
 Upgrading from 2.5? See [Migrating from 2.5](#migrating-from-25) — the one
 breaking item is a new minimum native-extension version.
@@ -87,6 +87,13 @@ the four ways a hand-written version goes quietly wrong — a held frame stalls
 capture, the reused output buffer races the model, `None` means both "nothing
 changed" and "capture has died", and a rebuilt capture can land on a new
 adapter. It closes all four.
+
+> **On a hybrid laptop, `to_torch()` above raises `CrossAdapterRequired`.** That
+> is not a bug. On an Optimus-style machine the display — and therefore capture
+> — lives on the integrated GPU, while CUDA only sees the discrete one, so there
+> is nothing for CUDA to import until the tensor has crossed. Add one object:
+> [Hybrid GPU laptops](#hybrid-gpu-laptops). `rapidshot.diagnose()` tells you
+> which kind of machine you are on before you write any of this.
 
 For explicit control, drive the converter yourself:
 
@@ -129,7 +136,7 @@ Clone if you need one to outlive the next frame.
 | CuPy | `tensor.to_cupy()` | No | **Yes** |
 | Any DLPack framework | `tensor.to_dlpack()` | No | **Yes** |
 | Encoder input (NV12 / P010) | `GpuConverter(pixel_format=…)` | No | **Yes** |
-| Hybrid GPU *(experimental)* | `GpuConverter` + `TensorTransfer` | No | **Yes** |
+| Hybrid GPU (Optimus) | `GpuConverter` + `TensorTransfer` | No | **Yes** |
 
 ## Installation
 
@@ -194,7 +201,7 @@ capture code.
 
 On a hybrid laptop the tensor crosses adapters *after* preprocessing, so what
 moves is a small tensor rather than a full frame — see
-[Hybrid GPU laptops](#hybrid-gpu-laptops-experimental).
+[Hybrid GPU laptops](#hybrid-gpu-laptops).
 
 ## Capturing to NumPy
 
@@ -301,7 +308,7 @@ Payload sizes at 640², which is what crosses a bus if anything has to:
 
 against 8.29 MB for a 1080p frame or 16.38 MB at 2560×1600.
 
-## Hybrid GPU laptops (experimental)
+## Hybrid GPU laptops
 
 On an Optimus-style laptop the display is driven by the integrated GPU, so
 capture happens there, while CUDA lives on the discrete GPU. Something has to
@@ -323,15 +330,28 @@ converter.process(frame)
 transfer.transfer()
 ```
 
-> **Status in 2.6: experimental, and deliberately unquantified.** The
-> byte-exactness of a cross-adapter transfer was verified Intel → RTX 4060 on
-> 2026-09-14. But `TensorTransfer`'s consumer handle changed after that
-> measurement, and its current form has only been exercised against a WARP
-> destination — which is precisely the destination that hid the bug it fixes:
-> with WARP, CUDA imported the *capture* GPU's own memory and the path reported
-> a crossing that never happened. Until this is re-run on real hybrid hardware,
-> **no throughput or latency figure for it appears in this README.** Four tests
-> covering it skip on any single-GPU machine, by design.
+This is also the answer to `CrossAdapterRequired` from the quick start: once the
+tensor is on the CUDA adapter, the consumer imports it there.
+
+**Verified on real hybrid hardware, 2026-09-20** — Intel UHD Graphics capture,
+RTX 4060 destination, 2560×1600:
+
+- `examples/verify_cross_adapter.py` moved 5 frames Intel → RTX 4060, each
+  16,384,000 bytes, every one byte-exact against a source-side readback.
+- The converted-tensor path was verified end to end with **CUDA importing the
+  transferred buffer** from the shared D3D12 heap on the discrete GPU
+  (`benchmarks/ai_ingestion.py --paths rapidshot-converter-xadapter --verify`),
+  max deviation **1 RGB8 level** — the documented bilinear rounding tolerance.
+
+Why that last point is stated so specifically: `TensorTransfer` used to hand the
+consumer the *source* device's shared handle. Against a WARP destination that
+still "passed" — CUDA imported the capture GPU's own memory and the path
+reported a crossing that never happened. WARP is the configuration that hid the
+bug, so a WARP result is not evidence for this path. The check above is the one
+that counts, and it needs two real GPUs.
+
+**No throughput figure is quoted yet.** Correctness is established; the hybrid
+performance recording is 2.5-era and will be re-recorded.
 
 ## Correctness guarantees
 
@@ -430,7 +450,8 @@ which is a different claim:
 | Intel iGPU, single adapter | Capture, conversion, D3D12 preprocess |
 | NVIDIA dGPU, single adapter | With and without the native extension |
 | NVIDIA dGPU driving the display (MUX) | Capture + CUDA on one adapter; this is where the byte-equal tensor export is verified |
-| Cross-adapter transfer, Intel → RTX 4060 | Byte-exact, 2026-09-14 |
+| Cross-adapter **frame** transfer, Intel → RTX 4060 | Byte-exact, 5 frames at 2560×1600 |
+| Cross-adapter **tensor** transfer + CUDA import | `TensorTransfer` on real Optimus, verified 2026-09-20 |
 | Python 3.9 – 3.14 | CI matrix |
 | `rapidshot-native` 0.2.0 | Minimum for the 2.6 GPU features |
 
@@ -440,7 +461,6 @@ which is a different claim:
 | --- | --- |
 | Any AMD GPU | The BGRA swizzle rule is confirmed on Intel and NVIDIA and follows from the DXGI format rather than driver discretion — but it is the one rule a silent mismatch would corrupt rather than crash |
 | Hybrid with an AMD adapter | Cross-adapter capability flags are unknown; the buffer path was chosen so nothing depends on them |
-| **`TensorTransfer` on real hybrid hardware** | Its current form has only faced a WARP destination — see [Hybrid GPU laptops](#hybrid-gpu-laptops-experimental) |
 | Headless / virtual display (IDD) | Diagnostics exist; capture on one has not been run |
 
 ## Migrating from 2.5

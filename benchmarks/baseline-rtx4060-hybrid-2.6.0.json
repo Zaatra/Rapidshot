@@ -1,0 +1,510 @@
+{
+  "machine": {
+    "timestamp": "2026-09-20T17:52:29.446763+00:00",
+    "python": "3.13.15",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+    "numpy": "2.5.1",
+    "frame": "1920x1080",
+    "cpu_topology": "hybrid",
+    "pinned_to_performance_cores": true,
+    "affinity_mask": "0xffff",
+    "rapidshot": "2.6.0",
+    "gpu": "Intel(R) UHD Graphics",
+    "native_extension": true,
+    "environment": {
+      "schema_version": 1,
+      "captured_at": "2026-09-20T17:52:31.231591+00:00",
+      "cpu": {
+        "topology": "hybrid",
+        "processor": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+        "physical_cores": 24,
+        "logical_processors": 32,
+        "smt_present": true,
+        "packages": 1,
+        "numa_nodes": [
+          0
+        ],
+        "processor_groups": 1,
+        "groups": [
+          {
+            "maximum_processors": 32,
+            "active_processors": 32,
+            "active_mask": 4294967295
+          }
+        ],
+        "efficiency_classes": [
+          {
+            "efficiency_class": 0,
+            "logical_processors": 16,
+            "physical_cores": 16,
+            "mask": 4294901760,
+            "mask_hex": "0xffff0000",
+            "smt": [
+              false
+            ],
+            "nominal_frequencies_mhz": [
+              2419
+            ],
+            "homogeneous": true
+          },
+          {
+            "efficiency_class": 1,
+            "logical_processors": 16,
+            "physical_cores": 8,
+            "mask": 65535,
+            "mask_hex": "0xffff",
+            "smt": [
+              true
+            ],
+            "nominal_frequencies_mhz": [
+              2419
+            ],
+            "homogeneous": true
+          }
+        ],
+        "caches": {
+          "L1_data": {
+            "instances": 24,
+            "sizes_bytes": [
+              32768,
+              49152
+            ],
+            "line_size": 64
+          },
+          "L1_instruction": {
+            "instances": 24,
+            "sizes_bytes": [
+              32768,
+              65536
+            ],
+            "line_size": 64
+          },
+          "L2_unified": {
+            "instances": 12,
+            "sizes_bytes": [
+              2097152,
+              4194304
+            ],
+            "line_size": 64
+          },
+          "L3_unified": {
+            "instances": 1,
+            "sizes_bytes": [
+              37748736
+            ],
+            "line_size": 64
+          }
+        },
+        "affinity": {
+          "process_mask": 65535,
+          "system_mask": 4294967295,
+          "process_mask_hex": "0xffff",
+          "logical_processors_allowed": 16,
+          "restricted_before_policy": true
+        },
+        "nominal_frequency_note": "nominal clocks recorded at boot; not what any core ran at during a measurement",
+        "available": true
+      },
+      "memory": {
+        "total_physical_mb": 34049.4,
+        "available_physical_mb": 20841.3,
+        "memory_load_percent": 38,
+        "total_pagefile_mb": 40491.9,
+        "available": true
+      },
+      "displays": {
+        "count": 1,
+        "outputs": [
+          {
+            "adapter_luid": 78674,
+            "target_id": 8388688,
+            "source_id": 0,
+            "rotation_degrees": 0,
+            "scaling": "identity",
+            "output_technology": "internal",
+            "refresh_rate": {
+              "numerator": 77733000,
+              "denominator": 471104,
+              "hz": 165.00178304578182
+            },
+            "source_mode": {
+              "width": 2560,
+              "height": 1600,
+              "desktop_left": 0,
+              "desktop_top": 0
+            },
+            "signal": {
+              "active_width": 2560,
+              "active_height": 1600,
+              "total_width": 2720,
+              "total_height": 1732,
+              "pixel_rate_hz": 777330000,
+              "vsync_hz": 165.00178304578182
+            },
+            "monitor_name": "",
+            "monitor_device_path": "\\\\?\\DISPLAY#AUOCDAB#4&3632a66b&0&UID8388688#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}",
+            "edid_manufacturer_id": 44806,
+            "edid_product_code": 52651,
+            "gdi_device_name": "\\\\.\\DISPLAY1",
+            "adapter_device_path": "\\\\?\\PCI#VEN_8086&DEV_A788&SUBSYS_17311025&REV_04#3&11583659&0&10#{5b45201d-f2f2-4f3b-85bb-30ff1f953599}",
+            "desktop_rect": [
+              0,
+              0,
+              2560,
+              1600
+            ],
+            "primary": true,
+            "effective_dpi": [
+              144,
+              144
+            ],
+            "scale_percent": 150
+          }
+        ],
+        "dpi": {
+          "thread_awareness": "per-monitor",
+          "system_dpi": 144
+        },
+        "adapters": [
+          78674
+        ],
+        "monitors_without_a_path": [],
+        "physical_pixel_mapping": {
+          "mode": [
+            2560,
+            1600
+          ],
+          "desktop": [
+            2560,
+            1600
+          ],
+          "matches": true
+        },
+        "available": true
+      },
+      "display_fingerprint": "65241ac7e5811bef",
+      "power": {
+        "ac_line_status": "ac",
+        "battery_percent": 80,
+        "battery_present": true,
+        "power_saver_on": false,
+        "power_scheme_guid": "381b4222-f694-41f0-9685-ff5bb260df2e",
+        "available": true
+      },
+      "os": {
+        "platform": "Windows-11-10.0.26200-SP0",
+        "release": "11",
+        "version": "10.0.26200",
+        "machine": "AMD64",
+        "hostname_hash": "3c6c91bda91c767e"
+      },
+      "hardware": {
+        "gpus": [
+          {
+            "name": "Intel(R) UHD Graphics",
+            "driver_version": "32.0.101.7088",
+            "driver_date": "/Date(1781654400000)/",
+            "pnp_device_id": "PCI\\VEN_8086&DEV_A788&SUBSYS_17311025&REV_04\\3&11583659&0&10",
+            "video_mode": "2560 x 1600 x 4294967296 colors"
+          },
+          {
+            "name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+            "driver_version": "32.0.16.1692",
+            "driver_date": "/Date(1788480000000)/",
+            "pnp_device_id": "PCI\\VEN_10DE&DEV_28E0&SUBSYS_17311025&REV_A1\\4&1B0D88EE&0&0008",
+            "video_mode": null
+          }
+        ],
+        "system": {
+          "Manufacturer": "Acer",
+          "Model": "Predator PHN16-72",
+          "TotalPhysicalMemory": 34049417216
+        },
+        "os": {
+          "Caption": "Microsoft Windows 11 Pro",
+          "Version": "10.0.26200",
+          "BuildNumber": "26200"
+        },
+        "memory_modules": [
+          {
+            "capacity_mb": 34359.7,
+            "rated_speed_mhz": 5600,
+            "configured_speed_mhz": 5600,
+            "manufacturer": "Crucial Technology"
+          }
+        ],
+        "available": true
+      },
+      "source": {
+        "root": "C:\\Users\\Zaatrah\\Projects\\Rapidshot",
+        "commit": "a4914ca9f7f571a923d7a1455f6dac40e2569004",
+        "branch": "main",
+        "dirty": true,
+        "dirty_files": 7,
+        "dirty_fingerprint": "d4c3b9803e2120fd",
+        "package_fingerprint": {
+          "sha256": "8b321daf50f35ea2d800033d2a3b441c0c32e609c1b8d8cef1df7d1ea2b76324",
+          "files": 32,
+          "bytes": 533934
+        },
+        "harness_fingerprint": {
+          "sha256": "167025cc28d5b5122e2b89f72679b0e3c7a976e46e77817d782e29714f2199f2",
+          "files": 43,
+          "bytes": 669319
+        },
+        "native_binary": {
+          "available": true,
+          "is_available": true,
+          "binaries": [
+            {
+              "path": "C:\\Users\\Zaatrah\\Projects\\Rapidshot\\rapidshot\\_rapidshot_native.pyd",
+              "sha256": "b7df78d8771d45e6896955c4ce87546499234758785f72ec8b92ad9f00710733",
+              "bytes": 694784,
+              "origin": "source-tree"
+            }
+          ]
+        },
+        "available": true
+      },
+      "runtime": {
+        "python": "3.13.15",
+        "python_executable": "C:\\Users\\Zaatrah\\AppData\\Local\\Python\\pythoncore-3.13-64\\python.exe",
+        "implementation": "CPython",
+        "packages": {
+          "rapidshot": "2.1.0",
+          "numpy": "2.5.1",
+          "opencv-python": "5.0.0.93",
+          "torch": "2.11.0+cu128",
+          "dxcam": "0.3.0",
+          "bettercam": "1.0.0",
+          "mss": "10.2.0",
+          "pillow": "12.3.0",
+          "psutil": "7.2.2"
+        },
+        "threads": {
+          "cpu_count": 32,
+          "process_cpu_count": 32,
+          "environment": {
+            "OMP_NUM_THREADS": null,
+            "MKL_NUM_THREADS": null,
+            "OPENBLAS_NUM_THREADS": null,
+            "NUMEXPR_NUM_THREADS": null,
+            "ORT_NUM_THREADS": null
+          },
+          "opencv_threads": 16,
+          "onnxruntime_version": {
+            "available": false,
+            "reason": "ModuleNotFoundError: No module named 'onnxruntime'"
+          }
+        },
+        "available": true
+      },
+      "collected": [
+        "cpu",
+        "memory",
+        "displays",
+        "power",
+        "os",
+        "hardware",
+        "source",
+        "runtime"
+      ],
+      "machine_id": "m-bb405744cbdb3043"
+    },
+    "machine_id": "m-bb405744cbdb3043"
+  },
+  "results": [
+    {
+      "name": "convert.BGRA",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 0.3166,
+      "min_ms": 0.2668,
+      "p95_ms": 0.5543,
+      "stdev_ms": 0.097016,
+      "gb_per_s": 26.198
+    },
+    {
+      "name": "convert.RGBA",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 0.2871,
+      "min_ms": 0.2683,
+      "p95_ms": 0.4559,
+      "stdev_ms": 0.063928,
+      "gb_per_s": 28.89
+    },
+    {
+      "name": "convert.RGB",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 0.2483,
+      "min_ms": 0.2318,
+      "p95_ms": 0.4065,
+      "stdev_ms": 0.069477,
+      "gb_per_s": 33.405
+    },
+    {
+      "name": "convert.BGR",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 0.2525,
+      "min_ms": 0.2336,
+      "p95_ms": 0.4091,
+      "stdev_ms": 0.066053,
+      "gb_per_s": 32.849
+    },
+    {
+      "name": "convert.GRAY",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 0.3177,
+      "min_ms": 0.2599,
+      "p95_ms": 0.4499,
+      "stdev_ms": 0.053937,
+      "gb_per_s": 26.108
+    },
+    {
+      "name": "shot.BGRA",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 0.322,
+      "min_ms": 0.2575,
+      "p95_ms": 0.5344,
+      "stdev_ms": 0.091281,
+      "gb_per_s": 25.759
+    },
+    {
+      "name": "shot.RGBA",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 0.29,
+      "min_ms": 0.2527,
+      "p95_ms": 0.432,
+      "stdev_ms": 0.078595,
+      "gb_per_s": 28.601
+    },
+    {
+      "name": "shot.RGB",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 0.2534,
+      "min_ms": 0.2171,
+      "p95_ms": 0.4126,
+      "stdev_ms": 0.063142,
+      "gb_per_s": 32.732
+    },
+    {
+      "name": "shot.BGR",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 0.2538,
+      "min_ms": 0.2287,
+      "p95_ms": 0.4565,
+      "stdev_ms": 0.086323,
+      "gb_per_s": 32.681
+    },
+    {
+      "name": "shot.GRAY",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 0.2738,
+      "min_ms": 0.2566,
+      "p95_ms": 0.3923,
+      "stdev_ms": 0.046361,
+      "gb_per_s": 30.294
+    },
+    {
+      "name": "process.BGRA",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 0.3217,
+      "min_ms": 0.262,
+      "p95_ms": 0.5718,
+      "stdev_ms": 0.101522,
+      "gb_per_s": 25.783
+    },
+    {
+      "name": "process.RGB",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 2.4915,
+      "min_ms": 1.9216,
+      "p95_ms": 3.1444,
+      "stdev_ms": 0.341011,
+      "gb_per_s": 3.329
+    },
+    {
+      "name": "pipeline.cpu_to_nchw",
+      "kind": "synthetic",
+      "samples": 60,
+      "median_ms": 3.6392,
+      "min_ms": 3.0352,
+      "p95_ms": 4.5131,
+      "stdev_ms": 0.414536,
+      "note": "resize + normalise + transpose to NCHW on the CPU; reimplemented 2026-08-05, 1.78x faster and bit-identical -- not comparable with recordings before that date"
+    },
+    {
+      "name": "pipeline.gpu_dispatch",
+      "kind": "synthetic",
+      "samples": 125,
+      "median_ms": 0.0014,
+      "min_ms": 0.0011,
+      "p95_ms": 0.0036,
+      "stdev_ms": 0.000759,
+      "note": "one compute dispatch; result stays on the GPU"
+    },
+    {
+      "name": "pipeline.gpu_plus_readback",
+      "kind": "synthetic",
+      "samples": 60,
+      "median_ms": 3.3974,
+      "min_ms": 2.7223,
+      "p95_ms": 4.2106,
+      "stdev_ms": 0.460728,
+      "note": "dispatch + full GPU->CPU readback (the round-trip we avoid)"
+    },
+    {
+      "name": "control.memcopy",
+      "kind": "control",
+      "samples": 125,
+      "median_ms": 0.3225,
+      "min_ms": 0.2577,
+      "p95_ms": 0.5443,
+      "stdev_ms": 0.088034,
+      "gb_per_s": 25.719,
+      "note": "CONTROL: a plain memory copy whose implementation never changes. Its movement between runs measures machine drift (background load, thermal state), which is used to normalise the other comparisons."
+    },
+    {
+      "name": "com.get_desc_call",
+      "kind": "live",
+      "samples": 5000,
+      "median_ms": 0.0009,
+      "min_ms": 0.0008,
+      "p95_ms": 0.001,
+      "stdev_ms": 0.00081,
+      "note": "trivial COM method; approximates pure binding overhead"
+    },
+    {
+      "name": "live.grab_with_frame",
+      "kind": "live",
+      "samples": 494,
+      "median_ms": 6.0306,
+      "min_ms": 3.7944,
+      "p95_ms": 6.9178,
+      "stdev_ms": 0.619285,
+      "note": "494 frame-producing calls (0 returned no new content) in 3s. DDA only reports changed content, so this depends on screen activity \u2014 compare across runs with caution."
+    },
+    {
+      "name": "live.grab_frame_gpu",
+      "kind": "live",
+      "samples": 496,
+      "median_ms": 6.0628,
+      "min_ms": 1.7404,
+      "p95_ms": 6.3822,
+      "stdev_ms": 0.285567,
+      "note": "496 frame-producing calls (0 empty) in 3s; GPU-resident, no CPU round-trip"
+    }
+  ]
+}

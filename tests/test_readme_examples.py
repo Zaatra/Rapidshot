@@ -53,6 +53,18 @@ needs_native = pytest.mark.skipif(
     not native.is_available(), reason="native extension not built"
 )
 
+def _skip_if_cross_adapter(exc):
+    """A hybrid laptop cannot export to CUDA without a transfer, by design.
+
+    Capture runs on the integrated GPU and CUDA only sees the discrete one, so
+    `to_cupy()` raises `CrossAdapterRequired` -- documented behaviour, not a
+    failure. The README's GPU quick start therefore does not run as printed on
+    an Optimus machine, which is why the README says so and points at
+    `TensorTransfer`.
+    """
+    pytest.skip(f"hybrid GPU: {type(exc).__name__} -- capture and CUDA are on "
+                "different adapters, see the README's hybrid section")
+
 
 # -- the document itself ---------------------------------------------------
 
@@ -302,7 +314,10 @@ def test_tensor_stream_quickstart_block():
         )
         seen = 0
         for tensor in stream:
-            x = tensor.to_torch()
+            try:
+                x = tensor.to_torch()
+            except rapidshot.CrossAdapterRequired as exc:
+                _skip_if_cross_adapter(exc)
             assert tuple(x.shape) == (1, 3, 640, 640)
             assert x.dtype is torch.float16
             assert x.is_cuda
@@ -326,7 +341,10 @@ def test_to_cupy_and_to_dlpack_alternatives_block():
             converter = rapidshot.GpuConverter(frame, (640, 640), dtype="float16")
             tensor = converter.process(frame)
 
-            array = tensor.to_cupy()
+            try:
+                array = tensor.to_cupy()
+            except rapidshot.CrossAdapterRequired as exc:
+                _skip_if_cross_adapter(exc)
             assert array.shape == (1, 3, 640, 640)
 
             capsule = tensor.to_dlpack()
