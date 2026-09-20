@@ -6,6 +6,37 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 
+#: Row padding beyond this is not alignment, it is a corrupt value.
+#:
+#: Drivers pad a row to an alignment boundary -- tens of bytes, occasionally a
+#: few hundred; a 4K BGRA row is 30,720 bytes and 64 KiB of slack clears any
+#: real one by orders of magnitude. The bound matters because `pitch` sizes a
+#: ctypes array over the mapped surface, so a wrong value does not fail
+#: cleanly: it describes a region far larger than the mapping, and reading it
+#: takes the process down with an access violation rather than raising.
+#:
+#: The other two driver-reported sizes are already capped this way --
+#: `MAX_METADATA_BUFFER_BYTES` and `MAX_POINTER_SHAPE_BUFFER_BYTES` in
+#: `core/duplicator.py`. This was the one left unbounded.
+MAX_ROW_PADDING_BYTES = 64 * 1024
+
+
+def check_surface_pitch(pitch: int, width: int) -> None:
+    """Refuse a pitch that cannot describe a row of *width* BGRA pixels."""
+    row_bytes = width * 4
+    if pitch < row_bytes:
+        raise ValueError(
+            f"Mapped surface pitch {pitch} is smaller than a {width}px BGRA row "
+            f"({row_bytes} bytes); refusing to read out of bounds."
+        )
+    if pitch > row_bytes + MAX_ROW_PADDING_BYTES:
+        raise ValueError(
+            f"Mapped surface pitch {pitch} exceeds a {width}px BGRA row "
+            f"({row_bytes} bytes) by more than {MAX_ROW_PADDING_BYTES} bytes of "
+            "padding; refusing to read a surface this cannot be describing."
+        )
+
+
 def version_below(version: str, minimum: str) -> bool:
     """True if ``version`` is older than ``minimum``, compared numerically.
 

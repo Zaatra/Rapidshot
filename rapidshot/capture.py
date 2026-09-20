@@ -1073,16 +1073,39 @@ class ScreenCapture:
         position = getattr(cursor, "PointerPositionInfo", None)
         shape_info = getattr(cursor, "PointerShapeInfo", None)
         point = getattr(position, "Position", None) if position is not None else None
+
+        shape = getattr(cursor, "Shape", None)
+        shape_type = int(getattr(shape_info, "Type", 0) or 0) if shape_info is not None else 0
+        shape_size = ((int(shape_info.Width), int(shape_info.Height))
+                      if shape_info is not None and hasattr(shape_info, "Width") else None)
+        shape_pitch = int(getattr(shape_info, "Pitch", 0) or 0) if shape_info is not None else 0
+
+        # `Pitch`, `Width` and `Height` are the driver's, and they are handed
+        # to the caller beside the shape bytes -- so this is vouching for a
+        # description it has not checked. Nothing inside RapidShot indexes the
+        # buffer with them, which is exactly why a mismatch is invisible here
+        # and a crash in whoever walks the buffer by `shape_pitch`.
+        #
+        # A description that does not fit its buffer is not handed out at all:
+        # "no shape available" is something a consumer already handles, and
+        # half-describing a buffer is what produces the over-read.
+        if shape is not None and shape_size is not None and shape_pitch:
+            if shape_pitch * shape_size[1] > len(shape):
+                logger.warning(
+                    "cursor shape metadata does not fit its buffer "
+                    "(pitch %d x height %d > %d bytes); reporting no shape",
+                    shape_pitch, shape_size[1], len(shape))
+                shape, shape_pitch, shape_size = None, 0, None
+
         return CursorInfo(
             visible=bool(getattr(duplicator, "cursor_visible", False)),
             position=((int(point.x), int(point.y)) if point is not None else None),
             hotspot=((int(shape_info.HotSpot.x), int(shape_info.HotSpot.y))
                      if shape_info is not None and hasattr(shape_info, "HotSpot") else None),
-            shape=getattr(cursor, "Shape", None),
-            shape_type=int(getattr(shape_info, "Type", 0) or 0) if shape_info is not None else 0,
-            shape_size=((int(shape_info.Width), int(shape_info.Height))
-                        if shape_info is not None and hasattr(shape_info, "Width") else None),
-            shape_pitch=int(getattr(shape_info, "Pitch", 0) or 0) if shape_info is not None else 0,
+            shape=shape,
+            shape_type=shape_type,
+            shape_size=shape_size,
+            shape_pitch=shape_pitch,
         )
 
     @property

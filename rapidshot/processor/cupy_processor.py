@@ -3,7 +3,8 @@ import platform
 import logging  # Added missing import
 from rapidshot.util.logging import get_logger
 import warnings
-from rapidshot.processor.base import ProcessorBackends, version_below
+from rapidshot.processor.base import (
+    ProcessorBackends, check_surface_pitch, version_below)
 from rapidshot.util.ctypes_helpers import pointer_to_address
 
 # Configure logging
@@ -254,14 +255,8 @@ class CupyProcessor:
             if not src_address:
                 raise ValueError("Mapped rect does not contain a valid pointer")
 
-            # As in `NumpyProcessor.process`: a pitch smaller than a row makes
-            # the view below span past the mapped surface, and the last rows
-            # read whatever follows it.
-            if pitch < width * 4:
-                raise ValueError(
-                    f"Mapped surface pitch {pitch} is smaller than a {width}px BGRA row "
-                    f"({width * 4} bytes); refusing to read out of bounds."
-                )
+            # As in `NumpyProcessor.process`, in both directions.
+            check_surface_pitch(pitch, width)
 
             left, top, right, bottom = region
             if not (0 <= left < right <= width) or not (0 <= top < bottom <= height):

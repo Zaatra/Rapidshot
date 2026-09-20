@@ -6,6 +6,7 @@ from numpy import rot90, ndarray, newaxis, uint8
 from rapidshot.processor.base import (
     ProcessorBackends,
     channels_for_color_mode,
+    check_surface_pitch,
     validate_color_mode,
 )
 from rapidshot.util.ctypes_helpers import describe_destination, pointer_to_address
@@ -316,11 +317,7 @@ class NumpyProcessor:
         if not src_address:
             raise ValueError("Invalid source pointer for shot copy")
 
-        if pitch < src_row_bytes:
-            raise ValueError(
-                f"Mapped surface pitch {pitch} is smaller than a {width}px BGRA row "
-                f"({src_row_bytes} bytes); refusing to read out of bounds."
-            )
+        check_surface_pitch(pitch, width)
 
         # BGRA needs no conversion: copy rows straight across.
         if self.color_mode is None:
@@ -539,15 +536,11 @@ class NumpyProcessor:
             if not src_address:
                 raise ValueError("Mapped rect does not contain a valid pointer")
 
-            # `shot()` has refused this since it was written. A pitch smaller
-            # than a row makes the strided view below span past the end of the
-            # mapped surface, so the last rows read whatever follows it --
-            # with nothing in the result's shape, dtype or range to show it.
-            if pitch < width * 4:
-                raise ValueError(
-                    f"Mapped surface pitch {pitch} is smaller than a {width}px BGRA row "
-                    f"({width * 4} bytes); refusing to read out of bounds."
-                )
+            # Both directions. Too small and the strided view spans past the
+            # end of the mapped surface; too large and it describes a region
+            # the mapping cannot contain -- which is not a clean failure but an
+            # access violation that takes the process down.
+            check_surface_pitch(pitch, width)
 
             region_left, region_top, region_right, region_bottom = region
             if not (0 <= region_left < region_right <= width) or not (0 <= region_top < region_bottom <= height):
