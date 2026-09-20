@@ -11,9 +11,13 @@ Consequence: these skip on an idle screen rather than failing. A red suite
 that means "nothing moved on screen" trains people to ignore red suites.
 
 What is deliberately *not* here: the CUDA export path. Machine A has an Intel
-iGPU and no CUDA device, so `to_cupy()` / `to_torch()` / `to_dlpack()` cannot
-be exercised on it at all. Verifying them is Machine B work, and until that
-happens they are unverified for the release — ROADMAP § 5's rule.
+iGPU and no CUDA device, so `to_cupy()` / `to_torch()` / `to_dlpack()` cannot be
+exercised on it at all. They live in `tests/test_gpu_tensor_export.py` and were
+verified on Machine B in discrete-only mode (2026-09-20), where capture and CUDA
+share an adapter — `test_to_cupy_is_byte_equal_to_the_readback` is the one that
+needed that configuration. This module's own CPU-reference check is
+`test_nearest_output_matches_a_cpu_reference`, which reads the frame's texture
+back through a D3D11 staging surface rather than through anything it is testing.
 """
 
 import numpy as np
@@ -30,20 +34,105 @@ OUT = 64
 
 
 @pytest.fixture(scope="module")
-def live_frame():
-    """A live captured frame, or a skip. Released after the module finishes."""
+def live_camera():
+    """The camera behind :func:`live_frame`.
+
+    Split out so a test can reach the capture device as well as the frame:
+    reading a frame's pixels back to the CPU needs the device that owns the
+    texture, and `Frame` does not carry one.
+    """
     camera = rapidshot.create(output_color="BGRA")
+    yield camera
+    camera.release()
+
+
+@pytest.fixture(scope="module")
+def live_frame(live_camera):
+    """A live captured frame, or a skip. Released after the module finishes."""
     frame = None
     for _ in range(600):
-        frame = camera.grab_frame()
+        frame = live_camera.grab_frame()
         if frame is not None:
             break
     if frame is None:
-        camera.release()
         pytest.skip("no frame captured — the screen must be changing")
     yield frame
     frame.release()
-    camera.release()
+
+
+def cpu_readback(camera, frame):
+    """The frame's own texture copied to system memory, as (H, W, 4) BGRA.
+
+    An *independent* reference for the converter: it reads the same
+    ``ID3D11Texture2D`` the shader reads, through the plain D3D11 staging path,
+    with no D3D12, no compute shader and no cross-adapter machinery in between.
+
+    This exists because the test below used to look for `frame.frame_buffer`,
+    which `Frame` has never had — it is a GPU texture wrapper, not a buffer — so
+    the only check of the converter against a CPU reference skipped on every
+    machine, silently, for as long as it existed. Given how many silent
+    wrong-pixel bugs this path has had (ROADMAP § 10), a permanently-skipping
+    correctness test was worse than no test: it read as coverage.
+    """
+    from rapidshot._libs.d3d11 import (
+        D3D11_CPU_ACCESS_READ,
+        D3D11_TEXTURE2D_DESC,
+        D3D11_USAGE_STAGING,
+        DXGI_FORMAT_B8G8R8A8_UNORM,
+        ID3D11Texture2D,
+    )
+    from rapidshot._libs.dxgi import DXGI_MAPPED_RECT, IDXGISurface
+
+    import ctypes
+
+    if frame.rotation_angle:
+        pytest.skip(f"rotated display ({frame.rotation_angle}°)")
+
+    device = camera._device.device
+    context = camera._device.im_context
+    # The surface, not the frame: region cropping happens after the readback,
+    # the same order `CopySubresourceRegion` + `_dirty_rects_for` use.
+    surface_width, surface_height = camera._output.surface_size
+
+    desc = D3D11_TEXTURE2D_DESC()
+    desc.Width, desc.Height = surface_width, surface_height
+    desc.MipLevels = desc.ArraySize = 1
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM
+    desc.SampleDesc.Count, desc.SampleDesc.Quality = 1, 0
+    desc.Usage = D3D11_USAGE_STAGING
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ
+    desc.BindFlags = desc.MiscFlags = 0
+
+    staging = ctypes.POINTER(ID3D11Texture2D)()
+    device.CreateTexture2D(ctypes.byref(desc), None, ctypes.byref(staging))
+    surface = staging.QueryInterface(IDXGISurface)
+
+    context.CopyResource(staging, frame.d3d11_texture)
+    mapped = DXGI_MAPPED_RECT()
+    surface.Map(ctypes.byref(mapped), 1)
+    try:
+        buffer = (ctypes.c_ubyte * (mapped.Pitch * surface_height)).from_address(
+            mapped.pBits
+        )
+        rows = np.frombuffer(buffer, dtype=np.uint8).reshape(
+            surface_height, mapped.Pitch
+        )
+        # Copy before unmapping: the view points at memory the unmap invalidates.
+        whole = rows[:, : surface_width * 4].reshape(
+            surface_height, surface_width, 4
+        ).copy()
+    finally:
+        surface.Unmap()
+
+    region = frame.region
+    if region is not None:
+        left, top, right, bottom = region
+        whole = whole[top:bottom, left:right]
+    assert whole.shape[:2] == (frame.height, frame.width), (
+        f"readback {whole.shape[:2]} does not match the frame's "
+        f"{(frame.height, frame.width)}"
+    )
+    return whole
 
 
 def nearest_reference(source, out_w, out_h, bgr=False, normalize=True):
@@ -255,17 +344,20 @@ def test_normalize_controls_the_output_range(live_frame):
         assert byte.max() > 1.5
 
 
-def test_nearest_output_matches_a_cpu_reference(live_frame):
-    """Against numbers this test computes, not against another GPU path."""
+def test_nearest_output_matches_a_cpu_reference(live_camera, live_frame):
+    """Against numbers this test computes, not against another GPU path.
+
+    The source pixels come from :func:`cpu_readback` — the same texture, copied
+    to system memory by D3D11 — so nothing the shader does is used to check the
+    shader. This is the independent-reference rule in ROADMAP § 11, and it is
+    the check that was skipping on every machine until the readback existed.
+    """
     converter = rapidshot.GpuConverter(
         live_frame, (OUT, OUT), dtype="float32", sampling="nearest"
     )
     got = converter.process(live_frame).numpy()
 
-    source = live_frame.frame_buffer if hasattr(live_frame, "frame_buffer") else None
-    if source is None:
-        pytest.skip("frame does not expose its CPU buffer")
-    expected = nearest_reference(np.asarray(source), OUT, OUT)
+    expected = nearest_reference(cpu_readback(live_camera, live_frame), OUT, OUT)
     np.testing.assert_allclose(got, expected, atol=2e-3)
 
 
