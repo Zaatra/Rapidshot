@@ -33,6 +33,23 @@ README = Path(__file__).resolve().parents[1] / "README.md"
 pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 
 
+def _camera(**kwargs):
+    """`rapidshot.create()`, or a skip when this machine cannot capture.
+
+    A CI runner has no desktop session, and on some it has no usable Direct3D
+    device at all, so `create()` raises rather than returning a camera that
+    yields nothing. Every live block here goes through this: without it the
+    README tests are the only ones in the suite that turn "no display" into a
+    red run, which is the failure mode `test_gpu_converter.py` warns about.
+    """
+    try:
+        return rapidshot.create(**kwargs)
+    except Exception as exc:                      # HeadlessError and friends
+        if type(exc).__name__ in ("HeadlessError", "DeviceError", "OutputError"):
+            pytest.skip(f"capture unavailable: {type(exc).__name__}: {exc}")
+        raise
+
+
 def _frame(camera, tries=600):
     for _ in range(tries):
         frame = camera.grab_frame()
@@ -117,7 +134,7 @@ def test_no_python_block_uses_a_name_the_package_does_not_export():
 # -- quick start -----------------------------------------------------------
 
 def test_quickstart_numpy_block():
-    camera = rapidshot.create()
+    camera = _camera()
     try:
         frame = _array(camera)
         assert frame.shape[2] == 3
@@ -127,17 +144,28 @@ def test_quickstart_numpy_block():
 
 
 def test_region_and_colour_block():
-    camera = rapidshot.create(output_color="BGR")
+    """The README shows `region=(0, 0, 1920, 1080)`.
+
+    The size is taken from the camera rather than hardcoded: a CI runner's
+    virtual display is smaller than 1080p, and a region outside the output is
+    refused — correctly — which made this the one README test that failed on
+    CI while passing on every developer machine. What the block demonstrates is
+    that a region crops and that `output_color` picks the channel order, and
+    both survive using a region this display actually has.
+    """
+    camera = _camera(output_color="BGR")
     try:
-        frame = _array(camera, region=(0, 0, 1920, 1080))
-        assert frame.shape == (1080, 1920, 3)
+        width = min(1920, camera.width)
+        height = min(1080, camera.height)
+        frame = _array(camera, region=(0, 0, width, height))
+        assert frame.shape == (height, width, 3)
         frame.release()
     finally:
         camera.release()
 
 
 def test_continuous_capture_block():
-    camera = rapidshot.create()
+    camera = _camera()
     try:
         camera.start(target_fps=60, video_mode=True)
         latest = None
@@ -154,7 +182,7 @@ def test_continuous_capture_block():
 
 def test_pool_output_false_block():
     """The README says this hands back plain ndarrays."""
-    camera = rapidshot.create(pool_output=False, pool_size_frames=4)
+    camera = _camera(pool_output=False, pool_size_frames=4)
     try:
         frame = _array(camera)
         assert isinstance(frame, np.ndarray)
@@ -165,7 +193,7 @@ def test_pool_output_false_block():
 # -- GPU-resident ----------------------------------------------------------
 
 def test_grab_frame_attributes_block():
-    camera = rapidshot.create()
+    camera = _camera()
     try:
         with _frame(camera) as frame:
             assert frame.d3d11_texture is not None
@@ -186,7 +214,7 @@ def test_explicit_converter_block():
     surface to size its resources. A sketch that omits it will not run, which
     is why this test exists rather than a prose note.
     """
-    camera = rapidshot.create()
+    camera = _camera()
     try:
         with _frame(camera) as frame:
             converter = rapidshot.GpuConverter(
@@ -202,7 +230,7 @@ def test_explicit_converter_block():
 def test_layout_accepts_the_uppercase_spelling_the_readme_uses():
     """The README writes layout="NCHW"; the API lowercases it. If that stopped
     being true, every GPU example in the document would fail."""
-    camera = rapidshot.create()
+    camera = _camera()
     try:
         with _frame(camera) as frame:
             upper = rapidshot.GpuConverter(frame, (64, 64), layout="NCHW").process(frame)
@@ -214,7 +242,7 @@ def test_layout_accepts_the_uppercase_spelling_the_readme_uses():
 
 @needs_native
 def test_multi_roi_block_returns_the_documented_shape():
-    camera = rapidshot.create()
+    camera = _camera()
     try:
         with _frame(camera) as frame:
             converter = rapidshot.GpuConverter(frame, (224, 224), batch=4)
@@ -234,7 +262,7 @@ def test_payload_sizes_in_the_readme_table():
     by four -- FP16 is half of FP32, not a quarter. These assertions are why
     that cannot be reintroduced quietly.
     """
-    camera = rapidshot.create()
+    camera = _camera()
     try:
         with _frame(camera) as frame:
             expected = {
@@ -256,7 +284,7 @@ def test_payload_sizes_in_the_readme_table():
 
 @needs_native
 def test_converter_exposes_the_advanced_section_handles():
-    camera = rapidshot.create()
+    camera = _camera()
     try:
         with _frame(camera) as frame:
             converter = rapidshot.GpuConverter(frame, (64, 64))
@@ -269,7 +297,7 @@ def test_converter_exposes_the_advanced_section_handles():
 
 @needs_native
 def test_tensor_transfer_block_constructs_and_runs():
-    camera = rapidshot.create()
+    camera = _camera()
     try:
         with _frame(camera) as frame:
             converter = rapidshot.GpuConverter(frame, (640, 640), dtype="float16")
@@ -307,7 +335,7 @@ def test_tensor_stream_quickstart_block():
     """
     torch = pytest.importorskip("torch")
 
-    camera = rapidshot.create()
+    camera = _camera()
     try:
         stream = rapidshot.TensorStream(
             camera, size=(640, 640), dtype="float16", layout="NCHW",
@@ -335,7 +363,7 @@ def test_to_cupy_and_to_dlpack_alternatives_block():
     """`array = tensor.to_cupy()` and `capsule = tensor.to_dlpack()`."""
     pytest.importorskip("cupy")
 
-    camera = rapidshot.create()
+    camera = _camera()
     try:
         with _frame(camera) as frame:
             converter = rapidshot.GpuConverter(frame, (640, 640), dtype="float16")

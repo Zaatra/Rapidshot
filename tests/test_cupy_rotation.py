@@ -203,8 +203,7 @@ def test_cupy_process_refuses_a_pitch_narrower_than_a_row():
     rect = FakeMappedRect(bgra)
     rect.Pitch = width * 4 - 4
 
-    processor = CupyProcessor("BGRA")
-    processor.cp = np
+    processor = numpy_backed_processor("BGRA")
 
     with pytest.raises(ValueError, match="pitch"):
         processor.process(rect, width, height, (0, 0, width, height), 0)
@@ -218,8 +217,7 @@ def test_cupy_process_reads_an_offset_region_from_a_padded_surface():
     left, top = 2, 1
     rect = FakeMappedRect(bgra, pitch=width * 4 + 12)
 
-    processor = CupyProcessor("BGRA")
-    processor.cp = np
+    processor = numpy_backed_processor("BGRA")
     out, _pooled = processor.process(
         rect, width, height, (left, top, width, height), 0)
 
@@ -234,8 +232,7 @@ def test_cupy_process_refuses_an_impossible_pitch():
     rect = FakeMappedRect(bgra)
     rect.Pitch = 64 * 1024 * 1024
 
-    processor = CupyProcessor("BGRA")
-    processor.cp = np
+    processor = numpy_backed_processor("BGRA")
 
     with pytest.raises(ValueError, match="pitch"):
         processor.process(rect, width, height, (0, 0, width, height), 0)

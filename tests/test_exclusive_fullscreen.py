@@ -129,7 +129,16 @@ class CaptureLoop:
         if not wait_for(lambda: self.frames > 0 or not self._thread.is_alive(),
                         timeout=10):
             self.__exit__()
-            pytest.fail(f"capture produced nothing in 10 s: {self.errors[:3]}")
+            # An idle screen and a broken capture both produce nothing, and
+            # only the errors tell them apart. A CI runner's desktop never
+            # changes, so failing on silence made this the one live test in the
+            # suite that turned "nothing moved" into a red run -- the failure
+            # mode test_gpu_converter.py warns about, which trains people to
+            # ignore red suites.
+            if self.errors:
+                pytest.fail(f"capture produced nothing in 10 s: {self.errors[:3]}")
+            pytest.skip("no frames in 10 s and no errors -- the screen must be "
+                        "changing for this test")
         if self.frames == 0:
             pytest.skip(f"capture unavailable: {self.errors[:1]}")
         return self
@@ -283,4 +292,19 @@ def test_access_loss_recovery_actually_runs(exclusive_fullscreen, caplog):
             "exclusive fullscreen did not disturb duplication on this Windows "
             "build; the access-loss path was not reached (see ROADMAP § 10)")
 
-    assert recovered, "capture never recovered after access loss"
+    if not recovered and not loop.errors:
+        # "No frames" and "capture is broken" are not the same claim, and only
+        # the error list separates them. An exclusive-fullscreen window that is
+        # not animating changes nothing on screen, and Desktop Duplication
+        # reports only changes -- so the absence of frames here is expected and
+        # says nothing about recovery. This surfaced when the machine moved to
+        # hybrid mode: the iGPU grants exclusive fullscreen where the dGPU
+        # refused it (0x887A0022), so the test began running instead of
+        # skipping, and immediately conflated the two.
+        pytest.skip("the fullscreen window produced no screen changes after the "
+                    "transition, and capture reported no errors -- recovery "
+                    "cannot be distinguished from a still screen here")
+
+    assert recovered, (
+        "capture never recovered after access loss; errors: "
+        f"{loop.errors[:3]}")

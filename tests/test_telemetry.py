@@ -21,6 +21,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "benchmarks"))
 
 import telemetry  # noqa: E402
 
+#: Three tests below need the real `SystemLoadProvider`, which imports psutil in
+#: its constructor. CI does not install psutil -- `test_memory_bounds.py` skips
+#: on it the same way -- so without this they are the only telemetry tests that
+#: turn a missing optional dependency into a red run. The module's own handling
+#: of an absent provider is covered by the fakes, which need nothing installed.
+def _needs_psutil():
+    return pytest.mark.skipif(
+        __import__("importlib").util.find_spec("psutil") is None,
+        reason="psutil not installed",
+    )
+
+
+
 
 def record(samples, **overrides):
     rec = telemetry.TelemetryRecord(interval=1.0, started_at="t0", samples=samples)
@@ -181,6 +194,7 @@ def test_no_telemetry_at_all_cannot_warn_about_anything():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.skipif(not telemetry.IS_WINDOWS, reason="Windows-only")
+@_needs_psutil()
 def test_an_unavailable_provider_is_recorded_not_dropped(monkeypatch):
     """"No GPU telemetry" and "a GPU nobody asked about" must not look alike."""
     class Broken:
@@ -230,6 +244,7 @@ def test_overhead_is_measured_rather_than_assumed():
 
 
 @pytest.mark.skipif(not telemetry.IS_WINDOWS, reason="Windows-only")
+@_needs_psutil()
 def test_a_short_sampled_window_records_its_providers_and_interval():
     sampler = telemetry.TelemetrySampler(interval=telemetry.MINIMUM_INTERVAL,
                                          want_gpu=False)
@@ -242,6 +257,7 @@ def test_a_short_sampled_window_records_its_providers_and_interval():
 
 
 @pytest.mark.skipif(not telemetry.IS_WINDOWS, reason="Windows-only")
+@_needs_psutil()
 def test_the_process_tree_is_counted_as_this_benchmark_not_as_background():
     """Attributing the motion source to strangers would indict every run."""
     provider = telemetry.SystemLoadProvider()
