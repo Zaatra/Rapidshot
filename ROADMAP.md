@@ -1191,6 +1191,11 @@ number that decides whether capture starves the model.
 
 > ### Memory, measured for the first time — 2026-09-14
 >
+> **Re-record before quoting: see § 7.0e.** This was taken with the source
+> animating a 900×700 window against a full-screen capture, so 15% of the
+> captured area was moving and the frame rates especially describe a
+> mostly-still desktop.
+>
 > § 7.2 has a memory target (*within 1.25× DXcam*) and, until now, no
 > instrument that could say whether it was met.
 > `benchmarks/memory_pool_stress_test.py` exercises the pool and records no
@@ -1722,6 +1727,703 @@ the run.
 - **Workload sweep**: only `motion` is recorded. `--workload static` and
   `scroll` exist; the spec asks for all three because they produce very
   different dirty fractions.
+
+#### 7.0a — Durable results, phase 1 ✅ 2026-09-19
+
+Everything above was measured by harnesses that could not say, after a crash,
+which of their results were trustworthy. `section7.py` rewrote one whole JSON
+payload after every path, `section7_suite.py` rewrote a matrix of cell statuses,
+`perf_suite.py` and `compare_libraries.py` held results in memory until the end.
+Each individual write was atomic; none of them was a record.
+
+`benchmarks/result_store.py` is now that record, and every supported runner
+writes to it. The unit is a **case** — benchmark x path x configuration x
+workload x repeat — committed once, immutably, with its raw samples, before the
+next case starts.
+
+**The ordering is the design.** Samples, then the result, then a manifest
+hashing both, then the journal record pointing at the manifest. A crash at any
+point either leaves no commit record — the case reads back as `interrupted` and
+is retried — or leaves one whose artifacts are all present and hash-verified.
+No ordering exists in which a commit record refers to a partial result.
+
+**What it refuses to do, and why that is the point:**
+
+- A **truncated final journal record** is expected and accepted; the torn bytes
+  are moved to a sidecar rather than deleted. **Damage in the middle** raises
+  and leaves the file untouched — a journal with a hole has lost the ordering
+  that makes the rest meaningful, and guessing is the silent misclassification
+  the store exists to prevent.
+- A **committed case is never rewritten.** A retry creates `attempt-002`, so
+  "retried after a crash" and "measured twice" stay distinguishable.
+- **Failed, invalid and contaminated results are retained with their reasons.**
+  Discarding them hides the two things a history is most often needed for: what
+  broke, and what was thrown away.
+- A **resume never re-measures settled work**, and never retries a failure
+  automatically — that needs `--retry-failed`. A suite that silently re-runs
+  whatever failed can loop on a broken machine until it produces a number
+  someone likes.
+
+`benchmarks/result_validation.py` classifies each row before it is committed:
+`passed` / `unavailable` / `failed` / `invalid` / `contaminated`. It is a
+**structural and physical** check, not a statistical one — percentile ordering,
+a rate against its own frame count, stage timings that fit inside the
+end-to-end figure they decompose. It says nothing about confidence; that needs
+repeated runs and is Phase 3. The stage check deliberately runs one way only:
+it catches parts that do not fit inside the whole, and never adds stage
+percentiles together to invent an end-to-end one.
+
+**Two contamination flags are live already.** `section7.py` flags a case whose
+source presented more slowly than the path returned — the tie-that-is-not-a-tie
+failure this section records hitting three times. `ai_ingestion.py` and
+`compare_libraries.py` flag a run with no controlled source at all.
+
+**Covered by 74 headless tests** (`tests/test_result_store.py`,
+`test_result_validation.py`, `test_benchmark_history.py`): a real killed parent
+process, injected disk-full, a commit that fails at the manifest, duplicate
+attempts, truncated records, mid-file corruption, altered artifacts, a
+rewritten manifest, and a store overtaken by another process. None of them
+crashes Windows to do it. Suite total: **1683 passing**.
+
+**Three bugs this found in existing code**, none of which had been hit:
+
+- Appending to a journal after a torn write spliced the new record into the
+  partial line, turning a recoverable truncation into the mid-file corruption
+  the store refuses to read.
+- A store handle held across child invocations (`section7_suite.py` resumes the
+  same run once per cell) would append with a stale sequence number, putting a
+  duplicate `seq` in the journal and destroying the readability of every record
+  after it. `StaleStore` now refuses.
+- `memory_profile.py` and `perf_suite.py` wrote their result JSON with a plain
+  `write_text`. A death mid-write left a truncated file where a recorded
+  baseline used to be. Both are atomic now.
+
+**Also removed from the supported set:** `granular_performance_test.py` and the
+five `*_max_fps.py` scripts, now in `benchmarks/unsupported/` with a README
+stating each defect. All five `max_fps` scripts charge device creation to the
+measured window — and `rapidshot_max_fps.py` additionally charges itself a
+warm-up grab and a `time.sleep(0.1)` the competitor scripts do not pay, so
+their numbers cannot be compared with each other in *either* direction.
+`granular_performance_test.py` reports `1 / (mean(capture) + mean(process))`
+where the two means are taken over different denominators; on a static desktop
+that describes its 10 ms acquire timeout rather than the capture path.
+
+**History lives in `build/performance-history/`** — git-ignored, and
+deliberately not beside the committed baselines in `benchmarks/`. Those are
+release gates read by `make_badges.py --check` and `perf_suite.py --compare
+auto`; conflating the two is how a baseline gets silently re-recorded by a
+routine run. CI passes `--no-history` throughout: a runner is discarded and
+nobody reads what it wrote.
+
+**Not done here, and stated rather than implied.** Every run currently records
+`"environment_snapshot": "incomplete (phase 2 not yet integrated)"`. There is
+still no git commit, dirty-source fingerprint, native-binary hash, driver, GPU
+or affinity in the metadata, and the P-core pinning in `perf_suite.py` is still
+not applied by `section7.py`, `ai_ingestion.py` or `memory_profile.py` — the
+gap the FP16 table above already admits to. That is Phase 2. `perf_suite.py`
+also commits its cases *after* the run rather than between benchmarks: its
+microbenchmarks are sub-second, the crash window is barely open, and
+restructuring `merge_rounds` to commit incrementally would change how a release
+gate computes its figures for the guarantee it needs least.
+
+#### 7.0b — Verified environment, phase 2 ✅ 2026-09-19
+
+Phase 1 made results durable. They were still anonymous: every run recorded
+`"environment_snapshot": "incomplete"`, and the FP16 table above carries the
+caveat *"not P-core-pinned"* only because someone remembered to type it.
+`benchmarks/machine_inventory.py` and `benchmarks/telemetry.py` replace
+remembering.
+
+**One CPU detector, now reachable.** The hybrid P-core detection had lived
+inside `perf_suite.py` since § 2, private to it — which is precisely why
+`section7.py`, `ai_ingestion.py` and `memory_profile.py` never pinned, and why
+the ingestion tables above are unpinned recordings. It moved to
+`machine_inventory`, and all five runners now apply the same policy through
+`prepare_run()`. `perf_suite.py` keeps its function names and every key
+`print_comparison` reads out of committed baselines, so no baseline in the
+repository was invalidated.
+
+What the detector now reports, verified on this i9-14900HX: **24 physical
+cores / 32 logical**, two efficiency classes — 8 P-cores *with* SMT (mask
+`0xffff`) and 16 E-cores without (mask `0xffff0000`) — one processor group,
+per-level cache sizes, and the affinity already in force before any policy is
+applied. SMT is recorded per core, not per machine, because on this CPU it is
+per class. Each class also reports whether it is `homogeneous`: an efficiency
+class is a scheduling hint, not a promise that its members are identical.
+
+**Pinning is applied, then verified, then inherited, then verified again.**
+`apply_cpu_policy()` reads the mask back rather than trusting the call, refuses
+to widen an inherited restriction (it intersects), refuses a partial pin on a
+multi-group machine, and distinguishes *uniform* from *unreadable*. Each worker
+calls `verify_affinity()` **before importing NumPy, CuPy or ONNX Runtime** —
+those size their thread pools from the affinity they see at initialisation, and
+a pool built for 32 cores then run on 16 is slower than either choice made
+consistently. A worker on the wrong cores contaminates its case.
+
+**Pinning narrows the distribution. It does not make timings deterministic.**
+Clocks, thermals, background work and GPU contention all still move them. That
+sentence is in the module docstring because the alternative reading is the one
+that produces overconfident tables.
+
+**Displays: the rounded refresh rate was hiding something.**
+`EnumDisplaySettingsW` — what the harness has always used — reports this panel
+as **165 Hz**. `QueryDisplayConfig` reports what the driver actually
+programmed: **165.00178 Hz** (77733000/471104). Source pacing is compared
+against the rounded figure, and that comparison decides whether a throughput
+number describes the apparatus, so the rounding was never cosmetic. Both are
+recorded now, with a flag when they disagree by more than 1 Hz.
+
+Also recorded per output: monitor device path (the stable identity — the
+friendly name is empty on this internal panel, and is not unique when two
+identical monitors are attached), **owning adapter LUID and PCI path**,
+rotation, scaling mode, desktop rectangle, and per-monitor DPI. This machine
+reports `PCI\VEN_8086&DEV_A788` for the display adapter, which makes *"capture
+is on the iGPU"* a recorded fact rather than an inference from a device
+description string — and that LUID matches the one `test_gpu_tensor_export.py`
+prints when it skips for want of a CUDA device on the capture adapter.
+
+**A DPI finding worth having.** This display runs at **150% scaling**. The
+harness is per-monitor DPI aware, so `physical_pixel_mapping.matches` is true —
+but a DPI-unaware benchmark process here would be handed 1707×1067 by every
+coordinate API while the panel is 2560×1600, and every region computed from
+that would address the wrong pixels. The check is explicit now, and warns
+rather than being discovered later.
+
+**Provenance, with and without git.** Commit, branch, dirty flag, **and a
+dirty-source fingerprint** — this tree is dirty in 56 files, so the commit
+alone describes code that is not what ran. Plus a content fingerprint of every
+Python file under `rapidshot/` and `benchmarks/`, computed from disk, so a
+copied folder with no `.git` and no git installed still identifies its source —
+which Phase 3 depends on. Plus the **hash and origin of the native `.pyd` that
+actually loaded**: `baseline.json` is recorded with the extension and
+`baseline-nonative.json` without it, and a boolean "is it available" was never
+enough to tell two builds apart. Plus both GPUs with driver versions, RAM
+modules with configured speed, power source and power-scheme GUID.
+
+**Telemetry, with an explicit third state.** Providers: `psutil` for load and
+memory, `CallNtPowerInformation` for per-processor MHz, and **NVML through
+ctypes** — not `nvidia-smi`, because a process launch per sample is the
+opposite of what a conditions sampler should do — for GPU utilisation, clocks,
+temperature, power and VRAM. Measured on this machine: **6.2 ms CPU per sample,
+a 0.6% duty cycle at the 1 s default**. Measured, not assumed:
+`measure_overhead()` exists so nothing gets switched on by default on a guess.
+Intervals below 250 ms are refused, because these counters are documented for
+low-frequency collection and sampling them faster measures the sampler.
+
+**The frequency trap, handled.** `CallNtPowerInformation` is the only Windows
+API reporting a current per-processor clock, and on many machines it returns
+the nominal figure forever. A flat series then looks exactly like a machine
+holding its boost clock rock-steady, which is the opposite conclusion. So the
+sampler watches across the whole window: a series that never varies *and*
+equals the reported maximum is marked as the nominal figure being echoed back,
+explicitly **not** as evidence the clock was held. On this machine it does vary
+— 1466 to 2200 MHz across processors — so here it is measuring. One query could
+never have established that.
+
+**Background load is a warning, not a verdict.** The sampler is rooted at the
+benchmark's own process, so the parent, every worker and the motion source
+generating the workload all count as *this benchmark's* CPU. What is left over
+is reported as a residual that still contains the compositor, the shell and
+driver threads — flagged for a human, never used to discard a measurement here.
+
+**Drift detection between cases**, and it had to be made cheap to be usable:
+the first version re-hashed the whole source tree and shelled out to git three
+times *per case*. It now costs **2 ms**, against 1.2 s for a full snapshot, and
+reports `not_checked` for the sections it skipped rather than letting "not
+looked at" read as "did not change". A changed display configuration, a laptop
+coming off mains, a changed topology or a rebuilt package marks the case
+`contaminated` and sets `comparable: false`, so no automatic comparison can
+step over it.
+
+**Three bugs this found:**
+
+- `machine_id` was built partly from the CIM query, so a cheaper re-check that
+  skipped CIM computed a *different* id for the same box, and every case
+  reported that the hardware had been swapped mid-run. Anything that can be
+  unavailable has to stay out of an identifier.
+- Four Win32 struct offsets were wrong, and the failure was silent rather than
+  loud: `PROCESSOR_RELATIONSHIP` has 20 reserved bytes before its group count,
+  so every core reported **zero** logical processors while the totals still
+  looked plausible. `CACHE_RELATIONSHIP` and `GROUP_RELATIONSHIP` were similar.
+- `SYSTEM_CPU_SET_INFORMATION` has no frequency field at all; an earlier draft
+  read one out of the bytes where `AllocationTag` lives and got zeros. Nominal
+  clocks now come from the registry, labelled as nominal.
+
+**Covered by 65 new headless tests** (`test_machine_inventory.py`,
+`test_telemetry.py`), plus three in `test_benchmark_history.py` for
+contamination actually reaching a case. Suite total: **1749 passing**.
+
+One of those tests found something worth recording: running the full suite
+loads this machine enough that the new background-load detector contaminated
+the store-wiring tests. That is the detector working, and it is why those tests
+now pass `--no-telemetry` — the detector is tested with synthetic series
+instead of by hoping the machine is quiet.
+
+**Not done here.** Sustained-frequency telemetry is validated on one machine
+only; on a box where the provider echoes nominal, the series is correctly
+refused rather than corrected, but that path is unexercised. Cache/CCD topology
+is read where Windows exposes it and has not been checked against an AMD part —
+that needs the second machine. And nothing yet *uses* `comparable: false` to
+gate a regression verdict, because there is no statistical comparison to gate.
+That is Phase 3.
+
+#### 7.0c — Detections and defensible statistics, phase 3 ⚠ built, first run in § 7.0f
+
+> **The blocking scene gap below is closed** — see § 7.0d. The rest of this
+> section's "what is not done" list still stands.
+
+Phases 1 and 2 made results durable and attributable. This phase is about what
+may be *concluded* from them, and about measuring the thing the § 7.0 inference
+table stops short of. **The machinery is built and tested; no live detection
+run has been made, and the reasons are at the bottom.**
+
+##### The boundary moved
+
+The inference table above ends its clock at forward-pass completion, and says
+so: *"Raw detector output, no NMS or postprocessing timed."* An application
+does not receive a `(1, 84, 8400)` tensor on the GPU; it receives boxes,
+classes and confidence scores it can branch on. `benchmarks/detection.py` ends
+the clock there instead — confidence filtering, NMS, coordinate restoration and
+**the transfer to the host** are all inside the timed call.
+
+**So every inference figure recorded before 2026-09-19 is incomparable with
+every one recorded after it.** Not smaller or larger — measuring a different
+interval. `ai_pipeline.py`'s docstring says so where someone will read it.
+
+Postprocessing runs on the device when the ORT output can be wrapped without
+copying and falls back to the host otherwise, and **which one happened is
+recorded in every result**. The two cost very differently, and a table mixing
+them silently would credit one path with a transfer it never made.
+
+##### Geometry is a correctness problem
+
+Ultralytics letterboxes — one scale factor, padded to square. The existing
+§ 7.0 tensor contract stretches the full frame to 640×640. Both are
+defensible; comparing one against the other is not, because the model sees
+differently distorted objects and the boxes come back in different coordinate
+systems. `Geometry` makes the choice explicit, invertible and part of the case
+identity.
+
+The inverse is checked against hand-computed values in the tests, because the
+obvious mistake here is silent: removing the pad *after* dividing by the scale
+instead of before offsets every box by about 480 source pixels on this panel —
+far enough to land on a different object, close enough to read as tracking
+wobble.
+
+##### What a comparison has to clear before it is a finding
+
+`benchmarks/statistics_report.py` — `calibrate_noise()` and
+`compare_paired_runs()`. The rules are enforced, not documented:
+
+- **The unit of observation is a run, never a frame.** Consecutive frame
+  timings share a thermal state, a scheduler decision and a compositor cadence;
+  treating a few thousand of them as independent draws gives an interval narrow
+  enough to make anything look certain. § 7.0 already shows the cost — a single
+  5-second pass had the semaphore path as lowest-latency and three passes did
+  not support it. A series long enough to be frames is **refused** with
+  `NotIndependent` rather than quietly averaged.
+- **Paired and interleaved.** Run *i* of A pairs with run *i* of B, so the
+  machine's warm-up drift lands on both halves instead of on whoever went last.
+  The recorded order travels into the report.
+- **A t interval, not 1.96.** At five pairs the normal approximation understates
+  the half-width by about 30%. An untabulated df rounds *down*, so the interval
+  is never accidentally narrowed.
+- **Three things must line up** before `improvement` is returned: the interval
+  clears a threshold **fixed in advance**, the unchanged-code calibration for
+  that metric on that configuration can resolve a difference that size, and
+  there are enough pairs for the metric. Otherwise `inconclusive` — which is a
+  result.
+- **Tail metrics need more than five pairs.** Each run's own p99 is estimated
+  from its slowest handful of frames, so five runs cannot place one. Ten is a
+  floor, labelled as a floor.
+- **The stopping rule is enforced.** `compare_paired_runs` takes the number of
+  pairs that were *planned* and refuses every verdict if a different number
+  arrives. Running until the answer looks good is the easiest way to manufacture
+  a finding, and an honour system does not prevent it.
+
+Spread is never printed as uncertainty. The max–min bracket § 7.0 reports
+across passes describes how far the numbers moved; it is not a confidence
+interval and the report says so in both tables.
+
+##### The self-test grew up, and immediately said something
+
+§ 7.0 asked for this to extend `perf_suite.py --self-test` rather than become a
+separate mechanism, and it does: `--calibrate N` is the same idea carried far
+enough to answer the question two passes cannot. `--self-test` now ends by
+saying it is a sanity check and pointing at `--calibrate 5`.
+
+Run at **`--rounds 1 --reps 3`** — deliberately tiny, to see what a cheap
+configuration can support — five unchanged-code runs gave:
+
+| metric | median | spread across identical runs | resolvable difference |
+| --- | ---: | ---: | ---: |
+| `shot.RGB.median_ms` | 0.2589 | 0.1707 (**65.9%**) | 0.0938 |
+| `shot.BGRA.median_ms` | 0.3056 | 0.1705 (**55.8%**) | 0.1004 |
+| `shot.GRAY.median_ms` | 0.3367 | 0.1671 (**49.6%**) | 0.0787 |
+| `shot.RGBA.min_ms` | 0.2852 | 0.0537 (18.8%) | 0.0275 |
+
+**At these settings the default 1.30× regression threshold is below the noise
+floor**, so a gate run this cheaply would fire on nothing. That is not a claim
+about CI, which runs `--rounds 5 --reps 25` and will be much tighter — it is
+the point of keying a calibration to its configuration, and the first
+measurement that shows why. Re-run `--calibrate` at CI's settings before
+quoting anything about the gate.
+
+Note `min_ms` is the steadiest column, which is the reason `print_comparison`
+already prefers minimum samples.
+
+##### Covered by 82 new headless tests
+
+`test_statistics_report.py` and `test_detection.py`. Every way of getting an
+unearned finding has a test: too few runs, no threshold, a threshold below the
+machine's resolution, a tail metric at five pairs, an unpaired set, and frames
+passed off as runs. All return `inconclusive`. The interval arithmetic is
+checked against hand-computed values so a change to it cannot pass by agreeing
+with itself. Suite total: **1829 passing**.
+
+One of those hand-computed values was wrong in the test and right in the code,
+which is the correct direction for that to happen.
+
+##### What is not done, and why
+
+**No live detection run has been made, and one made today would measure
+nothing.** `native/src/bin/latency_source.rs` draws a frame-ID marker pattern —
+exactly what the pixel-age clock needs, and containing no object YOLO11n
+recognises. A detection run against it would find zero detections in every
+frame, time the cheapest possible postprocess, and report a number that
+describes an empty scene. The harness now warns when that happens
+(`no detections in any frame`) rather than reporting it as a result, but the
+warning is not a substitute for the work: **the source needs to render
+reproducible scenes containing actual objects**, in static, scrolling and
+motion variants, and that is the next thing to build.
+
+Also outstanding, in rough order of value:
+
+- **The three comparisons are specified but not built as adapters.** Standard
+  Ultralytics screenshot pipeline vs RapidShot into the same detector;
+  MSS/DXcam/RapidShot through matched preprocessing; identical preloaded
+  tensors through YOLO11n to isolate model execution. The contract that makes
+  them comparable exists; the three configurations do not.
+- **Thresholds have not been chosen.** `compare_paired_runs` refuses a verdict
+  without one, by design, so this is a blocking gap rather than a missing
+  nicety. What counts as a practically meaningful millisecond saving for a
+  capture pipeline is a product decision and should be written down before any
+  comparison runs, not after.
+- **A calibration at the settings anyone would actually quote.** The table
+  above is from a deliberately cheap configuration.
+- **Everything § 7.0 already lists as unmeasured** remains unmeasured: the
+  agent category, resolution and refresh sweeps, the workload sweep, the
+  published `yolo11n.onnx` fully on the GPU, and `rapidshot-direct` on a
+  single-adapter machine.
+- **The second machine.** Nothing here has run anywhere but Machine B.
+
+#### 7.0d — A scene with objects in it ✅ 2026-09-19
+
+§ 7.0c's blocking gap: `latency_source.rs` draws a frame-ID marker pattern,
+which is exactly what the pixel-age clock needs and contains nothing a detector
+recognises. A detection run against it finds zero objects in every frame, times
+the cheapest possible postprocess, and reports a number describing an empty
+screen. `benchmarks/scenes.py` is the fix, and it is **verified against the
+real model rather than assumed**.
+
+##### What a detector actually sees in a drawing
+
+The whole thing turns on a question nobody should answer from intuition, so it
+was measured first. Objects drawn procedurally with OpenCV, put through the
+exported `yolo11n.onnx`:
+
+| drawn | detected |
+| --- | --- |
+| stop sign | `stop_sign` **0.93** |
+| clock | `clock` **0.90** |
+| traffic light | `traffic_light` **0.82** |
+| keyboard | `keyboard` **0.66** |
+| cup | `cup` 0.64 in company, **nothing** alone |
+| person, laptop, bottle, sports ball | **nothing** |
+
+So the scene is built from the four that hold up alone. A crude rectangle is
+not a laptop to a detector trained on photographs, and a scene built on the
+assumption that it is would silently degrade to empty — which is the exact
+failure this work exists to remove.
+
+**The marker and the objects coexist.** Composited over a full scene, the
+48-cell frame-ID pattern leaves detection counts identical and moves
+confidences by at most 0.02. The pixel-age clock and the detector can share a
+frame, which was not obvious and is now checked.
+
+##### The scene
+
+A tileable canvas at twice the capture size, panned over by the source. The
+three workloads become three dirty fractions of one scene rather than three
+different scenes: `static` holds still (only the marker changes, the smallest
+possible dirty rectangle), `scroll` advances vertically, `motion` advances on
+both axes so objects travel diagonally.
+
+Verified at 2560×1600 against the real model, 12 sampled frames per workload:
+
+| workload | detections per frame |
+| --- | --- |
+| static | 8 – 8 (mean 8.0) |
+| scroll | 7 – 8 (mean 7.8) |
+| motion | 6 – 9 (mean 7.8) |
+
+`scenes.py --model` writes those detections beside the scene as a reference and
+**refuses to call a scene usable** below four per frame. `section7.py` reads
+that file: an inference run against an unverified or failed scene is refused
+before anything is measured, with the command that fixes it. An ingestion run
+without a scene is still fine — pixel age never needed objects.
+
+##### Two bugs the verification caught, which is the point of having it
+
+- **The first scene was too sparse.** 12 objects on the canvas put about three
+  in view, below the four-per-frame floor, and the verifier refused it. Density
+  went to 35.
+- **Object sizes were fixed in screen pixels, so they were a different object
+  to the model at every resolution.** A 110px clock is 55 model pixels at
+  1280×800 and 27 at 2560×1600 — detected in one case, missed in the other,
+  for a reason nothing in the configuration would reveal. Sizes are now
+  declared in *model space* and divided by the letterbox scale, taken directly
+  from the drawings that verified.
+
+A third was caught by eye rather than by the model: the class assignment used
+an arithmetic phase, `(row * 7 + column + row) % 4`, which looks well mixed and
+reduces to `column % 4`. The first rendered scene was three vertical stripes of
+identical objects. It is a seeded shuffle now.
+
+##### The source
+
+`latency_source.rs` takes five optional arguments: a raw BGRA path, the canvas
+dimensions, and the pan step. **Without them it behaves exactly as it always
+has**, so every existing recording stays reproducible and the pixel-age
+workload is untouched.
+
+The scene arrives as raw bytes plus numbers on the command line rather than as
+a file the binary parses — there is no JSON reader in that crate, and four
+integers do not justify adding one. The shader uses `Load`, not `Sample`: an
+exact texel with no filtering, so what is presented is byte-identical to the
+window `scenes.py` put through the detector. A bilinear sampler would present
+something slightly different from the thing that was checked.
+
+The scene is loaded and its length validated against the stated dimensions
+*before* the window is created — this draws over the desktop during a
+benchmark, and a bad scene should fail without flashing a window first. `cargo
+fmt`, `clippy -D warnings` and the build are all clean.
+
+Writing it found one more thing: the argument-count guard still demanded
+exactly six, so the scene arguments would have been rejected outright. `cargo
+fmt --check` surfaced the line it was on.
+
+##### Covered by 29 new headless tests
+
+`test_scenes.py`: model-space sizing, class mixing, canvas wrap with no seam,
+objects drawn across the seam, marker layout matching the shader byte for byte,
+content-derived scene identity, a tampered background refused on read, and
+every one of `section7.py`'s refusals. No model is loaded — that is
+`scenes.py --model`. Suite total: **1858 passing**.
+
+##### What this still does not do
+
+**Objects do not move relative to each other.** Panning moves everything
+together, so this exercises a detector's throughput and a capture path's
+dirty-rectangle behaviour, and does not exercise tracking. Independent
+per-object motion needs sprite compositing in the source and is not built.
+
+**Four classes, drawn, not photographed.** The scene is signage and a keyboard
+on a flat background. It is a reproducible detection workload; it is not a
+natural-image benchmark, and no mAP claim can be made from it. A
+general labelled-dataset evaluation remains outside this project's scope, as
+§ 7.0c's assumptions already state.
+
+The scene pack lives in `build/scenes/`, git-ignored like the rest of the
+history. Rebuild it with:
+
+```
+python benchmarks/scenes.py --out build/scenes/default \
+  --model build/section7/model/yolo11n.onnx
+```
+
+§ 7.0c's other blockers are unchanged: the three comparison configurations are
+still unbuilt, no practical thresholds have been chosen, and nothing has run on
+a second machine.
+
+#### 7.0e — The source was animating a corner of the screen ⚠ 2026-09-19
+
+A review of the harness for accuracy found that **three of the five benchmarks
+were driving a mostly-still desktop**, and nothing in any recording said so.
+
+`benchmarks/motion_source.py` animated a hardcoded **900×700 window at
++200+120**. `memory_profile.py` and `compare_libraries.py` capture the **whole
+screen**. On this 2560×1600 panel that is **15.4% of the captured area
+moving**; on a 1080p display it is 30.4%.
+
+Desktop Duplication reports only what changed. So every library was asked for a
+fraction of the work a real workload would demand, every path looked faster
+than it is, and **the size of the discount depended on the monitor** — which
+means two machines running the identical command were never running the same
+benchmark. That is precisely the comparison § 3 keeps Machine A and Machine B
+apart to make.
+
+##### Which recorded numbers this touches
+
+| recording | source | animated fraction |
+| --- | --- | --- |
+| Pixel age, § 7.0 (`section7-ingestion-machineB.json`) | D3D `latency_source` at the display mode | **100% — unaffected** |
+| Present-to-inference, § 7.0 (`section7-inference-machineB.json`) | same | **100% — unaffected** |
+| Memory, § 7.0 (`memory-baseline-machineB.json`) | `memory_profile.py`, default **900×700** | **15.4%** |
+| `compare_libraries.py` tables, § 3 and the README | `motion_source.py` 900×700, fullscreen scenario | **15.4%** |
+| `ai_ingestion.py` call duration | `motion_source.py` 900×700 | **15.4%** |
+
+**The pixel-age and inference tables are safe**, and that is not luck:
+`section7.py` passes the physical display mode to the D3D source and refuses to
+run if the requested resolution is not the current mode, so its source has
+always been a full-screen borderless window at (0,0).
+
+**The memory table is the one to re-record.** Its frame rates — `grab()` at
+109.7 fps against `grab_frame()` at 165.1 — were taken with 85% of the screen
+still. The memory figures are less sensitive to dirty fraction than the rates
+are, but `grab()`'s output-path allocation scales with frames delivered, so
+they are not immune either. Nothing in § 7.0's memory conclusions should be
+quoted until it has been re-run.
+
+##### A second bug in the same place
+
+`compare_libraries.py`'s region scenario used the literal
+`REGION = (760, 340, 1160, 740)`, commented *"400x400, centred on a 1080p
+display"* — which it was, and on nothing else. On 2560×1600 it sat up and to
+the left of centre, and it overlapped the old 900×700 motion window only
+partly, so roughly 15% of the region was never animated at all. It is computed
+from the display now, and the parent and each worker subprocess derive the same
+rectangle without having to pass it.
+
+##### What changed
+
+- **`motion_source.py` covers the whole screen by default.** `--window WxH+X+Y`
+  keeps the old behaviour for the tests that need a source smaller than the
+  screen, and the bar count scales with the canvas so a 2560px display does not
+  get 28 slivers.
+- **The source reports the rectangle it is animating** in its `ready` event, so
+  a consumer records what was moving instead of assuming all of it was.
+- **`memory_profile.py` follows the display** — `--width 0 --height 0` now mean
+  "the current mode", and that is the default.
+- **`compare_libraries.py` centres its region on the actual display.**
+- **`result_validation.coverage_reasons()` is the guard.** Every run records
+  the animated and captured rectangles and the fraction between them, and a run
+  below 90% is marked `contaminated` with the number in the reason. A
+  deliberately small animated region stays a legitimate thing to measure;
+  measuring one by accident does not.
+
+##### One thing I suspected and was wrong about
+
+I expected the Tk source to be DPI-virtualised as well — a 900×700 window on a
+150%-scaled display becoming 1350×1050 physical. It is not: `python.exe`
+declares per-monitor DPI awareness in its manifest, so Tk's screen metrics are
+already physical. Checked directly: `winfo_screenwidth` reports 2560, not 1707.
+Recorded because it is the first thing anyone will suspect next time.
+
+**Covered by 26 new tests** (`test_workload_coverage.py`), including one that
+reproduces the old 15.4% and 30.4% figures so the regression cannot come back
+quietly. Suite total: **1884 passing**.
+
+#### 7.0f — First live run of the new harness ✅ 2026-09-19
+
+Everything in § 7.0a–e had been tested headless against fakes. This is the first
+time any of it executed against real hardware, and it found three bugs that no
+amount of synthetic testing was going to find.
+
+Five runs on Machine B, 2560×1600 at 165 Hz, P-core pinned. **7 cases
+committed, 0 corrupt, 0 interrupted.** WHEA unchanged across all of it (18
+records, latest 81359, before and after).
+
+##### What was confirmed working
+
+- **The CPU policy reaches the workers.** Parent applies `0xffff`; every worker
+  reports `matches_expected: true` from its own `GetProcessAffinityMask`
+  *before* NumPy, CuPy or ORT initialise.
+- **All three telemetry providers are live** — psutil, `CallNtPowerInformation`,
+  NVML. CPU frequency genuinely varies (1466–2200 MHz), so on this machine that
+  provider is measuring rather than echoing nominal.
+- **The store holds under real conditions**: 7 cases, every one hash-verified on
+  read-back.
+- **The scene reaches the screen.** The D3D source loads the 65 MB BGRA canvas,
+  pans it, and the frame-ID marker still decodes — 434 unique frames in 3 s with
+  the scene present. The pixel-age clock and the detector share a frame, as the
+  synthetic check predicted.
+- **`postprocess_location: "device"`.** The CuPy wrapping of ORT's device output
+  — the code § 7.0c explicitly flagged as never executed, written defensively
+  with a host fallback — works. It never took the fallback.
+
+##### Three bugs, each invisible to a headless test
+
+**1. The telemetry attributed the benchmark's own CPU to background load.** A
+worker burning **113% of a core** while the tree meter read **0.05%**, so the
+entire benchmark landed in `other_cpu_percent` — the exact false positive the
+design was written to avoid. `psutil.Process.cpu_percent(interval=None)` is
+stateful *per object*: it reports the busy fraction since that object's
+previous call, and the first call on a fresh one always returns 0.0. The
+provider rebuilt its child list every sample, so every worker's only reading
+was its priming zero. Process objects are cached by pid now, newly seen ones
+are primed and excluded from that sample, and the count of them is reported so
+a partial sample is visible rather than merely quiet.
+
+**2. The detector was fed one picture and given boxes for another.** The
+detection contract defaulted to `letterbox`; `benchmark_contract.canonical_rgb`
+**stretches** the whole frame into the 640 square. So the model saw every
+object squashed 1.6× vertically while postprocessing restored boxes with a
+letterbox inverse. The damage, measured:
+
+| | letterbox (wrong) | stretch (correct) |
+| --- | ---: | ---: |
+| detections per frame | 16.7 (max **37**) | 5.9 (max 10) |
+| unique fps | 44.4 | 55.9 |
+| inference + postprocess p50 | 14.73 ms | 10.10 ms |
+| present → usable detections p50 | 49.63 ms | 44.56 ms |
+
+Nothing crashed. It produced confident, plausible, wrong numbers — which is the
+failure mode § 7.0c's whole apparatus exists to prevent, arriving through the
+one door nobody had checked. The contract now **declares** its geometry
+(`benchmark_contract.TENSOR_GEOMETRY`), `section7.py` defaults to it and
+**refuses** any other value, naming what would have to change to letterbox.
+
+**3. The scene was verified against a geometry the harness does not use.**
+`scenes.py` letterboxed while the harness stretches, so its promised 6–9
+detections per frame described a picture nobody presents; the stretched harness
+saw 2–10, with frames below the floor. Verification now takes its geometry from
+`TENSOR_GEOMETRY`. Re-verified under the real transform the scene was **refused
+as too sparse** — squashing every object 1.6× costs confidence on each one — so
+the density went from 7×5 to 9×6.
+
+##### The scene, re-verified under the transform that will time it
+
+| workload | detections per frame |
+| --- | --- |
+| static | 11 – 11 (mean 11.0) |
+| scroll | 8 – 11 (mean 9.3) |
+| motion | 5 – 13 (mean 9.2) |
+
+And the live run agrees with it: **9.52 and 9.28 detections per frame** against
+a predicted 9.2. The scene verification now predicts what the harness sees,
+which is the only thing that makes it worth running.
+
+##### The numbers, and what they are not
+
+Present → **usable detections** (boxes, classes and scores on the host), scene
+panning, YOLO11n on the RTX 4060, 4 s per path:
+
+| path | unique fps | age p50 | inference + postprocess p50 | detections/frame |
+| --- | ---: | ---: | ---: | ---: |
+| rapidshot-cpu | 50.18 | **46.95 ms** | 12.32 ms | 9.52 |
+| dxcam | 45.22 | 49.31 ms | 11.89 ms | 9.28 |
+
+**This is one pass each and therefore not a finding.** By the rule in
+§ 7.0c — which this project now enforces in code — a verdict needs at least
+five interleaved paired runs, a threshold fixed in advance, and an
+unchanged-code calibration for the metric on this configuration. None of the
+three exists yet. `compare_paired_runs` would refuse this and say so. The table
+is here to show the pipeline produces numbers of the right shape, not to claim
+2.35 ms.
+
+**Covered by 3 new tests** for the process-attribution bug, including one that
+reproduces a busy child reading as idle. Suite total: **1887 passing**.
 
 ### 7.1 — 2.5: reliability and adoption ✅ delivered 2026-09-11
 
