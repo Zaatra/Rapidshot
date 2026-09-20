@@ -240,3 +240,105 @@ def test_d3d12_probe_exposed_through_the_python_wrapper():
     frame.release()
     with pytest.raises(FrameReleasedError):
         native.probe_d3d12_sharing(frame)
+
+
+# -- version-gated features ------------------------------------------------
+#
+# `native = ["rapidshot-native>=0.1.0"]` shipped while 2.6 was calling
+# `GpuConverter12` and `TensorTransfer`, neither of which 0.1.0 exports. The
+# extra resolved, and the transform path then died on `AttributeError: module
+# '_rapidshot_native' has no attribute 'GpuConverter12'` -- a message naming
+# neither the cause nor the cure. `pyproject.toml`'s floor is the real fix;
+# `require_feature` is the backstop, and these are its tests.
+
+
+class _OldExtension:
+    """A wheel that predates the 2.6 symbols, as 0.1.0 actually was."""
+
+    def build_info(self):
+        return {"version": "0.1.0", "stage": "6-m3b-d3d12-preprocess"}
+
+
+def test_require_feature_returns_the_symbol_when_present(monkeypatch):
+    sentinel = object()
+
+    class New:
+        GpuConverter12 = sentinel
+
+        def build_info(self):
+            return {"version": "0.2.0", "stage": "x"}
+
+    monkeypatch.setattr(native, "_ext", New())
+    assert native.require_feature("GpuConverter12") is sentinel
+
+
+@pytest.mark.parametrize("symbol", ["GpuConverter12", "TensorTransfer"])
+def test_require_feature_names_the_version_that_provides_it(monkeypatch, symbol):
+    """The whole point: say which version, not which attribute is missing."""
+    monkeypatch.setattr(native, "_ext", _OldExtension())
+    monkeypatch.setattr(native, "_ext_source", "rapidshot-native wheel")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        native.require_feature(symbol)
+
+    message = str(excinfo.value)
+    assert symbol in message
+    assert "0.2.0" in message, "must name the version that provides the feature"
+    assert "0.1.0" in message, "must name the version that is installed"
+    assert "pip install --upgrade" in message, "must say how to fix it"
+    assert "AttributeError" not in message
+
+
+def test_require_feature_still_explains_an_absent_extension(monkeypatch):
+    """No extension at all is a different problem and keeps the build hint."""
+    monkeypatch.setattr(native, "_ext", None)
+    monkeypatch.setattr(native, "_import_error", ImportError("no module"))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        native.require_feature("GpuConverter12")
+    assert "not installed" in str(excinfo.value)
+
+
+def test_require_feature_on_an_unknown_symbol_does_not_invent_a_version(monkeypatch):
+    """A symbol missing from the table is a bug here, not the user's old wheel,
+    so it must not claim some version would fix it."""
+    monkeypatch.setattr(native, "_ext", _OldExtension())
+
+    with pytest.raises(RuntimeError) as excinfo:
+        native.require_feature("SomethingNeverShipped")
+    message = str(excinfo.value)
+    assert "SomethingNeverShipped" in message
+    assert "0.2.0" not in message
+
+
+def test_every_gated_feature_exists_in_the_built_extension():
+    """The table must not gate a symbol the current extension lacks -- that
+    would turn a working install into a spurious upgrade demand."""
+    if not native.is_available():
+        pytest.skip("native extension not built")
+    extension = native.require()
+    missing = [name for name in native._FEATURE_SINCE
+               if not hasattr(extension, name)]
+    assert not missing, (
+        f"_FEATURE_SINCE gates {missing}, which this extension does not export; "
+        "rebuild it (python native/install_dev.py) or fix the table"
+    )
+
+
+def test_extension_version_tracks_availability():
+    version = native.extension_version()
+    if native.is_available():
+        assert isinstance(version, str) and version
+    else:
+        assert version is None
+
+
+def test_extension_version_survives_a_build_info_that_raises(monkeypatch):
+    """An extension too old to report a version must not crash the check."""
+
+    class Hostile:
+        def build_info(self):
+            raise RuntimeError("no build_info in this build")
+
+    monkeypatch.setattr(native, "_ext", Hostile())
+    assert native.extension_version() is None

@@ -71,20 +71,32 @@ gpu_cuda13 = ["cupy-cuda13x>=14.0.0"]
 # identical binary under a new number on every RapidShot release. Raise this
 # floor when the Python side starts calling something the older wheel does not
 # export.
-native = ["rapidshot-native>=0.1.0; platform_system == 'Windows'"]
+#
+# Raised to 0.2.0 for 2.6: `GpuConverter` and `TensorTransfer` were both added
+# after the `native-v0.1.0` tag, so 0.1.0 does not export either one. Against
+# that wheel the 2.6 transform path failed with a bare missing-symbol error, and
+# the floor is the fix -- `rapidshot/native.py` names this version if anyone
+# reaches it another way.
+native = ["rapidshot-native>=0.2.0; platform_system == 'Windows'"]
 # Everything that is not CUDA-version-specific. The cupy-cudaNNx wheels are
 # mutually exclusive, so none of them belongs in a catch-all extra -- pick
 # `gpu`, `gpu_cuda12` or `gpu_cuda13` explicitly.
 #
-# `rapidshot-native` is deliberately NOT here until it has been published:
-# naming an unpublished distribution in `all` would break `pip install
-# rapidshot[all]` for everyone, immediately, to advertise a wheel that does not
-# exist yet. Add it once the first native-v* tag has shipped -- RELEASING.md
-# records the ordering.
+# `rapidshot-native` is here now that `native-v*` has shipped. It was held back
+# while the distribution did not exist, because naming an unpublished
+# distribution in `all` breaks `pip install rapidshot[all]` for everyone,
+# immediately, to advertise a wheel nobody can get. The environment marker keeps
+# it off non-Windows, where there is no Desktop Duplication to bind to anyway --
+# without the marker, `rapidshot[all]` would be uninstallable on Linux and macOS.
+#
+# RELEASING.md records the ordering this depends on: the `native-v0.2.0` tag
+# must be published *before* the RapidShot tag that floors against it, or
+# `pip install rapidshot[all]` resolves to nothing for as long as the gap lasts.
 # No Pillow: the PIL processor it served was unreachable and has been removed,
 # and nothing else in the library imports it.
 all = [
     "opencv-python>=4.5.0",
+    "rapidshot-native>=0.2.0; platform_system == 'Windows'",
 ]
 dev = [
     "black>=22.3.0",
@@ -151,3 +163,7 @@ testpaths = ["tests"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
+# List every skip and its reason at the end of the run. Most live-capture tests
+# skip on a headless runner, and a green run that hides how much was skipped
+# reads as coverage it is not.
+addopts = "-rs"

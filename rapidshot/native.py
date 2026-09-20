@@ -134,6 +134,79 @@ def require() -> Any:
     return _ext
 
 
+#: Native symbols RapidShot calls, against the `rapidshot-native` version that
+#: first exported each one.
+#:
+#: This exists because `native = ["rapidshot-native>=0.1.0"]` shipped while 2.6
+#: was calling `GpuConverter` and `TensorTransfer`, neither of which is in 0.1.0
+#: -- the extra resolved happily and the transform path then died on
+#: `AttributeError: module '_rapidshot_native' has no attribute 'GpuConverter'`,
+#: which names neither the cause nor the fix. The floor in `pyproject.toml` is
+#: the real repair; this is the backstop for anyone who gets an old wheel past
+#: it, by pinning it themselves or by having a stale local build in the package
+#: directory (which :data:`_ext_source` shows is preferred over the wheel).
+#: Keys are the *native* class names, which are not always the Python ones:
+#: `rapidshot.GpuConverter` is backed by `GpuConverter12`.
+_FEATURE_SINCE: Dict[str, str] = {
+    "GpuConverter12": "0.2.0",
+    "TensorTransfer": "0.2.0",
+}
+
+
+def extension_version() -> Optional[str]:
+    """The loaded extension's version, or None if it is absent.
+
+    Read from the extension's own `build_info()`, which reports
+    `CARGO_PKG_VERSION`, so it describes the binary that is actually answering
+    rather than whatever wheel metadata happens to be installed beside it.
+    """
+    if _ext is None:
+        return None
+    try:
+        return str(dict(_ext.build_info()).get("version")) or None
+    except Exception:  # pragma: no cover - a build too old to report one
+        return None
+
+
+def require_feature(name: str) -> Any:
+    """Return native symbol `name`, or explain which version provides it.
+
+    Args:
+        name: The attribute to fetch from the extension.
+
+    Returns:
+        The native attribute.
+
+    Raises:
+        RuntimeError: The extension is absent, or is too old to export `name`.
+    """
+    ext = require()
+    feature = getattr(ext, name, None)
+    if feature is not None:
+        return feature
+
+    since = _FEATURE_SINCE.get(name)
+    installed = extension_version()
+    detail = f"version {installed}" if installed else "an unknown version"
+    if since is None:
+        raise RuntimeError(
+            f"The native extension does not export {name!r}. The installed "
+            f"extension is {detail}, from {_ext_source}.\n\n{BUILD_HINT}"
+        )
+    raise RuntimeError(
+        f"{name} requires rapidshot-native >= {since}; the installed extension "
+        f"is {detail}, from {_ext_source}.\n"
+        "\n"
+        "Upgrade the prebuilt wheel:\n"
+        "    pip install --upgrade 'rapidshot-native>=" + since + "'\n"
+        "\n"
+        "If you build the extension yourself, rebuild it -- a stale artifact in "
+        "the package directory is preferred over the installed wheel:\n"
+        "    cd native && cargo build --release\n"
+        "    python native/install_dev.py"
+    )
+
+
 def build_info() -> Optional[Dict[str, Any]]:
     """Version/stage of the loaded extension, or None if absent.
 
