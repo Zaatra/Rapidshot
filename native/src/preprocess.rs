@@ -110,7 +110,7 @@ pub struct Params {
     pub crop_height: u32,
 }
 
-const _: () = assert!(std::mem::size_of::<Params>() % 16 == 0);
+const _: () = assert!(std::mem::size_of::<Params>().is_multiple_of(16));
 
 /// Everything needed to run the conversion, built once and reused per frame.
 pub struct Preprocessor {

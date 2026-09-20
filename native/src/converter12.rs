@@ -659,7 +659,7 @@ impl Converter12 {
         // 4:2:0 has one chroma sample per 2x2 block. An odd dimension leaves a
         // row or column with no block to belong to; every encoder refuses it,
         // so refuse here rather than invent a convention for the edge.
-        if format.is_yuv() && (out_width % 2 != 0 || out_height % 2 != 0) {
+        if format.is_yuv() && (!out_width.is_multiple_of(2) || !out_height.is_multiple_of(2)) {
             return Err(windows::core::Error::new(
                 windows::Win32::Foundation::E_INVALIDARG,
                 format!(
@@ -673,7 +673,7 @@ impl Converter12 {
         // row. Refuse rather than emit a tensor whose last column is garbage:
         // the shape would still be right, which is exactly the kind of wrong
         // § 11 says to fail loudly on. Every realistic model input is even.
-        if format.is_fp16() && out_width % 2 != 0 {
+        if format.is_fp16() && !out_width.is_multiple_of(2) {
             return Err(windows::core::Error::new(
                 windows::Win32::Foundation::E_INVALIDARG,
                 format!(
