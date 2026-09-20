@@ -30,8 +30,8 @@ fit over the steady-state window can, and it is the only figure here that
 answers "does this grow without bound".
 
 Each library runs in its own process so nothing else is on its books, and the
-WHEA guard from § 7.0 is in force because this machine's CPU is degrading and a
-crash mid-run silently loses the whole recording.
+WHEA guard from § 7.0 is in force: a machine-check event part way through
+invalidates every number after it, and a crash loses the recording outright.
 
 Usage::
 
@@ -52,7 +52,12 @@ REPO = HERE.parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(REPO))
 
-from ai_ingestion import RunLogs, _child_options, stage  # noqa: E402
+import machine_inventory
+import result_store
+from result_store import CaseIdentity
+import result_validation
+from result_validation import should_stop
+from ai_ingestion import RunLogs, _child_options, save_results, stage  # noqa: E402
 from section7 import SOURCE, HealthGuard, display_mode  # noqa: E402
 
 LIBRARIES = ("mss", "dxcam", "rapidshot", "rapidshot-frame")
@@ -308,6 +313,12 @@ def print_table(rows):
           "frame:\nthe memory capture itself is responsible for.")
 
 
+#: What a memory row must contain to be a measurement. Growth may legitimately
+#: be zero or negative, so it is not required to be positive -- only present and
+#: finite, which the non-finite check already covers.
+MEMORY_REQUIRED = ("fps", "working_set_mb", "elapsed_seconds")
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -317,11 +328,22 @@ def main(argv=None) -> int:
     parser.add_argument("--workloads", nargs="+", choices=WORKLOADS,
                         default=list(WORKLOADS))
     parser.add_argument("--seconds", type=float, default=10.0)
-    parser.add_argument("--width", type=int, default=900)
-    parser.add_argument("--height", type=int, default=700)
+    # The display, not a window. This captured the whole screen while animating
+    # 900x700 of it, so on a 2560x1600 panel 15% of the captured area was moving
+    # and every library was measured against a mostly-still desktop. The
+    # recorded memory table in ROADMAP section 7.0 was taken that way.
+    parser.add_argument("--width", type=int, default=0,
+                        help="source width; 0 follows the display")
+    parser.add_argument("--height", type=int, default=0,
+                        help="source height; 0 follows the display")
     parser.add_argument("--source-fps", type=float, default=0)
     parser.add_argument("--log-dir", type=Path)
     parser.add_argument("--out", type=Path)
+    parser.add_argument("--repeat", type=int, default=1,
+                        help="which repeat of this configuration this run is")
+    parser.add_argument("--continue-on-failure", action="store_true")
+    machine_inventory.add_policy_arguments(parser)
+    result_store.add_history_arguments(parser)
     args = parser.parse_args(argv)
 
     if args.worker:
@@ -330,19 +352,42 @@ def main(argv=None) -> int:
         return 0
     if args.seconds <= WARMUP_SECONDS:
         parser.error(f"--seconds must exceed the {WARMUP_SECONDS}s warm-up")
+    mode = display_mode()
+    args.width = args.width or mode["width"]
+    args.height = args.height or mode["height"]
     if args.source_fps == 0:
         # Follow the panel, for section 7.0's reason: a fixed default describes
         # the default rather than the machine, and vsync caps the source at the
         # refresh rate anyway. The source refuses anything outside 1..240.
         args.source_fps = min(240.0, float(display_mode()["refresh_hz"]))
 
+    policy, machine = machine_inventory.prepare_run(args)
+    configuration = (f"{args.width}x{args.height}@{args.source_fps:g}-"
+                     f"{args.seconds:g}s-warmup{WARMUP_SECONDS:g}s"
+                     + ("-unpinned" if args.no_pin else "-pinned"))
+    captured = (0, 0, mode["width"], mode["height"])
+    animated = (0, 0, args.width, args.height)
+    coverage = result_validation.coverage_reasons(animated, captured)
+    store = result_store.open_for_runner(
+        "memory_profile", root=args.history_root, resume=args.resume,
+        disabled=args.no_history,
+        metadata={"configuration": configuration, "seconds": args.seconds,
+                  "warmup_seconds": WARMUP_SECONDS, "sample_interval": SAMPLE_INTERVAL,
+                  "argv": sys.argv, "machine_id": machine["machine_id"],
+                  "display_fingerprint": machine["display_fingerprint"],
+                  "cpu_policy": policy.as_dict(), "environment": machine})
     logs = RunLogs(args.log_dir, args.out)
     print(f"Diagnostics: {logs.directory}")
+    if store is not None:
+        print(f"History: {store.run_dir}")
     guard = HealthGuard(logs)
     rows = []
     payload = {"schema_version": 1, "warmup_seconds": WARMUP_SECONDS,
                "sample_interval": SAMPLE_INTERVAL, "seconds": args.seconds,
-               "results": rows, "logs": str(logs.directory)}
+               "results": rows, "logs": str(logs.directory),
+               "environment": machine, "cpu_policy": policy.as_dict(),
+               "animated_rect": list(animated), "captured_rect": list(captured),
+               "coverage_warnings": list(coverage)}
     try:
         for workload in args.workloads:
             source = WorkloadSource(logs, workload, args.width, args.height,
@@ -350,10 +395,32 @@ def main(argv=None) -> int:
             source.start()
             try:
                 for library in args.libraries:
+                    identity = CaseIdentity(benchmark="memory_profile", path=library,
+                                            configuration=configuration, workload=workload,
+                                            repeat=args.repeat)
+                    action, done = result_store.resume_decision(
+                        store, identity, retry_failed=args.retry_failed)
+                    if action == "skip":
+                        hint = ("" if done in result_store.RESUME_SETTLED
+                                else "; pass --retry-failed to measure it again")
+                        print(f"  [{workload}/{library}] already {done}{hint}", flush=True)
+                        continue
                     guard.check(force=True)
                     print(f"  [{workload}/{library}] ...", flush=True)
-                    row = spawn_worker(library, workload, args.seconds, logs)
-                    row["workload"] = workload
+                    with result_store.case_context(
+                            store, identity, retry=action == "retry",
+                            required=MEMORY_REQUIRED) as case:
+                        row = spawn_worker(library, workload, args.seconds, logs)
+                        row["workload"] = workload
+                        row["animated_rect"] = list(animated)
+                        row["captured_rect"] = list(captured)
+                        case.result = row
+                        case.contamination = list(coverage)
+                    if case.record is not None:
+                        row = dict(row, case_status=case.record.status,
+                                   case={"run_id": store.run_id,
+                                         "case_id": case.record.case_id,
+                                         "attempt_id": case.record.attempt_id})
                     rows.append(row)
                     if "error" in row:
                         print(f"    ERROR: {row['error']}", flush=True)

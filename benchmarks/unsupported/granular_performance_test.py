@@ -1,3 +1,16 @@
+"""UNSUPPORTED -- do not quote this number. See ./README.md for why.
+
+Drives Duplicator and NumpyProcessor directly rather than the shipped path,
+and reports 1/(mean(capture) + mean(process)) where the two means are taken
+over different denominators. On a static desktop the result describes the
+10 ms acquire timeout, not the capture path.
+
+Supported entry points: perf_suite.py, compare_libraries.py, ai_ingestion.py,
+section7.py, section7_suite.py, memory_profile.py.
+"""
+import sys as _sys
+print("UNSUPPORTED BENCHMARK -- see benchmarks/unsupported/README.md", file=_sys.stderr)
+
 import time
 import numpy as np
 import argparse

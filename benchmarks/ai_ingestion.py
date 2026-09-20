@@ -30,6 +30,12 @@ import sys
 import tempfile
 import time
 
+import machine_inventory
+import result_store
+from result_store import CaseIdentity
+import result_validation
+from result_validation import should_stop
+
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 OUT = 640
@@ -257,6 +263,22 @@ def _validate_transfer(transfer):
         raise ValueError("invalid cross-adapter image dimensions, pitch, or allocation")
 
 
+def _require_hardware_destination(transfer):
+    """Refuse a cross-adapter path whose only destination is WARP.
+
+    On a machine with one hardware GPU the "other" adapter is the software
+    rasteriser. The transfer still works, but it is a copy in system memory,
+    not a trip across a GPU bus -- and CUDA cannot import a heap WARP shared,
+    so the path died with ``cuImportExternalMemory failed: 304`` and was
+    recorded as a failure. It is the same condition the convert-first path was
+    already reported as skipping for, and reported the same way.
+    """
+    if transfer.destination_is_software:
+        raise PathUnavailable(
+            "the only second adapter is WARP, so 'no host-to-device transfer' "
+            "would be measuring a system-memory copy rather than a GPU bus")
+
+
 def _pitched_bgra(raw, transfer):
     _validate_transfer(transfer)
     image_bytes = transfer.height * transfer.row_pitch
@@ -293,6 +315,7 @@ def _adapter_rapidshot_xadapter(cp, np, verify=False):
             if state["transfer"] is None:
                 transfer = native.cross_adapter_transfer(frame)
                 _validate_transfer(transfer)
+                _require_hardware_destination(transfer)
                 state["transfer"] = transfer
                 state["view"] = CudaTensor(
                     TensorSource(transfer), (transfer.total_bytes // 4,), device=0)
@@ -363,6 +386,7 @@ def _adapter_rapidshot_xadapter_async(cp, np, verify=False):
             if state["transfer"] is None:
                 transfer = native.cross_adapter_transfer(frame)
                 _validate_transfer(transfer)
+                _require_hardware_destination(transfer)
                 state["transfer"] = transfer
                 state["view"] = CudaTensor(
                     TensorSource(transfer), (transfer.total_bytes // 4,), device=0)
@@ -413,10 +437,7 @@ def _validate_tensor_transfer(transfer, np):
         raise ValueError(
             f"TensorTransfer carries {transfer.total_bytes} bytes; "
             f"{TARGET_SHAPE} {TARGET_DTYPE} is {expected}")
-    if transfer.destination_is_software:
-        raise PathUnavailable(
-            "the only second adapter is WARP, so 'no host-to-device transfer' "
-            "would be measuring a system-memory copy rather than a GPU bus")
+    _require_hardware_destination(transfer)
 
 
 def _adapter_rapidshot_converter_xadapter(cp, np, verify=False):
@@ -691,6 +712,61 @@ class MotionError(RuntimeError):
     pass
 
 
+class HealthGuard:
+    """A read-only WHEA check. A failed check blocks live work; it is not 'healthy'.
+
+    Shared by every live runner. It lived in ``section7.py`` alone, so
+    ``compare_libraries.py`` and this file's call-duration harness measured
+    straight through corrected hardware errors and recorded the results as
+    clean. ``logs`` is optional because not every runner keeps a run log.
+    """
+    def __init__(self, logs=None):
+        self.logs, self.last = logs, 0.0
+        self.baseline = self.query()
+        self._event("health-baseline", **self.baseline)
+
+    def _event(self, event, **fields):
+        if self.logs is not None:
+            self.logs.event(event, **fields)
+
+    @staticmethod
+    def query():
+        script = "$ErrorActionPreference='Stop'; $e=@(Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName='Microsoft-Windows-WHEA-Logger'} -ErrorAction SilentlyContinue -ErrorVariable ev); if($ev -and $ev[0].FullyQualifiedErrorId -notmatch 'NoMatchingEventsFound'){throw $ev[0]}; @{latest=if($e.Count){$e[0].RecordId}else{0}; count=$e.Count} | ConvertTo-Json -Compress"
+        result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                                capture_output=True, text=True, timeout=15, **_child_options())
+        if result.returncode:
+            raise RuntimeError("cannot inspect WHEA log: " + result.stderr[-500:])
+        return json.loads(result.stdout)
+
+    def check(self, force=False):
+        if not force and time.monotonic() - self.last < 5:
+            return
+        self.last = time.monotonic()
+        current = self.query()
+        if current != self.baseline:
+            self._event("hardware-error-or-log-change", current=current)
+            raise MotionError("WHEA log changed; stopping live benchmarks")
+
+    def after_case(self, row):
+        """Mark ``row`` as a hardware failure if the log moved while it ran.
+
+        Checked *inside* the case, before it is committed. Checking only before
+        the next case -- as ``memory_profile.py`` does -- lets the case that was
+        running when the error landed be recorded as clean, and never checks the
+        last case at all. The error text carries "WHEA", which
+        ``result_validation`` classifies as a hardware failure, so the suite
+        stops even under ``--continue-on-failure``.
+        """
+        try:
+            self.check(force=True)
+        except MotionError as exc:
+            row["error"] = str(exc)
+            row["hardware_failure"] = True
+            row.pop("unavailable", None)
+            row.pop("skipped", None)
+        return row
+
+
 def stop_process(proc):
     if proc is not None and proc.poll() is None:
         proc.terminate()
@@ -729,6 +805,7 @@ class MotionSource:
         self.ready = False
         self.pending = ""
         self.rates = []
+        self.animated_rect = self.screen = None
         self.last_progress = time.monotonic()
 
     def start(self):
@@ -768,6 +845,12 @@ class MotionSource:
                 self.last_progress = time.monotonic()
             if event.get("event") == "ready":
                 self.ready = True
+                # What the source says it is animating. Recorded rather than
+                # assumed: a benchmark that captures the screen while the
+                # source covers a corner of it is measuring a still desktop,
+                # and nothing used to notice.
+                self.animated_rect = event.get("rect")
+                self.screen = event.get("screen")
             if event.get("event") == "rate":
                 rate = event.get("updates_per_second")
                 if not isinstance(rate, (float, int)) or not math.isfinite(rate) or rate <= 0:
@@ -786,7 +869,8 @@ class MotionSource:
     def summary(self):
         return {"fps_limit": self.fps, "rate_samples": list(self.rates),
                 "minimum_updates_per_second": min(self.rates) if self.rates else None,
-                "rate_observed": bool(self.rates)}
+                "rate_observed": bool(self.rates),
+                "animated_rect": self.animated_rect, "screen": self.screen}
 
     def close(self):
         try:
@@ -815,7 +899,10 @@ def _worker_result(path, verify, returncode, stdout, stderr):
         return {"path": path, "error": f"invalid worker result: {exc}", "returncode": returncode}
     if returncode:
         row.setdefault("error", f"worker exited with status {returncode}")
-    if "error" not in row:
+    if "error" not in row and "skipped" not in row:
+        # A skip carries no measurements by definition. Validating it as one
+        # turned every PathUnavailable into an "error", so a run on a machine
+        # that simply lacks a path's hardware exited 1 as if something broke.
         if verify:
             valid = (row.get("verified") is True and row.get("dtype_ok") is True
                      and row.get("content_ok") is True and row.get("shape_ok") is True
@@ -881,6 +968,41 @@ def spawn(path: str, seconds: float, warmup: int, verify: bool, *, logs=None,
     return row
 
 
+#: What a call-duration row must contain to be a measurement at all. Mirrors
+#: `_worker_result`'s own checks rather than competing with them.
+CALL_DURATION_REQUIRED = ("frames", "fps", "elapsed_seconds")
+
+
+def coverage_reasons(motion):
+    """Whether the source covered the screen this harness captures.
+
+    Only meaningful with a source: without one the desktop is uncontrolled and
+    `uncontrolled_desktop` already says so, which is the larger problem.
+    """
+    if motion is None:
+        return []
+    animated, screen = getattr(motion, "animated_rect", None), getattr(
+        motion, "screen", None)
+    if screen is None:
+        return []
+    return result_validation.coverage_reasons(
+        tuple(animated) if animated else None, (0, 0, screen[0], screen[1]))
+
+
+def uncontrolled_desktop(args):
+    """Flag a run whose throughput is set by whatever the desktop was doing.
+
+    Without `--with-motion` there is no controlled source, so a path's frame
+    rate is bounded by how much the screen happened to change. That is a
+    condition worth recording against the result, not a reason to refuse it --
+    the per-call timings are still meaningful even when the frame rate is not.
+    """
+    if args.with_motion:
+        return []
+    return ["no controlled motion source (--with-motion not given); throughput reflects "
+            "whatever the desktop was doing rather than the capture path"]
+
+
 def save_results(path, payload):
     if path is None:
         return
@@ -917,6 +1039,11 @@ def main(argv=None) -> int:
                         help="optional animation cap; 0 is uncapped")
     parser.add_argument("--log-dir", type=Path, help="parent directory for unique run logs")
     parser.add_argument("--out", type=Path)
+    parser.add_argument("--repeat", type=int, default=1,
+                        help="which repeat of this configuration this run is")
+    parser.add_argument("--continue-on-failure", action="store_true")
+    machine_inventory.add_policy_arguments(parser)
+    result_store.add_history_arguments(parser)
     args = parser.parse_args(argv)
     TARGET_DTYPE = args.dtype
     try:
@@ -931,28 +1058,76 @@ def main(argv=None) -> int:
         print(json.dumps(row, allow_nan=False), flush=True)
         return int("error" in row)
 
+    # Before any worker is spawned, so every child inherits the policy.
+    policy, machine = machine_inventory.prepare_run(args)
+    workload = "motion" if args.with_motion else "uncontrolled-desktop"
+    configuration = (f"call-duration-{'x'.join(map(str, TARGET_SHAPE))}-{TARGET_DTYPE}"
+                     + ("-unpinned" if args.no_pin else "-pinned")
+                     + ("-verify" if args.verify else ""))
+    store = result_store.open_for_runner(
+        "ai_ingestion", root=args.history_root, resume=args.resume,
+        disabled=args.no_history,
+        metadata={"configuration": configuration, "workload": workload,
+                  "seconds": args.seconds, "motion_fps": args.motion_fps, "argv": sys.argv,
+                  "machine_id": machine["machine_id"],
+                  "display_fingerprint": machine["display_fingerprint"],
+                  "cpu_policy": policy.as_dict(), "environment": machine})
     logs = RunLogs(args.log_dir, args.out)
     print(f"Diagnostics: {logs.directory}", flush=True)
+    if store is not None:
+        print(f"History: {store.run_dir}", flush=True)
     print(f"AI ingestion: full-image bilinear -> {TARGET_SHAPE} {TARGET_DTYPE} RGB",
           flush=True)
     rows = []
     payload = {"schema_version": 3,
                "target": {"shape": list(TARGET_SHAPE), "dtype": TARGET_DTYPE,
                           "resize": "bilinear-half-pixel"},
-               "results": rows, "logs": str(logs.directory)}
+               "results": rows, "logs": str(logs.directory),
+               "environment": machine, "cpu_policy": policy.as_dict()}
     motion = MotionSource(logs, args.motion_fps) if args.with_motion else None
     interrupted = False
     try:
+        # Inside the try: a WHEA log that cannot be read blocks the run, and
+        # that has to be reported like any other failure.
+        guard = HealthGuard(logs)
         if motion:
             motion.start()
         for index, path in enumerate(args.paths):
+            identity = CaseIdentity(benchmark="ai_ingestion", path=path,
+                                    configuration=configuration, workload=workload,
+                                    repeat=args.repeat)
+            action, done = result_store.resume_decision(store, identity,
+                                                        retry_failed=args.retry_failed)
+            if action == "skip":
+                hint = ("" if done in result_store.RESUME_SETTLED
+                        else "; pass --retry-failed to measure it again")
+                print(f"  [{path}] already {done}{hint}", flush=True)
+                continue
             print(f"  [{path}] ...", flush=True)
-            row = spawn(path, args.seconds, args.warmup, args.verify,
-                        logs=logs, motion=motion, index=index, dtype=args.dtype)
+            with result_store.case_context(
+                    store, identity, retry=action == "retry",
+                    required=() if args.verify else CALL_DURATION_REQUIRED) as case:
+                row = spawn(path, args.seconds, args.warmup, args.verify,
+                            logs=logs, motion=motion, index=index, dtype=args.dtype)
+                guard.after_case(row)
+                case.result = row
+                row["animated_rect"] = getattr(motion, "animated_rect", None)
+                row["screen"] = getattr(motion, "screen", None)
+                case.contamination = (uncontrolled_desktop(args)
+                                      + coverage_reasons(motion))
+            if case.record is not None:
+                row = dict(row, case_status=case.record.status,
+                           case={"run_id": store.run_id, "case_id": case.record.case_id,
+                                 "attempt_id": case.record.attempt_id})
             rows.append(row)
             if motion:
                 payload["motion"] = motion.summary()
             save_results(args.out, payload)
+            if case.record is not None and should_stop(
+                    case.record.status, case.record.reasons,
+                    continue_on_failure=args.continue_on_failure):
+                raise RuntimeError(f"{path} recorded {case.record.status}: "
+                                   f"{'; '.join(case.record.reasons)}")
             if "skipped" in row:
                 print(f"    SKIPPED: {row['skipped']}", flush=True)
             elif "error" in row:
@@ -969,6 +1144,8 @@ def main(argv=None) -> int:
         interrupted = True
     except Exception as exc:
         payload["error"] = f"{type(exc).__name__}: {exc}"
+    else:
+        payload["health"] = "no new WHEA records"
     finally:
         if motion:
             try:

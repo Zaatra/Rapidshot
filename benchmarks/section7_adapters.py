@@ -105,8 +105,10 @@ class Adapter:
                 else:
                     if self.transfer is None:
                         from types import SimpleNamespace
+                        from ai_ingestion import _require_hardware_destination
                         self.transfer = native.cross_adapter_transfer(frame)
                         _validate_transfer(self.transfer)
+                        _require_hardware_destination(self.transfer)
                         owner = SimpleNamespace(shared_output_handle=self.transfer.shared_destination_handle,
                             output_byte_size=self.transfer.total_bytes, transfer=self.transfer,
                             cuda_handle_type=4, cuda_dedicated=False)
@@ -216,7 +218,12 @@ class Adapter:
                 frame, (MARKER_CROP[2], MARKER_CROP[3]), dtype="uint8",
                 layout="nhwc", crop=MARKER_CROP, sampling="nearest")
             if crossing:
+                from ai_ingestion import _require_hardware_destination
                 self.tensor_transfer = rapidshot.TensorTransfer(self.converter)
+                # Before the markers' transfer or any CUDA import. With WARP as
+                # the only destination, this measured a copy between two
+                # buffers on the capture GPU and reported it as a crossing.
+                _require_hardware_destination(self.tensor_transfer)
                 self.marker_transfer = rapidshot.TensorTransfer(self.marker_converter)
                 self.view = self._heap_view(self.tensor_transfer, CudaTensor)
                 self.marker_view = self._heap_view(self.marker_transfer, CudaTensor)

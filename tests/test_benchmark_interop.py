@@ -55,7 +55,7 @@ class FakeCuda:
 @pytest.fixture
 def fence_env(monkeypatch):
     cuda = FakeCuda()
-    monkeypatch.setattr(cuda_semaphore.c, "WinDLL", lambda name: cuda)
+    monkeypatch.setattr(cuda_semaphore.c, "WinDLL", lambda name: cuda, raising=False)
     events = []
     stream = SimpleNamespace(ptr=0xABC)
     cp = SimpleNamespace(cuda=SimpleNamespace(
@@ -81,7 +81,7 @@ def test_a_refused_import_raises_rather_than_returning_a_null_fence(fence_env,
     """A null semaphore that waits on nothing would make every frame look
     perfectly synchronised."""
     monkeypatch.setattr(cuda_semaphore.c, "WinDLL",
-                        lambda name: FakeCuda(fail_on="import"))
+                        lambda name: FakeCuda(fail_on="import"), raising=False)
     with pytest.raises(RuntimeError, match="external semaphore error 1"):
         cuda_semaphore.CudaFence(fence_env.owner, fence_env.cp)
 
@@ -99,7 +99,7 @@ def test_wait_targets_the_value_and_the_current_stream(fence_env):
 
 def test_a_refused_wait_is_not_swallowed(fence_env, monkeypatch):
     monkeypatch.setattr(cuda_semaphore.c, "WinDLL",
-                        lambda name: FakeCuda(fail_on="wait"))
+                        lambda name: FakeCuda(fail_on="wait"), raising=False)
     fence = cuda_semaphore.CudaFence(fence_env.owner, fence_env.cp)
     with pytest.raises(RuntimeError, match="external semaphore error 1"):
         fence.wait(1)

@@ -38,13 +38,20 @@ import argparse
 import ctypes
 import json
 import logging
+import os
 import platform
 import statistics
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
+
+import machine_inventory
+import result_store
+import statistics_report
+from result_store import CaseIdentity
 
 import numpy as np
 
@@ -607,6 +614,62 @@ def bench_live_grab_frame(duration_s: float) -> List[Result]:
 # reporting
 # ---------------------------------------------------------------------------
 
+def calibration_metrics(results) -> dict:
+    """One run's benchmarks flattened to ``name.metric`` -> value.
+
+    Only the figures a comparison would quote. Sample counts and notes are not
+    measurements and would clutter every table with rows whose spread is zero.
+    """
+    flat = {}
+    for result in results:
+        row = result.to_dict()
+        for metric in ("median_ms", "min_ms", "p95_ms", "stdev_ms", "gb_per_s"):
+            value = row.get(metric)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                flat[f"{result.name}.{metric}"] = value
+    return flat
+
+
+def run_calibration(args, info, first_results, run_once):
+    """Repeat the whole suite with unchanged code and record what moves.
+
+    The first pass has already happened by the time this is called, so it is
+    reused rather than thrown away -- it was taken under the same conditions as
+    the rest and discarding it would cost a run for nothing.
+    """
+    wanted = max(args.calibrate, 1)
+    if wanted < statistics_report.MINIMUM_CALIBRATION_RUNS:
+        print(f"{chr(10)}WARNING: {wanted} run(s) requested. Below "
+              f"{statistics_report.MINIMUM_CALIBRATION_RUNS} this is not a noise "
+              "floor, and the calibration will say so.")
+    print(f"{chr(10)}CALIBRATION: {wanted} runs of unchanged code.")
+    observations = [calibration_metrics(first_results)]
+    for index in range(1, wanted):
+        print(f"  run {index + 1}/{wanted}...", end=chr(13), flush=True)
+        observations.append(calibration_metrics(
+            merge_rounds([run_once() for _ in range(max(1, args.rounds))])))
+    print(" " * 40, end=chr(13))
+
+    configuration = (f"reps{args.reps}-rounds{args.rounds}"
+                     f"-{info.get('cpu_topology', 'unknown')}"
+                     f"-{'unpinned' if args.no_pin else 'pinned'}")
+    calibration = statistics_report.calibrate_noise(
+        observations, configuration=configuration)
+    print(statistics_report.render_calibration_markdown(calibration))
+
+    target = args.calibration_out or (Path(__file__).resolve().parent / "build"
+                                      / "calibration.json")
+    payload = {"schema_version": statistics_report.SCHEMA_VERSION,
+               "machine": info, "calibration": calibration.as_dict(),
+               "observations": observations}
+    statistics_report.write_report(target, payload)
+    statistics_report.write_report(
+        Path(str(target).rsplit(".", 1)[0] + ".md"),
+        statistics_report.render_calibration_markdown(calibration))
+    print(f"wrote {target}")
+    return 0
+
+
 def machine_info() -> dict:
     info = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -670,6 +733,12 @@ def machine_info() -> dict:
         # Record the reason rather than dropping the key, so "could not tell"
         # is never mistaken for "was not built".
         info["native_extension"] = f"unknown ({type(e).__name__})"
+    # Added alongside the keys above, never instead of them: `print_comparison`
+    # reads `processor`, `platform`, `gpu`, `python`, `numpy`, `cpu_topology`
+    # and `pinned_to_performance_cores` out of committed baselines, and
+    # renaming any of them would invalidate every baseline in the repository.
+    info["environment"] = machine_inventory.discover_machine()
+    info["machine_id"] = info["environment"]["machine_id"]
     return info
 
 
@@ -1047,91 +1116,36 @@ def print_comparison(current: List[Result], baseline_path: Path,
 
 
 def performance_core_mask() -> Tuple[Optional[int], str]:
-    """Return ``(mask, topology)`` — the fastest cores, and how sure we are.
+    """``(mask, topology)`` for the fastest cores. See `machine_inventory`.
 
-    ``topology`` is ``"hybrid"``, ``"uniform"`` or ``"unknown"``. The third
-    matters: returning the uniform answer when detection *failed* records a
-    certainty we do not have, leaves a hybrid CPU silently unpinned, and lets
-    a later comparison gate noisy results as though scheduling were known.
-
-    On a hybrid CPU Windows will happily migrate a benchmark thread onto an
-    efficiency core, which reads as a 2-3x regression on compute-bound rows.
-    Measured on an i9-14900HX (8 P-cores, 16 E-cores): comparing the suite to
-    *itself* reported verdicts up to `SLOWER 2.57x` unpinned and none at all
-    pinned. The control benchmark does not rescue this -- it reported "machine
-    state comparable, 1.01x" in the same run, because the control happened to
-    be scheduled well and the others did not.
-
-    Windows reports an `EfficiencyClass` per logical processor, where higher
-    means faster. A uniform CPU has one class and needs no pinning.
+    The detection lived here first and now lives in `machine_inventory`, so the
+    capture and memory runners can apply the same policy this suite has had
+    since ROADMAP section 2 -- they never could while it was private to this
+    file, which is why the FP16 ingestion table carries the caveat that it was
+    not pinned. The signature stays as it was because `machine_info` below
+    feeds `baseline.json` comparison, and changing those keys would invalidate
+    every committed baseline.
     """
-    if sys.platform != "win32":
-        return None, "unknown"
-    try:
-        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        # Without an explicit restype the pseudo-handle (-1) is truncated to 32
-        # bits and the call fails with ERROR_INVALID_HANDLE.
-        k32.GetCurrentProcess.restype = ctypes.c_void_p
-        k32.GetSystemCpuSetInformation.argtypes = [
-            ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong),
-            ctypes.c_void_p, ctypes.c_ulong,
-        ]
-        me = k32.GetCurrentProcess()
-
-        needed = ctypes.c_ulong(0)
-        k32.GetSystemCpuSetInformation(None, 0, ctypes.byref(needed), me, 0)
-        if not needed.value:
-            return None, "unknown"
-        buf = (ctypes.c_ubyte * needed.value)()
-        if not k32.GetSystemCpuSetInformation(
-                buf, needed.value, ctypes.byref(needed), me, 0):
-            return None, "unknown"
-
-        # SYSTEM_CPU_SET_INFORMATION: Size@0, Type@4, then the CpuSet struct,
-        # of which LogicalProcessorIndex@14 and EfficiencyClass@18 matter here.
-        raw = bytes(buf)
-        by_class: Dict[int, int] = {}
-        offset = 0
-        while offset + 20 <= len(raw):
-            size = int.from_bytes(raw[offset:offset + 4], "little")
-            if size == 0:
-                break
-            if int.from_bytes(raw[offset + 4:offset + 8], "little") == 0:
-                logical = raw[offset + 14]
-                efficiency = raw[offset + 18]
-                by_class[efficiency] = by_class.get(efficiency, 0) | (1 << logical)
-            offset += size
-
-        if not by_class:
-            return None, "unknown"
-        if len(by_class) < 2:
-            return None, "uniform"
-        return by_class[max(by_class)], "hybrid"
-    except Exception:
-        # Pinning is an accuracy improvement, not a requirement. A CPU whose
-        # topology cannot be read still benchmarks, just more noisily -- but the
-        # recording must say so rather than claim it was uniform.
-        return None, "unknown"
+    return machine_inventory.performance_core_mask()
 
 
 def pin_to_performance_cores() -> None:
-    """Restrict this process to the fastest cores, and say so."""
-    mask, _topology = performance_core_mask()
-    if mask is None:
-        return
-    try:
-        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        k32.GetCurrentProcess.restype = ctypes.c_void_p
-        k32.SetProcessAffinityMask.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
-        if k32.SetProcessAffinityMask(k32.GetCurrentProcess(), mask):
-            print(f"  affinity   pinned to {bin(mask).count('1')} performance "
-                  f"cores (mask 0x{mask:X}) — hybrid CPU detected")
-        else:
-            print("  affinity   could not pin to performance cores; "
-                  "results will be noisier (see ROADMAP § 2)")
-    except Exception:
-        print("  affinity   could not pin to performance cores; "
-              "results will be noisier (see ROADMAP § 2)")
+    """Restrict this process to the fastest cores, and say what happened.
+
+    Pinning narrows the distribution; it does not make timings deterministic.
+    Clocks, thermals and other processes still move them.
+    """
+    policy = machine_inventory.apply_cpu_policy("performance")
+    if policy.verified:
+        print(f"  affinity   pinned to "
+              f"{bin(policy.requested_mask).count('1')} performance cores "
+              f"(mask {hex(policy.requested_mask)}) -- hybrid CPU detected")
+    elif policy.topology == "uniform":
+        pass
+    else:
+        reason = "; ".join(policy.reasons) or "unknown reason"
+        print(f"  affinity   not pinned ({reason}); results will be noisier "
+              "(see ROADMAP section 2)")
 
 
 def warn_if_machine_is_busy() -> None:
@@ -1152,10 +1166,84 @@ def warn_if_machine_is_busy() -> None:
         print("     but close the load for publication-quality numbers.")
 
 
+#: What a microbenchmark row must contain to be a measurement.
+MICROBENCH_REQUIRED = ("samples", "median_ms")
+
+
+def write_json_atomic(path, payload):
+    """tmp + fsync + replace, so an interrupted write cannot truncate a baseline."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
+                                         prefix=path.name + ".", suffix=".tmp",
+                                         delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(payload, stream, indent=2, allow_nan=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
+
+
+def record_history(args, info, results):
+    """Commit each benchmark as a case, with the samples its figures came from.
+
+    **Committed after the run, not between benchmarks**, and that is a weaker
+    guarantee than the other runners get. These are sub-second synthetic
+    microbenchmarks: the whole suite finishes in less time than one section 7
+    case takes to warm up, so the crash window this store exists to close is
+    barely open here. Restructuring the round-pooling in `merge_rounds` to
+    commit incrementally would change how the figures are computed, and this
+    suite gates releases -- not a thing to disturb for a guarantee it needs
+    least.
+
+    The raw per-rep samples go with each case. A median without them cannot be
+    recomputed, re-examined, or used to say how noisy the machine was.
+    """
+    store = result_store.open_for_runner(
+        "perf_suite", root=args.history_root, resume=args.resume,
+        disabled=args.no_history,
+        metadata={"machine": info, "reps": args.reps, "rounds": args.rounds,
+                  "self_test": bool(args.self_test), "argv": sys.argv,
+                  "environment": info.get("environment"),
+                  "machine_id": info.get("machine_id")})
+    if store is None:
+        return None
+    print(f"{chr(10)}History: {store.run_dir}")
+    # The pinning choice and the topology it was applied to change what these
+    # numbers mean, so they are part of the identity rather than a footnote.
+    configuration = (f"reps{args.reps}-rounds{args.rounds}"
+                     f"-{info.get('cpu_topology', 'unknown')}"
+                     f"-{'unpinned' if args.no_pin else 'pinned'}"
+                     + ("-selftest" if args.self_test else ""))
+    for result in results:
+        identity = CaseIdentity(benchmark="perf_suite", path=result.name,
+                                configuration=configuration,
+                                workload=getattr(result, "kind", "synthetic") or "synthetic",
+                                repeat=1)
+        action, status = result_store.resume_decision(store, identity,
+                                                      retry_failed=args.retry_failed)
+        if action == "skip":
+            continue
+        with result_store.case_context(store, identity, retry=action == "retry",
+                                       required=MICROBENCH_REQUIRED) as case:
+            case.result = result.to_dict()
+            case.samples = [{"index": index, "ms": value}
+                            for index, value in enumerate(result._samples_ms)]
+    store.rebuild_summary()
+    return store
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, help="write results as JSON")
+    result_store.add_history_arguments(ap)
     ap.add_argument("--compare", type=Path,
                     help="compare against a baseline JSON, or 'auto' to use "
                          "the committed baseline recorded on this machine. "
@@ -1172,6 +1260,15 @@ def main() -> int:
                     help="ratio a change must exceed to be called real. The "
                          "default is set above this machine's measured "
                          "run-to-run noise floor; verify with --self-test.")
+    ap.add_argument("--calibrate", type=int, metavar="RUNS",
+                    help="repeat the whole suite RUNS times with unchanged code and "
+                         "record what each benchmark's own numbers do when nothing "
+                         "changes. This is the noise floor every later comparison is "
+                         "judged against; at least "
+                         f"{statistics_report.MINIMUM_CALIBRATION_RUNS} runs are "
+                         "needed for it to mean anything.")
+    ap.add_argument("--calibration-out", type=Path,
+                    help="where to write the calibration (JSON, plus .md beside it)")
     ap.add_argument("--self-test", action="store_true",
                     help="measure the noise floor by comparing the suite to "
                          "itself; any 'change' reported is pure measurement error")
@@ -1219,6 +1316,7 @@ def main() -> int:
             print(f"\n[live benchmarks skipped: {type(e).__name__}: {e}]")
 
     print_table(results)
+    record_history(args, info, results)
 
     sensitive = annotate_duty_cycle(results)
     if sensitive:
@@ -1230,8 +1328,11 @@ def main() -> int:
         for line in sensitive:
             print(line)
 
+    if args.calibrate:
+        return run_calibration(args, info, results, run_once)
+
     if args.self_test:
-        print("\nSELF-TEST: re-running the suite and comparing it to itself.")
+        print(f"{chr(10)}SELF-TEST: re-running the suite and comparing it to itself.")
         print("Everything below should read '~ same'. Anything that does not")
         print("is measurement error, and sets the floor for what this machine")
         print("can resolve.")
@@ -1241,8 +1342,16 @@ def main() -> int:
             {"machine": info, "results": [r.to_dict() for r in results]}, indent=2))
         noise = print_comparison(second, tmp, args.threshold)
         tmp.unlink(missing_ok=True)
-        print(f"\nnoise floor: {noise} benchmark(s) exceeded {args.threshold:.2f}x "
-              f"with no code change.")
+        print(f"{chr(10)}noise floor: {noise} benchmark(s) exceeded "
+              f"{args.threshold:.2f}x with no code change.")
+        # Two passes is a sanity check, not a calibration. It can say "this
+        # machine is behaving"; it cannot say how small a difference this
+        # machine can resolve, because two observations have no spread worth
+        # the name. --calibrate is the same idea carried far enough to answer
+        # that, and is what a later comparison is judged against.
+        print(f"{chr(10)}This is a two-pass sanity check. For a per-metric noise "
+              f"floor a comparison can be judged against, run --calibrate "
+              f"{statistics_report.MINIMUM_CALIBRATION_RUNS}.")
         return 0
 
     if args.out:

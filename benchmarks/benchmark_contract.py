@@ -80,6 +80,16 @@ def pipeline_rgb(bgra, xp, size=OUT):
     return canonical_rgb(bgra, xp, size)
 
 
+#: How this contract maps a source frame into the model's square input.
+#: `canonical_rgb` resizes the **whole** frame to size x size with independent
+#: x and y scales -- a stretch, not a letterbox. Declared here because the
+#: detection postprocessing has to invert exactly this, and a live run showed
+#: what happens when it does not: the model saw objects squashed 1.6x
+#: vertically while boxes were restored with a letterbox inverse, and the frame
+#: that should have held 8 detections reported up to 37.
+TENSOR_GEOMETRY = "stretch"
+
+
 def canonical_rgb(bgra, xp, size=OUT):
     """Exact rational half-pixel bilinear, round-half-up to RGB8.
 

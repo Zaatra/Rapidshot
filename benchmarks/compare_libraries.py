@@ -41,6 +41,7 @@ conversion cost is visible as the difference rather than smuggled into a total.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import random
 import platform
@@ -52,6 +53,12 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import machine_inventory
+import result_store
+from result_store import CaseIdentity
+import result_validation
+from result_validation import should_stop
+
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 
@@ -60,7 +67,47 @@ LIBRARIES = ("rapidshot", "rapidshot-poll", "rapidshot-numpy", "rapidshot-gpu",
              "bettercam-gpu", "mss")
 SCENARIOS = ("fullscreen", "region")
 COLOURS = ("BGRA", "RGB")
-REGION = (760, 340, 1160, 740)          # 400x400, centred on a 1080p display
+
+#: The region scenario's rectangle, in physical pixels.
+REGION_SIZE = 400
+
+
+def capture_region(size: int = REGION_SIZE):
+    """A square centred on the primary display.
+
+    It used to be the literal `(760, 340, 1160, 740)`, commented as "centred on
+    a 1080p display" -- which it was, and on nothing else. On a 2560x1600 panel
+    it sat up and to the left of centre, and it overlapped the old 900x700
+    motion window only partly, so roughly 15% of the region was never
+    animated. The overlap changed with the monitor, which means two machines
+    running this identical command were not running the same benchmark. That
+    is precisely the comparison ROADMAP section 3 keeps Machine A and Machine B
+    apart for.
+
+    Computed rather than stored so the parent and each worker subprocess derive
+    the same rectangle on the same machine without having to pass it.
+    """
+    user32 = ctypes.windll.user32
+    width, height = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+    size = min(size, width, height)
+    left = (width - size) // 2
+    top = (height - size) // 2
+    return (left, top, left + size, top + size)
+
+
+#: Resolved on first use rather than at import. `capture_region()` calls
+#: `ctypes.windll`, and evaluating it at module scope made importing this
+#: module fail outright anywhere that attribute does not exist -- which is a
+#: much larger blast radius than the region itself deserves, and turned a
+#: Windows-only *benchmark* into a Windows-only *import*.
+_REGION = None
+
+
+def active_region():
+    global _REGION
+    if _REGION is None:
+        _REGION = capture_region()
+    return _REGION
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +209,7 @@ def _adapter_rapidshot(scenario: str, colour: str, timeout_ms: int = 10):
     from rapidshot import native
 
     cam = rapidshot.create(output_color=colour, timeout_ms=timeout_ms)
-    region = REGION if scenario == "region" else None
+    region = active_region() if scenario == "region" else None
 
     def grab():
         frame = cam.grab(region=region) if region else cam.grab()
@@ -182,7 +229,7 @@ def _adapter_rapidshot(scenario: str, colour: str, timeout_ms: int = 10):
 def _adapter_dxcam(scenario: str, colour: str):
     import dxcam
     cam = dxcam.create(output_color=colour)
-    region = REGION if scenario == "region" else None
+    region = active_region() if scenario == "region" else None
 
     def grab():
         frame = cam.grab(region=region) if region else cam.grab()
@@ -194,7 +241,7 @@ def _adapter_dxcam(scenario: str, colour: str):
 def _adapter_bettercam(scenario: str, colour: str):
     import bettercam
     cam = bettercam.create(output_color=colour)
-    region = REGION if scenario == "region" else None
+    region = active_region() if scenario == "region" else None
 
     def grab():
         frame = cam.grab(region=region) if region else cam.grab()
@@ -209,7 +256,7 @@ def _adapter_mss(scenario: str, colour: str):
 
     sct = mss.mss()
     if scenario == "region":
-        left, top, right, bottom = REGION
+        left, top, right, bottom = active_region()
         target = {"left": left, "top": top,
                   "width": right - left, "height": bottom - top}
     else:
@@ -259,7 +306,7 @@ def _adapter_rapidshot_gpu(scenario: str, colour: str):
     from rapidshot import native
 
     cam = rapidshot.create(output_color=colour, nvidia_gpu=True)
-    region = REGION if scenario == "region" else None
+    region = active_region() if scenario == "region" else None
 
     def grab():
         frame = cam.grab(region=region) if region else cam.grab()
@@ -277,7 +324,7 @@ def _adapter_dxcam_numpy(scenario: str, colour: str):
     """
     import dxcam
     cam = dxcam.create(output_color=colour, processor_backend="numpy")
-    region = REGION if scenario == "region" else None
+    region = active_region() if scenario == "region" else None
 
     def grab():
         frame = cam.grab(region=region) if region else cam.grab()
@@ -290,7 +337,7 @@ def _adapter_bettercam_gpu(scenario: str, colour: str):
     """BetterCam converting on the GPU, which it supports and DXcam does not."""
     import bettercam
     cam = bettercam.create(output_color=colour, nvidia_gpu=True)
-    region = REGION if scenario == "region" else None
+    region = active_region() if scenario == "region" else None
 
     def grab():
         frame = cam.grab(region=region) if region else cam.grab()
@@ -312,7 +359,7 @@ def _adapter_rapidshot_unpooled(scenario: str, colour: str):
     from rapidshot import native
 
     cam = rapidshot.create(output_color=colour, pool_output=False)
-    region = REGION if scenario == "region" else None
+    region = active_region() if scenario == "region" else None
 
     def grab():
         frame = cam.grab(region=region) if region else cam.grab()
@@ -453,7 +500,7 @@ def environment(motion: bool) -> dict:
         "processor": platform.processor(),
         "python": platform.python_version(),
         "motion_on_screen": motion,
-        "region": list(REGION),
+        "region": list(active_region()),
     }
     # cv2 and cupy belong here as much as the capture libraries do. DXcam and
     # BetterCam convert colour through OpenCV, whose default thread count sets
@@ -509,6 +556,26 @@ def spawn(library: str, scenario: str, colour: str, seconds: float,
     return {"library": library, "scenario": scenario, "colour": colour,
             "frames": 0,
             "error": (proc.stderr.strip().splitlines() or ["no output"])[-1][:200]}
+
+
+#: What a capture row must contain to be a measurement. `fps_mean` rather than
+#: a rate derived from a window: this harness times inter-frame deltas, not one
+#: interval, so there is no `elapsed_seconds` for the throughput check to use.
+COMPARE_REQUIRED = ("frames", "fps_mean")
+
+
+def uncontrolled_desktop(args):
+    """Flag a run with nothing known to be moving on screen.
+
+    Desktop Duplication only returns changed frames, so without motion these
+    numbers describe an idling desktop rather than a capture path. The harness
+    already prints this warning; recording it against each result is what stops
+    the number being quoted later without it.
+    """
+    if args.motion or args.with_motion:
+        return []
+    return ["neither --motion nor --with-motion was given; Desktop Duplication "
+            "only returns changed frames, so this measures idling, not capture"]
 
 
 def aggregate(samples: List[dict]) -> dict:
@@ -636,16 +703,19 @@ def main() -> int:
                          "of the run and stop it afterwards, instead of relying "
                          "on one having been started by hand for long enough")
     ap.add_argument("--checkpoint", type=Path,
-                    help="append every completed sample here as JSONL and skip "
-                         "samples already in it. Makes a run resumable: this "
-                         "harness holds results in memory until the end, so an "
-                         "interrupted run used to lose everything. On a machine "
-                         "that can fall over mid-run, that is the difference "
-                         "between losing minutes and losing the whole session.")
+                    help="SUPERSEDED by the durable store, which resumes by "
+                         "default and checksums what it commits. Still written "
+                         "and still read, so a run interrupted before the store "
+                         "existed is not stranded; a torn line here can only be "
+                         "skipped, where the store can tell a torn tail from "
+                         "damage in the middle.")
     ap.add_argument("--seed", type=int, default=20260913,
                     help="ordering seed. Cells are run in a shuffled order so "
                          "a library's position cannot become its result.")
     ap.add_argument("--out", type=Path)
+    ap.add_argument("--continue-on-failure", action="store_true")
+    machine_inventory.add_policy_arguments(ap)
+    result_store.add_history_arguments(ap)
     args = ap.parse_args()
 
     if args.worker:
@@ -654,8 +724,34 @@ def main() -> int:
                                     args.seconds, args.warmup)))
         return 0
 
+    workload = "motion" if args.motion else "uncontrolled-desktop"
+    # `environment()` below is this module's own summary of the libraries under
+    # test; `machine` is the machine snapshot. Different things, and the name
+    # collision is why this one is not called `environment`.
+    policy, machine = machine_inventory.prepare_run(args, announce=False)
+    # The source covers the screen now, so both scenarios are fully animated.
+    # Recorded rather than assumed: this is the check that would have caught
+    # the old hardcoded region sitting partly outside the old motion window.
+    screen = (0, 0, ctypes.windll.user32.GetSystemMetrics(0),
+              ctypes.windll.user32.GetSystemMetrics(1))
+    animated = screen if (args.motion or args.with_motion) else None
+    coverage = {scenario: result_validation.coverage_reasons(
+        animated, screen if scenario == "fullscreen" else active_region())
+        for scenario in SCENARIOS}
+    store = result_store.open_for_runner(
+        "compare_libraries", root=args.history_root, resume=args.resume,
+        disabled=args.no_history,
+        metadata={"workload": workload, "seconds": args.seconds, "warmup": args.warmup,
+                  "repeats": args.repeats, "seed": args.seed, "argv": sys.argv,
+                  "machine_id": machine["machine_id"],
+                  "display_fingerprint": machine["display_fingerprint"],
+                  "cpu_policy": policy.as_dict(), "environment": machine})
     env = environment(args.motion)
     print("Capture library comparison")
+    print(f"  cpu policy         {policy.policy} on a {policy.topology} CPU")
+    print(f"  machine            {machine['machine_id']}")
+    if store is not None:
+        print(f"  history            {store.run_dir}")
     for key in ("timestamp", "platform", "processor", "python", "rapidshot",
                 "dxcam", "bettercam", "mss", "motion_on_screen"):
         print(f"  {key:<18} {env[key]}")
@@ -669,6 +765,11 @@ def main() -> int:
              for colour in COLOURS
              for library in args.libraries]
     total = len(cells) * args.repeats
+    # Every cell drives the GPU and loads the CPU, so a hardware error during
+    # one is a machine fault, not a slow library. Imported here rather than at
+    # module scope so that importing this file for its helpers stays cheap.
+    from ai_ingestion import HealthGuard
+    guard = HealthGuard()
     motion = None
     if args.with_motion:
         # Startup dominates for short windows, so budget per run rather than
@@ -717,11 +818,39 @@ def main() -> int:
             scenario, colour, library = cell
             if len(samples_by_cell[cell]) > rep:
                 continue            # this pass of this cell is already recorded
+            identity = CaseIdentity(
+                benchmark="compare_libraries", path=library,
+                configuration=(f"{scenario}-{colour}-{args.seconds:g}s"
+                               f"-warmup{args.warmup}"
+                               + ("-unpinned" if args.no_pin else "-pinned")),
+                workload=workload, repeat=rep + 1)
+            action, status = result_store.resume_decision(
+                store, identity, retry_failed=args.retry_failed)
+            if action == "skip":
+                committed = store.committed_result(identity)
+                if committed is not None:
+                    samples_by_cell[cell].append(committed)
+                    done += 1
+                continue
             done += 1
             print(f"  [{done}/{total}] pass {rep + 1}: "
                   f"{library}/{scenario}/{colour}", end=chr(13), flush=True)
-            sample = spawn(library, scenario, colour, args.seconds, args.warmup)
+            with result_store.case_context(store, identity, retry=action == "retry",
+                                           required=COMPARE_REQUIRED) as case:
+                sample = spawn(library, scenario, colour, args.seconds, args.warmup)
+                guard.after_case(sample)
+                sample["region"] = list(active_region()) if scenario == "region" else None
+                sample["screen"] = list(screen)
+                case.result = sample
+                case.contamination = (uncontrolled_desktop(args)
+                                      + coverage[scenario])
             samples_by_cell[cell].append(sample)
+            if case.record is not None and should_stop(
+                    case.record.status, case.record.reasons,
+                    continue_on_failure=args.continue_on_failure):
+                raise RuntimeError(f"{library}/{scenario}/{colour} recorded "
+                                   f"{case.record.status}: "
+                                   f"{'; '.join(case.record.reasons)}")
             if args.checkpoint:
                 # Flushed per sample. Buffering would reintroduce exactly the
                 # loss this exists to prevent.
@@ -749,7 +878,12 @@ def main() -> int:
         except Exception:
             motion.kill()
 
-    payload = {"environment": env, "results": rows}
+    payload = {"environment": env, "machine": machine,
+               "cpu_policy": policy.as_dict(), "results": rows,
+               # Reaching here means every case passed its after-case check.
+               "health": "no new WHEA records",
+               "screen": list(screen), "region": list(active_region()),
+               "coverage_warnings": coverage}
     out = args.out or (HERE / "library-comparison.json")
     out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(f"\nwrote {out}")

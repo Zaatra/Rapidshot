@@ -35,6 +35,16 @@ class Clock:
         self.now += seconds
 
 
+@pytest.fixture(autouse=True)
+def quiet_whea_log(monkeypatch):
+    """An unchanging WHEA log, so main() never shells out to PowerShell here.
+
+    A test that wants the log to move replaces ``query`` itself.
+    """
+    monkeypatch.setattr(bench.HealthGuard, "query",
+                        staticmethod(lambda: {"latest": 5, "count": 5}))
+
+
 @pytest.fixture
 def harness(monkeypatch):
     events, clock = [], Clock()
@@ -190,7 +200,7 @@ def test_cleanup_failure_is_reported(harness):
 
 def transfer(**overrides):
     data = dict(width=2, height=3, row_pitch=16, total_bytes=64,
-                bytes_per_pixel=4, dxgi_format=87)
+                bytes_per_pixel=4, dxgi_format=87, destination_is_software=False)
     data.update(overrides)
     return SimpleNamespace(**data)
 
@@ -224,6 +234,17 @@ def success_row():
 def test_worker_failure_cannot_be_hidden_by_json(status):
     result = bench._worker_result("mss", False, status, json.dumps(success_row()), "failure")
     assert "error" in result
+
+
+@pytest.mark.parametrize("verify", [False, True])
+def test_a_skipped_worker_is_not_an_error(verify):
+    """A skip has no measurements by definition. Validating it as a measurement
+    stamped it with an error, so a machine without a path's hardware made the
+    whole run exit 1."""
+    row = {"path": "rapidshot-xadapter", "skipped": "the only second adapter is WARP"}
+    result = bench._worker_result("rapidshot-xadapter", verify, 0, json.dumps(row), "")
+    assert "error" not in result
+    assert result["skipped"] == row["skipped"]
 
 
 @pytest.mark.parametrize("output", ["", "not json", "[]", '{"path":"other"}',
@@ -329,14 +350,24 @@ def test_startup_interrupt_closes_motion(monkeypatch, tmp_path):
     assert closed == [True]
 
 
-def test_parent_reports_failures_and_continues_workers(monkeypatch, tmp_path):
+def test_parent_stops_after_a_failure_unless_told_to_continue(monkeypatch, tmp_path):
+    """Continuing past a failure is now a policy, not the default.
+
+    It used to be unconditional here while `section7.py` stopped, so the same
+    failure meant different things depending on which runner saw it.
+    """
     called = []
     def spawn(path, *args, **kwargs):
         called.append(path)
         return {"path": path, "error": "simulated failure"}
     monkeypatch.setattr(bench, "spawn", spawn)
+    assert bench.main(["--paths", "mss", "dxcam", "--out", str(tmp_path / "a.json")]) == 1
+    assert called == ["mss"]
+
+    called.clear()
     out = tmp_path / "results.json"
-    assert bench.main(["--paths", "mss", "dxcam", "--out", str(out)]) == 1
+    assert bench.main(["--paths", "mss", "dxcam", "--out", str(out),
+                       "--continue-on-failure"]) == 1
     assert called == ["mss", "dxcam"]
     assert len(json.loads(out.read_text())["results"]) == 2
 
@@ -928,3 +959,82 @@ def test_children_inherit_utf8_and_no_console():
     options = bench._child_options()
     assert options["env"]["PYTHONIOENCODING"] == "utf-8"
     assert "creationflags" in options
+
+
+# -- the hardware guard, now shared by every live runner --------------------
+
+
+def moving_log(monkeypatch, readings):
+    values = list(readings)
+    monkeypatch.setattr(bench.HealthGuard, "query",
+                        staticmethod(lambda: values.pop(0) if len(values) > 1 else values[0]))
+
+
+def test_a_case_during_which_the_log_moved_is_a_hardware_failure(monkeypatch):
+    """Checked inside the case, so the case that was running when the error
+    landed is the one marked -- not the next one, and not nobody."""
+    moving_log(monkeypatch, [{"latest": 5, "count": 5}, {"latest": 6, "count": 6}])
+    guard = bench.HealthGuard()             # no run log: compare_libraries has none
+    row = guard.after_case({"path": "mss", "fps": 140.0, "skipped": "stale"})
+    assert row["hardware_failure"] is True
+    assert "WHEA" in row["error"]
+    assert "skipped" not in row, "a machine fault is not an expected skip"
+    from result_validation import is_hardware_failure
+    assert is_hardware_failure([row["error"]])
+
+
+def test_an_unchanged_log_leaves_the_case_alone():
+    guard = bench.HealthGuard()
+    row = {"path": "mss", "fps": 140.0}
+    assert guard.after_case(dict(row)) == row
+
+
+def test_the_call_duration_harness_stops_on_a_hardware_error(monkeypatch, tmp_path):
+    """It measured straight through corrected hardware errors before: only
+    section7 had a guard. Stops even when told to continue past failures."""
+    readings = [{"latest": 5, "count": 5}, {"latest": 5, "count": 5},
+                {"latest": 7, "count": 7}]
+    monkeypatch.setattr(bench.HealthGuard, "query",
+                        staticmethod(lambda: readings.pop(0) if len(readings) > 1 else readings[0]))
+    called = []
+
+    def spawn(path, *args, **kwargs):
+        called.append(path)
+        return {"path": path, "frames": 100, "fps": 100.0, "elapsed_seconds": 1.0,
+                "ms_p50": 1.0, "ms_p95": 1.0, "ms_p99": 1.0}
+
+    monkeypatch.setattr(bench, "spawn", spawn)
+    out = tmp_path / "r.json"
+    assert bench.main(["--paths", "mss", "dxcam", "rapidshot-cpu", "--out", str(out),
+                       "--continue-on-failure", "--log-dir", str(tmp_path)]) == 1
+    assert called == ["mss", "dxcam"], "stopped after the case the error landed in"
+    payload = json.loads(out.read_text())
+    assert payload["results"][0].get("hardware_failure") is None
+    assert payload["results"][1]["hardware_failure"] is True
+    assert "health" not in payload
+
+
+def test_a_clean_run_says_the_log_did_not_move(monkeypatch, tmp_path):
+    monkeypatch.setattr(bench, "spawn", lambda path, *a, **kw: {
+        "path": path, "frames": 100, "fps": 100.0, "elapsed_seconds": 1.0,
+        "ms_p50": 1.0, "ms_p95": 1.0, "ms_p99": 1.0})
+    out = tmp_path / "r.json"
+    assert bench.main(["--paths", "mss", "--out", str(out),
+                       "--log-dir", str(tmp_path)]) == 0
+    assert json.loads(out.read_text())["health"] == "no new WHEA records"
+
+
+# -- a cross-adapter path with only WARP to cross to ------------------------
+
+
+@pytest.mark.parametrize("software", [True, False])
+def test_a_warp_destination_is_unavailable_not_a_failure(software):
+    """On a one-GPU machine the only destination is the software rasteriser.
+    CUDA cannot import what WARP shares, so this died with error 304 and was
+    recorded as a failed path."""
+    transfer = SimpleNamespace(destination_is_software=software)
+    if software:
+        with pytest.raises(bench.PathUnavailable, match="WARP"):
+            bench._require_hardware_destination(transfer)
+    else:
+        bench._require_hardware_destination(transfer)

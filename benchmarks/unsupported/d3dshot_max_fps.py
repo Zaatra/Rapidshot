@@ -1,3 +1,14 @@
+"""UNSUPPORTED -- do not quote this number. See ./README.md for why.
+
+Targets d3dshot, an abandoned package. Device creation is inside the timed
+window, and throughput depends on whatever happened to be on screen.
+
+Supported entry points: perf_suite.py, compare_libraries.py, ai_ingestion.py,
+section7.py, section7_suite.py, memory_profile.py.
+"""
+import sys as _sys
+print("UNSUPPORTED BENCHMARK -- see benchmarks/unsupported/README.md", file=_sys.stderr)
+
 import time
 import d3dshot
 

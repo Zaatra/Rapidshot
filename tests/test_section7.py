@@ -212,7 +212,7 @@ def test_qpc_refuses_a_frequency_it_cannot_read(monkeypatch):
             call.argtypes = None
             return call
 
-    monkeypatch.setattr(contract.ctypes, "WinDLL", lambda *a, **kw: Kernel())
+    monkeypatch.setattr(contract.ctypes, "WinDLL", lambda *a, **kw: Kernel(), raising=False)
     with pytest.raises(OSError, match="QueryPerformanceFrequency"):
         contract.qpc_clock()
 
@@ -261,16 +261,16 @@ def guard(monkeypatch, readings):
 
 def test_the_baseline_whea_state_is_recorded_at_construction(monkeypatch):
     """Without a baseline there is nothing to compare against, and a machine
-    that was already faulting would look healthy."""
+    that already had records would look healthy."""
     g, logs = guard(monkeypatch, [{"latest": 5, "count": 5}] * 2)
     assert g.baseline == {"latest": 5, "count": 5}
     assert logs.events[0][0] == "health-baseline"
 
 
 def test_a_new_whea_record_stops_live_benchmarks(monkeypatch):
-    """This machine's CPU is degrading (ROADMAP § 2). A run that continues past
-    a machine-check exception produces numbers from hardware that is failing,
-    and they are indistinguishable from good ones."""
+    """A run that continues past a machine-check exception produces numbers
+    from hardware that has just reported a fault, and they are
+    indistinguishable from good ones."""
     g, logs = guard(monkeypatch, [{"latest": 5, "count": 5},
                                   {"latest": 6, "count": 6}])
     with pytest.raises(section7.MotionError, match="WHEA"):
@@ -325,7 +325,7 @@ def test_a_display_query_that_fails_is_not_silently_zero(monkeypatch):
             call.argtypes = None
             return call
 
-    monkeypatch.setattr(section7.ctypes, "WinDLL", lambda *a, **kw: User())
+    monkeypatch.setattr(section7.ctypes, "WinDLL", lambda *a, **kw: User(), raising=False)
     with pytest.raises(OSError, match="EnumDisplaySettingsW"):
         section7.display_mode()
 

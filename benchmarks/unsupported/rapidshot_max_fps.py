@@ -1,3 +1,15 @@
+"""UNSUPPORTED -- do not quote this number. See ./README.md for why.
+
+Device creation, a warm-up grab and a 100 ms sleep are all inside the timed
+window -- a handicap the competitor scripts do not carry, so these numbers
+cannot be compared with theirs in either direction.
+
+Supported entry points: perf_suite.py, compare_libraries.py, ai_ingestion.py,
+section7.py, section7_suite.py, memory_profile.py.
+"""
+import sys as _sys
+print("UNSUPPORTED BENCHMARK -- see benchmarks/unsupported/README.md", file=_sys.stderr)
+
 import time
 import rapidshot
 import argparse

@@ -1,10 +1,17 @@
-"""Present submission -> trained-model forward-pass completion.
+"""Present submission -> detections an application can read.
 
-Requires --model and --model-sha256. No synthetic-model fallback and no claim
-that raw model outputs are postprocessed detections. See ROADMAP.md section 7.0.
+Requires --model and --model-sha256; there is no synthetic-model fallback.
+
+The boundary moved. This used to end at forward-pass completion and said so --
+*no claim that raw model outputs are postprocessed detections*. It now ends
+where `detection.postprocess` hands back boxes, classes and scores on the
+host, because that is the point an application can act on them. Numbers taken
+before that change are not comparable with numbers taken after it.
 """
 import os
 from pathlib import Path
+
+import detection
 import sys
 
 _DLL_HANDLES = []
@@ -66,6 +73,11 @@ def declared_input_shape(model):
 
 
 class Inference:
+    #: Set by `detect` to "device" or "host". Recorded in every result: the two
+    #: cost differently, and a table that mixed them without saying so would
+    #: credit one path with a transfer it never made.
+    postprocess_location = None
+
     def __init__(self, model, cp, np, allow_cpu_nodes=False):
         """ONNX Runtime on CUDA, bound to CuPy's stream.
 
@@ -115,6 +127,47 @@ class Inference:
         self.session.run_with_iobinding(binding)
         self.cp.cuda.runtime.deviceSynchronize()
         return binding
+
+
+    def detect(self, tensor, geometry, contract):
+        """Forward pass, then detections an application could branch on.
+
+        The boundary section 7.0's inference table stops short of. Confidence
+        filtering, NMS, coordinate restoration and the transfer to the host are
+        all inside this call, because "the forward pass completed" is not the
+        moment an application can read a box.
+
+        Postprocessing runs on the device when the output can be wrapped
+        without copying, and falls back to the host otherwise. **Which one
+        happened is recorded**, because they cost very differently and a table
+        mixing them silently would attribute a transfer to whichever path
+        failed to avoid it.
+        """
+        binding = self.run(tensor)
+        raw, where = self._raw_output(binding)
+        xp = self.cp if where == "device" else self.np
+        to_host = self.cp.asnumpy if where == "device" else None
+        detections = detection.postprocess(raw, geometry, contract, xp,
+                                           to_host=to_host)
+        self.postprocess_location = where
+        return detections, binding
+
+    def _raw_output(self, binding):
+        """The model output, on the device if it can be reached without copying."""
+        try:
+            value = binding.get_outputs()[0]
+            shape = tuple(value.shape())
+            dtype = self.np.dtype(
+                "float16" if "float16" in value.data_type() else "float32")
+            size = int(self.np.prod(shape)) * dtype.itemsize
+            memory = self.cp.cuda.UnownedMemory(value.data_ptr(), size, value)
+            pointer = self.cp.cuda.MemoryPointer(memory, 0)
+            return self.cp.ndarray(shape, dtype=dtype, memptr=pointer), "device"
+        except Exception:
+            # Not a failure worth stopping for: the host path produces the same
+            # detections, it just pays for the whole output tensor instead of
+            # for the handful of boxes that survive.
+            return binding.copy_outputs_to_cpu()[0], "host"
 
 
 if __name__ == "__main__":
