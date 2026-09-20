@@ -80,10 +80,39 @@ MOTION_SOURCE = Path(__file__).resolve().parent.parent / "benchmarks" / "motion_
 #: display), as (left, top, right, bottom).
 MOTION_INSIDE = (240, 160, 1080, 780)
 
+#: The motion window is 900x700 at +200+120, so a display smaller than this
+#: cannot host it and Tk clips the window to fit. Everything derived from
+#: MOTION_INSIDE then addresses pixels outside the frame, and the converter
+#: refuses the crop -- correctly, and with an error that describes the symptom
+#: rather than the cause. A CI runner's virtual display is 1024x768, which is
+#: how this was found.
+MOTION_MIN_DISPLAY = (200 + 900, 120 + 700)
+
+
+def _primary_display_size():
+    """Physical pixels of the primary display, or None if it cannot be asked."""
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        try:
+            user32.SetProcessDPIAware()      # report pixels, not scaled units
+        except Exception:                     # noqa: BLE001 - already aware
+            pass
+        return user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+    except Exception:                         # noqa: BLE001 - not Windows
+        return None
+
 
 @pytest.fixture(scope="module")
 def motion():
     """An animating window, or a skip when there is no desktop to draw on."""
+    size = _primary_display_size()
+    if size is not None and (size[0] < MOTION_MIN_DISPLAY[0]
+                             or size[1] < MOTION_MIN_DISPLAY[1]):
+        pytest.skip(
+            f"primary display is {size[0]}x{size[1]}; the motion window needs "
+            f"at least {MOTION_MIN_DISPLAY[0]}x{MOTION_MIN_DISPLAY[1]} or it is "
+            "clipped and MOTION_INSIDE falls outside the frame")
     # --window explicitly: the source covers the whole screen by default now,
     # which is right for a benchmark and wrong for a test suite that would
     # then run behind a topmost full-screen window. MOTION_INSIDE below is
