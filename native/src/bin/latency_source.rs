@@ -1,5 +1,17 @@
 //! Controlled desktop input. No Tk, GDI drawing, or exclusive display mode.
-//! argv: width height fps workload present-log. EOF on stdin ends ownership.
+//! argv: width height fps workload present-log [scene canvas-w canvas-h dx dy].
+//! EOF on stdin ends ownership.
+//!
+//! Without the optional scene arguments this behaves exactly as it always has:
+//! a procedural pattern under the frame-ID marker, which is what the pixel-age
+//! clock needs and contains nothing a detector recognises. With them it pans
+//! over a pre-rendered canvas of objects YOLO11n actually detects, generated
+//! and *verified against the model* by benchmarks/scenes.py.
+//!
+//! The scene arrives as raw BGRA plus its dimensions on the command line rather
+//! than as a file this binary has to parse. There is no JSON reader in this
+//! crate, and adding one for four integers would be a dependency and a failure
+//! mode for nothing.
 use std::io::{BufRead, Write};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -18,7 +30,11 @@ use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 const SHADER: &str = r#"
-cbuffer Params : register(b0) { uint frame; uint mode; uint width; uint height; };
+cbuffer Params : register(b0) {
+    uint frame; uint mode; uint width; uint height;
+    uint canvasW; uint canvasH; uint stepX; uint stepY;
+};
+Texture2D<float4> sceneTex : register(t0);
 float4 VS(uint id: SV_VertexID): SV_Position {
     float2 p = float2((id << 1) & 2, id & 2);
     return float4(p * float2(2,-2) + float2(-1,1), 0, 1);
@@ -30,6 +46,15 @@ float4 PS(float4 p: SV_Position): SV_Target {
         uint check = (frame ^ (frame >> 8) ^ (frame >> 16) ^ (frame >> 24) ^ 167) & 255;
         uint bit = k < 8 ? (167 >> k) & 1 : (k < 40 ? (frame >> (k-8)) & 1 : (check >> (k-40)) & 1);
         return float4(bit,bit,bit,1);
+    }
+    // Load, not Sample: an exact texel with no filtering, so what is presented
+    // is byte-identical to the window benchmarks/scenes.py put through the
+    // detector when it verified this scene. A bilinear sampler would present
+    // something slightly different from the thing that was checked.
+    if (canvasW != 0) {
+        uint sx = (x + stepX * frame) % canvasW;
+        uint sy = (y + stepY * frame) % canvasH;
+        return sceneTex.Load(int3(sx, sy, 0));
     }
     if (mode == 2) {
         return float4(((x+frame*7)%256)/255.0, ((y+frame*11)%256)/255.0, ((x/7+y/5+frame*13)%256)/255.0, 1);
@@ -101,8 +126,14 @@ unsafe fn run() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("note: DPI awareness already set ({error}); continuing");
     }
     let args: Vec<String> = std::env::args().collect();
-    if args.len() != 6 {
-        return Err("expected width height fps workload present-log".into());
+    // Six arguments, or eleven with a scene -- argv[0] plus five, or plus ten.
+    // Anything between is a scene specified in part, which would present a
+    // texture at the wrong dimensions and read as a corrupted capture rather
+    // than as a usage error.
+    if args.len() != 6 && args.len() != 11 {
+        return Err(
+            "expected width height fps workload present-log [scene canvas-w canvas-h dx dy]".into(),
+        );
     }
     let width: u32 = args[1].parse()?;
     let height: u32 = args[2].parse()?;
@@ -119,6 +150,34 @@ unsafe fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut frequency = 0;
     QueryPerformanceFrequency(&mut frequency)?;
     let mut log = std::fs::File::create(&args[5])?;
+    // Optional scene. All five arguments or none: a half-specified scene would
+    // present a texture at the wrong dimensions, which looks like a corrupted
+    // capture rather than a usage error.
+    let scene = if args.len() == 11 {
+        // args[5] is the present log; the scene starts at args[6].
+        let canvas_w: u32 = args[7].parse()?;
+        let canvas_h: u32 = args[8].parse()?;
+        let step_x: u32 = args[9].parse()?;
+        let step_y: u32 = args[10].parse()?;
+        let bytes = std::fs::read(&args[6])?;
+        let expected = canvas_w as usize * canvas_h as usize * 4;
+        if bytes.len() != expected {
+            return Err(format!(
+                "scene {} is {} bytes, expected {} for {}x{} BGRA",
+                args[6],
+                bytes.len(),
+                expected,
+                canvas_w,
+                canvas_h
+            )
+            .into());
+        }
+        eprintln!("step: scene loaded {canvas_w}x{canvas_h} step {step_x},{step_y}");
+        Some((bytes, canvas_w, canvas_h, step_x, step_y))
+    } else {
+        None
+    };
+
     let stopped = Arc::new(AtomicBool::new(false));
     let parent_stopped = stopped.clone();
     std::thread::spawn(move || {
@@ -222,7 +281,9 @@ unsafe fn run() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     device.CreateBuffer(
         &D3D11_BUFFER_DESC {
-            ByteWidth: 16,
+            // Eight uints now: the scene's canvas size and pan step ride along
+            // with the frame and mode. Still one 16-byte-aligned block.
+            ByteWidth: 32,
             Usage: D3D11_USAGE_DEFAULT,
             BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32,
             ..Default::default()
@@ -231,6 +292,38 @@ unsafe fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(&mut buffer),
     )?;
     let buffer = buffer.unwrap();
+    // The scene texture, if there is one. Immutable: it is uploaded once and
+    // never touched again, so the driver is free to place it wherever it likes.
+    let mut scene_view: Option<ID3D11ShaderResourceView> = None;
+    if let Some((bytes, canvas_w, canvas_h, _, _)) = scene.as_ref() {
+        let texture_desc = D3D11_TEXTURE2D_DESC {
+            Width: *canvas_w,
+            Height: *canvas_h,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_IMMUTABLE,
+            BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+            ..Default::default()
+        };
+        let initial = D3D11_SUBRESOURCE_DATA {
+            pSysMem: bytes.as_ptr().cast(),
+            SysMemPitch: canvas_w * 4,
+            SysMemSlicePitch: 0,
+        };
+        let mut texture = None;
+        device.CreateTexture2D(&texture_desc, Some(&initial), Some(&mut texture))?;
+        let texture = texture.ok_or("CreateTexture2D returned nothing")?;
+        let mut view = None;
+        device.CreateShaderResourceView(&texture, None, Some(&mut view))?;
+        scene_view = view;
+        eprintln!("step: scene texture created");
+    }
+    context.PSSetShaderResources(0, Some(&[scene_view.clone()]));
     context.VSSetShader(vertex.as_ref(), None);
     context.PSSetShader(pixel.as_ref(), None);
     context.PSSetConstantBuffers(0, Some(&[Some(buffer.clone())]));
@@ -259,11 +352,19 @@ unsafe fn run() -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
         id = id.checked_add(1).ok_or("frame ID exhausted")?;
+        // canvasW of zero is what tells the shader there is no scene, so the
+        // procedural path below it is reached exactly as before.
+        let (canvas_w, canvas_h, step_x, step_y) = match scene.as_ref() {
+            Some((_, w, h, dx, dy)) => (*w, *h, *dx, *dy),
+            None => (0, 0, 0, 0),
+        };
         context.UpdateSubresource(
             &buffer,
             0,
             None,
-            [id, mode, width, height].as_ptr().cast(),
+            [id, mode, width, height, canvas_w, canvas_h, step_x, step_y]
+                .as_ptr()
+                .cast(),
             0,
             0,
         );

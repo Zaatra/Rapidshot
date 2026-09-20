@@ -99,8 +99,13 @@ impl CaptureOrder {
             })?;
             let mut fence11: Option<ID3D11Fence> = None;
             unsafe { device5.OpenSharedFence(self.handle, &mut fence11)? };
-            let context: ID3D11DeviceContext4 = unsafe { device11.GetImmediateContext()? }.cast()?;
-            *sync = Some((key, context, fence11.expect("OpenSharedFence reported success")));
+            let context: ID3D11DeviceContext4 =
+                unsafe { device11.GetImmediateContext()? }.cast()?;
+            *sync = Some((
+                key,
+                context,
+                fence11.expect("OpenSharedFence reported success"),
+            ));
         }
         let (_, context, fence11) = sync.as_ref().expect("populated above");
 

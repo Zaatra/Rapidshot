@@ -506,8 +506,12 @@ impl Preprocessor12 {
 
             self.list.SetComputeRootSignature(&self.root_signature);
             self.list.SetDescriptorHeaps(&[Some(self.heap.clone())]);
-            self.list
-                .SetComputeRoot32BitConstants(0, CONSTANT_COUNT as u32, constants.as_ptr() as *const _, 0);
+            self.list.SetComputeRoot32BitConstants(
+                0,
+                CONSTANT_COUNT as u32,
+                constants.as_ptr() as *const _,
+                0,
+            );
             self.list
                 .SetComputeRootDescriptorTable(1, self.heap.GetGPUDescriptorHandleForHeapStart());
 
@@ -606,8 +610,12 @@ impl Preprocessor12 {
                 );
                 self.list.SetComputeRootSignature(&self.root_signature);
                 self.list.SetDescriptorHeaps(&[Some(self.heap.clone())]);
-                self.list
-                    .SetComputeRoot32BitConstants(0, CONSTANT_COUNT as u32, constants.as_ptr() as *const _, 0);
+                self.list.SetComputeRoot32BitConstants(
+                    0,
+                    CONSTANT_COUNT as u32,
+                    constants.as_ptr() as *const _,
+                    0,
+                );
                 self.list.SetComputeRootDescriptorTable(
                     1,
                     self.heap.GetGPUDescriptorHandleForHeapStart(),
@@ -941,4 +949,25 @@ fn transition(
         },
     };
     unsafe { list.ResourceBarrier(&[barrier]) };
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The declarations inside a shader's `cbuffer Params { ... };`.
+    fn cbuffer_fields(shader: &str) -> Vec<&str> {
+        let start = shader.find("cbuffer Params").expect("cbuffer Params");
+        let open = start + shader[start..].find('{').expect("opening brace") + 1;
+        let close = open + shader[open..].find("};").expect("closing brace");
+        shader[open..close]
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or("").trim())
+            .filter(|line| line.ends_with(';'))
+            .collect()
+    }
+
+    #[test]
+    fn the_root_constants_match_the_shader_cbuffer() {
+        assert_eq!(cbuffer_fields(SHADER_SOURCE).len(), CONSTANT_COUNT);
+    }
 }

@@ -2335,56 +2335,62 @@ impl TensorTransfer {
         unsafe { src_device.CreateHeap(&heap_desc, &mut src_heap)? };
         let src_heap = src_heap.expect("CreateHeap reported success");
 
-        let handle = unsafe { src_device.CreateSharedHandle(&src_heap, None, GENERIC_ALL, None)? };
+        // The source's handle exists only to open the heap on the destination.
+        let opening: HANDLE =
+            unsafe { src_device.CreateSharedHandle(&src_heap, None, GENERIC_ALL, None)? };
         let mut dst_heap: Option<ID3D12Heap> = None;
-        let opened = unsafe { dst_device.OpenSharedHandle(handle, &mut dst_heap) };
-        if opened.is_err() {
-            unsafe {
-                let _ = CloseHandle(handle);
-            }
-            opened?;
+        let opened = unsafe { dst_device.OpenSharedHandle(opening, &mut dst_heap) };
+        unsafe {
+            let _ = CloseHandle(opening);
         }
+        opened?;
         let dst_heap = dst_heap.expect("OpenSharedHandle reported success");
+
+        // The consumer's handle is minted on the destination device, as
+        // `CrossAdapterTransfer` mints its own, for the reason given there: the
+        // consumer runs on the destination adapter, and a handle created by
+        // that adapter's device is the narrower assumption. This used to hand
+        // out the source's handle instead, so the two transfers disagreed --
+        // and with WARP as the only destination, CUDA imported the *capture*
+        // GPU's memory and the path reported a crossing that never happened.
+        let handle = OwnedHandle(unsafe {
+            dst_device.CreateSharedHandle(&dst_heap, None, GENERIC_ALL, None)?
+        });
 
         let buffer_desc = cross_adapter_buffer_desc(size_bytes);
         let mut shared_src: Option<ID3D12Resource> = None;
         let mut dst_buffer: Option<ID3D12Resource> = None;
-        let placed = (|| -> windows::core::Result<()> {
-            unsafe {
-                src_device.CreatePlacedResource(
-                    &src_heap,
-                    0,
-                    &buffer_desc,
-                    D3D12_RESOURCE_STATE_COMMON,
-                    None,
-                    &mut shared_src,
-                )?;
-                dst_device.CreatePlacedResource(
-                    &dst_heap,
-                    0,
-                    &buffer_desc,
-                    D3D12_RESOURCE_STATE_COMMON,
-                    None,
-                    &mut dst_buffer,
-                )?;
-            }
-            Ok(())
-        })();
-        if placed.is_err() {
-            unsafe {
-                let _ = CloseHandle(handle);
-            }
-            placed?;
+        // `handle` closes itself if either placement fails.
+        unsafe {
+            src_device.CreatePlacedResource(
+                &src_heap,
+                0,
+                &buffer_desc,
+                D3D12_RESOURCE_STATE_COMMON,
+                None,
+                &mut shared_src,
+            )?;
+            dst_device.CreatePlacedResource(
+                &dst_heap,
+                0,
+                &buffer_desc,
+                D3D12_RESOURCE_STATE_COMMON,
+                None,
+                &mut dst_buffer,
+            )?;
         }
+        // Before the handle is released to `Self`, so a failure here still
+        // closes it.
+        let src = Submitter::new(&src_device)?;
 
         Ok(Self {
-            src: Submitter::new(&src_device)?,
+            src,
             shared_src: shared_src.expect("CreatePlacedResource reported success"),
             dst_buffer: dst_buffer.expect("CreatePlacedResource reported success"),
             dst_device,
             _src_heap: src_heap,
             _dst_heap: dst_heap,
-            shared_destination_handle: handle,
+            shared_destination_handle: handle.release(),
             size_bytes,
             source: source_desc,
             destination: dest.description.clone(),

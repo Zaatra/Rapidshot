@@ -1,6 +1,10 @@
 [package]
 name = "rapidshot-native"
-version = "0.1.0"
+# 0.2.0 adds GpuConverter (native/src/converter12.rs) and TensorTransfer
+# (cross_adapter.rs), neither of which exists in 0.1.0. RapidShot 2.6 calls both,
+# so `pyproject.toml`'s `native` extra floors at 0.2.0 and `rapidshot/native.py`
+# names the required version when a symbol is missing.
+version = "0.2.0"
 edition = "2021"
 # `as_chunks` (used by the scalar kernels in luma.rs / swizzle.rs)
 # stabilised in 1.88. Clippy since 1.98 rejects the `chunks_exact`

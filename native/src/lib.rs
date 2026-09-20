@@ -597,9 +597,8 @@ impl TensorTransfer {
             .inner
             .lock()
             .map_err(|_| PyRuntimeError::new_err("converter lock poisoned"))?;
-        let inner = cross_adapter::TensorTransfer::new(&source).map_err(|e| {
-            PyRuntimeError::new_err(format!("tensor transfer setup failed: {e}"))
-        })?;
+        let inner = cross_adapter::TensorTransfer::new(&source)
+            .map_err(|e| PyRuntimeError::new_err(format!("tensor transfer setup failed: {e}")))?;
         Ok(Self {
             inner: Mutex::new(inner),
         })
@@ -784,9 +783,7 @@ impl GpuConverter12 {
                 converter12::Converter12::new(
                     texture, out_width, out_height, sampling, format, yuv, batch,
                 )
-                    .map_err(|e| {
-                        PyRuntimeError::new_err(format!("D3D12 converter setup failed: {e}"))
-                    })
+                .map_err(|e| PyRuntimeError::new_err(format!("D3D12 converter setup failed: {e}")))
             })?
         };
         Ok(Self {
@@ -842,7 +839,14 @@ impl GpuConverter12 {
         unsafe {
             with_texture(texture_ptr, |texture| {
                 inner
-                    .process(texture, source_id, scale, bias, if bgr { 1 } else { 0 }, &rects)
+                    .process(
+                        texture,
+                        source_id,
+                        scale,
+                        bias,
+                        if bgr { 1 } else { 0 },
+                        &rects,
+                    )
                     .map_err(|e| PyRuntimeError::new_err(format!("D3D12 dispatch failed: {e}")))
             })
         }
@@ -1064,7 +1068,14 @@ impl GpuPreprocessor12 {
         unsafe {
             with_texture(texture_ptr, |texture| {
                 inner
-                    .process(texture, source_id, scale, bias, if bgr { 1 } else { 0 }, crop)
+                    .process(
+                        texture,
+                        source_id,
+                        scale,
+                        bias,
+                        if bgr { 1 } else { 0 },
+                        crop,
+                    )
                     .map_err(|e| PyRuntimeError::new_err(format!("D3D12 dispatch failed: {e}")))
             })
         }
@@ -1936,4 +1947,34 @@ fn _rapidshot_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<TestTexture>()?;
     m.add_class::<CrossAdapterTransfer>()?;
     Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::Graphics::Dxgi::Common::{
+        DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT,
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+    };
+
+    #[test]
+    fn format_names_use_the_real_dxgi_values() {
+        // The match arms are bare integers; hold them to the SDK's constants.
+        assert_eq!(
+            format_name(DXGI_FORMAT_B8G8R8A8_UNORM.0 as u32),
+            "B8G8R8A8_UNORM"
+        );
+        assert_eq!(
+            format_name(DXGI_FORMAT_R8G8B8A8_UNORM.0 as u32),
+            "R8G8B8A8_UNORM"
+        );
+        assert_eq!(
+            format_name(DXGI_FORMAT_R10G10B10A2_UNORM.0 as u32),
+            "R10G10B10A2_UNORM"
+        );
+        assert_eq!(
+            format_name(DXGI_FORMAT_R16G16B16A16_FLOAT.0 as u32),
+            "R16G16B16A16_FLOAT"
+        );
+        assert_eq!(format_name(0), "other");
+    }
 }

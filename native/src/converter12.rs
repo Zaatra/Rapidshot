@@ -1006,7 +1006,11 @@ impl Converter12 {
             width: src_width,
             height: src_height,
         }];
-        let regions = if regions.is_empty() { &whole[..] } else { regions };
+        let regions = if regions.is_empty() {
+            &whole[..]
+        } else {
+            regions
+        };
         for (index, crop) in regions.iter().enumerate() {
             let fits = crop.width > 0
                 && crop.height > 0
@@ -1026,8 +1030,11 @@ impl Converter12 {
         unsafe {
             let mut mapped: *mut std::ffi::c_void = std::ptr::null_mut();
             // An empty read range: the CPU never reads this buffer back.
-            self.regions
-                .Map(0, Some(&D3D12_RANGE { Begin: 0, End: 0 }), Some(&mut mapped))?;
+            self.regions.Map(
+                0,
+                Some(&D3D12_RANGE { Begin: 0, End: 0 }),
+                Some(&mut mapped),
+            )?;
             let rects = mapped as *mut u32;
             for (index, crop) in regions.iter().enumerate() {
                 let slot = rects.add(index * 4);
@@ -1066,8 +1073,12 @@ impl Converter12 {
 
             self.list.SetComputeRootSignature(&self.root_signature);
             self.list.SetDescriptorHeaps(&[Some(self.heap.clone())]);
-            self.list
-                .SetComputeRoot32BitConstants(0, CONSTANT_COUNT as u32, constants.as_ptr() as *const _, 0);
+            self.list.SetComputeRoot32BitConstants(
+                0,
+                CONSTANT_COUNT as u32,
+                constants.as_ptr() as *const _,
+                0,
+            );
             self.list
                 .SetComputeRootDescriptorTable(1, self.heap.GetGPUDescriptorHandleForHeapStart());
 
@@ -1081,8 +1092,12 @@ impl Converter12 {
                 };
                 for (pass, dwords) in [(0u32, luma_dwords), (1u32, chroma_dwords)] {
                     constants[7] = pass;
-                    self.list
-                        .SetComputeRoot32BitConstants(0, CONSTANT_COUNT as u32, constants.as_ptr() as *const _, 0);
+                    self.list.SetComputeRoot32BitConstants(
+                        0,
+                        CONSTANT_COUNT as u32,
+                        constants.as_ptr() as *const _,
+                        0,
+                    );
                     let rows = dwords.div_ceil(self.out_width as u64) as u32;
                     self.list
                         .Dispatch(self.out_width.div_ceil(8), rows.div_ceil(8), 1);
@@ -1314,4 +1329,130 @@ fn transition(
         },
     };
     unsafe { list.ResourceBarrier(&[barrier]) };
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The declarations inside a shader's `cbuffer Params { ... };`.
+    fn cbuffer_fields(shader: &str) -> Vec<&str> {
+        let start = shader.find("cbuffer Params").expect("cbuffer Params");
+        let open = start + shader[start..].find('{').expect("opening brace") + 1;
+        let close = open + shader[open..].find("};").expect("closing brace");
+        shader[open..close]
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or("").trim())
+            .filter(|line| line.ends_with(';'))
+            .collect()
+    }
+
+    const ALL_FORMATS: [OutputFormat; 7] = [
+        OutputFormat::Fp32Nchw,
+        OutputFormat::Fp16Nchw,
+        OutputFormat::Fp32Nhwc,
+        OutputFormat::Fp16Nhwc,
+        OutputFormat::Bgra8Nhwc,
+        OutputFormat::Nv12,
+        OutputFormat::P010,
+    ];
+
+    #[test]
+    fn byte_sizes_match_the_figures_the_docs_quote() {
+        // TensorTransfer's docstring and ROADMAP 6.1 quote these for 640x640.
+        assert_eq!(OutputFormat::Fp32Nchw.byte_size(640, 640), 4_915_200);
+        assert_eq!(OutputFormat::Fp16Nchw.byte_size(640, 640), 2_457_600);
+        assert_eq!(OutputFormat::Bgra8Nhwc.byte_size(640, 640), 1_638_400);
+    }
+
+    #[test]
+    fn layout_does_not_change_the_byte_count() {
+        assert_eq!(
+            OutputFormat::Fp32Nchw.byte_size(64, 32),
+            OutputFormat::Fp32Nhwc.byte_size(64, 32)
+        );
+        assert_eq!(
+            OutputFormat::Fp16Nchw.byte_size(64, 32),
+            OutputFormat::Fp16Nhwc.byte_size(64, 32)
+        );
+    }
+
+    #[test]
+    fn yuv_sizes_are_a_luma_plane_plus_half_resolution_chroma() {
+        // NV12: w*h luma bytes, then (w/2)*(h/2) Cb/Cr pairs of one byte each.
+        let (w, h) = (1920u64, 1080u64);
+        assert_eq!(
+            OutputFormat::Nv12.byte_size(1920, 1080),
+            w * h + (w / 2) * (h / 2) * 2
+        );
+        // P010: the same samples, two bytes each.
+        assert_eq!(
+            OutputFormat::P010.byte_size(1920, 1080),
+            2 * (w * h + (w / 2) * (h / 2) * 2)
+        );
+    }
+
+    #[test]
+    fn sizes_do_not_overflow_at_large_dimensions() {
+        assert_eq!(
+            OutputFormat::Fp32Nchw.byte_size(u32::MAX, 2),
+            u32::MAX as u64 * 2 * 12
+        );
+    }
+
+    #[test]
+    fn every_format_has_its_own_shader_define() {
+        let mut defines: Vec<u32> = ALL_FORMATS.iter().map(|f| f.define()).collect();
+        defines.sort_unstable();
+        defines.dedup();
+        assert_eq!(defines, (0..7).collect::<Vec<u32>>());
+    }
+
+    #[test]
+    fn the_shader_branches_only_on_defines_that_exist() {
+        let defines: Vec<u32> = ALL_FORMATS.iter().map(|f| f.define()).collect();
+        let mut rest = SHADER_BODY;
+        let mut seen = 0;
+        while let Some(at) = rest.find("OUTPUT == ") {
+            rest = &rest[at + "OUTPUT == ".len()..];
+            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            let value: u32 = digits.parse().expect("a number after OUTPUT ==");
+            assert!(defines.contains(&value), "shader tests OUTPUT == {value}");
+            seen += 1;
+        }
+        assert!(seen > 0, "the shader selects its output by define");
+    }
+
+    #[test]
+    fn yuv_and_fp16_classification() {
+        let yuv: Vec<_> = ALL_FORMATS.iter().filter(|f| f.is_yuv()).collect();
+        let fp16: Vec<_> = ALL_FORMATS.iter().filter(|f| f.is_fp16()).collect();
+        assert_eq!(yuv, [&OutputFormat::Nv12, &OutputFormat::P010]);
+        assert_eq!(fp16, [&OutputFormat::Fp16Nchw, &OutputFormat::Fp16Nhwc]);
+    }
+
+    #[test]
+    fn the_root_constants_match_the_shader_cbuffer() {
+        assert_eq!(cbuffer_fields(SHADER_BODY).len(), CONSTANT_COUNT);
+    }
+
+    #[test]
+    fn a_region_record_is_four_uints() {
+        assert!(SHADER_BODY.contains("struct Rect { uint x; uint y; uint w; uint h; };"));
+        assert_eq!(RECT_BYTES, 4 * std::mem::size_of::<u32>() as u64);
+    }
+
+    #[test]
+    fn every_supported_source_format_has_a_name() {
+        for format in SUPPORTED_SOURCE_FORMATS {
+            assert_ne!(format_name(format), "unsupported", "{format:?}");
+        }
+        assert_eq!(format_name(DXGI_FORMAT(0)), "unsupported");
+    }
+
+    #[test]
+    fn yuv_defaults_to_limited_range_bt709() {
+        let options = YuvOptions::default();
+        assert_eq!(options.matrix, Matrix::Bt709);
+        assert!(!options.full_range);
+    }
 }

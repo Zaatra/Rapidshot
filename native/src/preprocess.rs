@@ -411,3 +411,37 @@ impl Preprocessor {
         self.output.as_raw() as usize
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::mem::{offset_of, size_of};
+
+    /// The declarations inside a shader's `cbuffer Params { ... };`.
+    fn cbuffer_fields(shader: &str) -> Vec<&str> {
+        let start = shader.find("cbuffer Params").expect("cbuffer Params");
+        let open = start + shader[start..].find('{').expect("opening brace") + 1;
+        let close = open + shader[open..].find("};").expect("closing brace");
+        shader[open..close]
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or("").trim())
+            .filter(|line| line.ends_with(';'))
+            .collect()
+    }
+
+    #[test]
+    fn params_follow_hlsl_constant_buffer_packing() {
+        // Twelve 4-byte values, no padding, and a multiple of 16 as D3D11
+        // requires of a constant buffer's ByteWidth.
+        assert_eq!(size_of::<Params>(), 48);
+        assert_eq!(offset_of!(Params, out_width), 0);
+        assert_eq!(offset_of!(Params, scale), 16);
+        assert_eq!(offset_of!(Params, channel_order), 24);
+        assert_eq!(offset_of!(Params, crop_x), 32);
+        assert_eq!(offset_of!(Params, crop_height), 44);
+    }
+
+    #[test]
+    fn params_mirror_the_shader_cbuffer() {
+        assert_eq!(cbuffer_fields(SHADER_SOURCE).len() * 4, size_of::<Params>());
+    }
+}
