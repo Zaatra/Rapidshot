@@ -10,6 +10,36 @@ each release can be traced back to the plan it implements.
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-09-20
+
+### Highlights
+
+Four things, each with the measurement behind it:
+
+- **~58% lower `grab()` memory** — 416.0 -> 174.8 MB at 2560x1600.
+- **~63% lower `grab_frame()` memory** — 282.1 -> 104.4 MB, which is 1.01x
+  DXcam's 103.1 MB. Both figures are the measured Machine B configuration
+  (RTX 4060 laptop, Intel UHD capture, 2560x1600 at 165 Hz), recorded three
+  times in `benchmarks/memory-baseline-machineB.json`, at unchanged throughput.
+  Neither came from a redesign: a lazy CuPy import, a staging pool sized to what
+  a converting `grab()` can use, and `pool_size_frames` 4 -> 2.
+- **Fused one-dispatch GPU preprocessing with FP16** — crop, resize, colour
+  conversion, normalisation and layout in a single D3D12 dispatch, emitting
+  native `float16` as well as `float32` and `uint8`. Multi-ROI batches in one
+  dispatch too. This is a fused *kernel*, not a chainable pipeline builder;
+  the `.crop().resize()` graph in ROADMAP § 7.2 is still unbuilt.
+- **One-call Torch / CuPy / DLPack interop** — `tensor.to_torch()`,
+  `.to_cupy()`, `.to_dlpack()`, zero-copy, replacing roughly sixty lines of
+  `ctypes` in `examples/gpu_tensor_to_cupy.py`. Verified byte-equal against a
+  readback on hardware where capture and CUDA share an adapter.
+
+**Not claimed in this release:** a hybrid-GPU performance figure for
+convert-before-transfer. The path is implemented and API-verified, and the
+byte-equal cross-adapter transfer was confirmed on Intel -> RTX 4060 on
+2026-09-14 — but `TensorTransfer`'s destination-device consumer handle, changed
+after that, has only been exercised against WARP. The hybrid figure moves to a
+later release rather than shipping ahead of its evidence.
+
 ### Stage 7.2 — GPU transform and framework interop (2.6)
 
 **Capture to model input, or to encoder input, without leaving the GPU — and
@@ -22,16 +52,31 @@ Building the last of those exposed a race that 2.3.0–2.5.0 users of
 
 Everything below was verified against live capture on the Intel-only
 development machine (Core Ultra 5 235, Intel iGPU, no discrete GPU). **Two
-things could not be, and are release gates:** the CUDA exports, and any
+things could not be, and were release gates:** the CUDA exports, and any
 transfer to a *hardware* second adapter — this machine's only second adapter is
 WARP.
 
-**Both were taken to an RTX 4060 laptop on 2026-09-14.** The transfer gate is
-met: a converted tensor crosses from the Intel iGPU to the discrete GPU, and
-the stale-read fix holds on a hardware destination. The CUDA gate found a bug
-that had made the exports dead on every machine — see **Fixed**. What remains
-open is the byte-equal export itself, which needs capture and CUDA on the same
-adapter; Optimus never gives that.
+**Both were taken to an RTX 4060 laptop (Machine B).** The transfer gate is met
+(2026-09-14): a converted tensor crosses from the Intel iGPU to the discrete
+GPU, and the stale-read fix holds on a hardware destination. The CUDA gate found
+a bug that had made the exports dead on every machine — see **Fixed**.
+
+**The CUDA gate is now met too** (2026-09-20). It needed capture and CUDA on the
+same adapter, and an earlier revision of this section said Optimus never gives
+that — true of Optimus, but Machine B has a MUX. In discrete-only mode the RTX
+4060 drives the display, so capture and CUDA share an adapter and
+`test_to_cupy_is_byte_equal_to_the_readback` runs: the exported CuPy array is
+byte-equal to a readback of the same tensor. `to_torch()` and `to_dlpack()` pass
+alongside it, and `to_cupy()` works as a process's first CUDA call, which is the
+bug **Fixed** records.
+
+**One claim is still unverified, and is not made here.** `TensorTransfer`'s
+consumer handle is now minted on the destination device, and that change has had
+`cargo test --lib` and a WARP destination only — CUDA importing an
+NVIDIA-minted handle needs hybrid mode, which a MUX switch away from
+discrete-only would provide. Until that runs, the convert-before-transfer path
+is described below as implemented and API-verified, and **no hybrid performance
+figure is quoted for it**.
 
 #### Added
 
@@ -128,6 +173,41 @@ resolution. See ROADMAP § 6.1.
 
 #### Changed
 
+- **`rapidshot-native` 0.2.0 is now required, and 2.6 will not install against
+  0.1.0.** `GpuConverter12` and `TensorTransfer` were both added to the Rust
+  crate *after* the `native-v0.1.0` tag, so 0.1.0 exports neither — while
+  `pyproject.toml` floored the `native` extra at `>=0.1.0`. The resolver was
+  happy and the transform path then died on `AttributeError: module
+  '_rapidshot_native' has no attribute 'GpuConverter12'`, which names neither
+  the cause nor the cure. Three changes, because one was not enough:
+
+  - the `native` extra floors at `rapidshot-native>=0.2.0`;
+  - `rapidshot-native` joins the `all` extra, held back until now only because
+    naming an unpublished distribution there would have broken
+    `pip install rapidshot[all]` for everyone. It carries a
+    `platform_system == 'Windows'` marker, without which `rapidshot[all]` would
+    be uninstallable on Linux and macOS;
+  - `native.require_feature()` gates every version-dependent symbol and reports
+    *"GpuConverter12 requires rapidshot-native >= 0.2.0; the installed
+    extension is version 0.1.0"* plus the upgrade command, for anyone who gets
+    an old wheel past the floor by pinning it or by leaving a stale local build
+    in the package directory — which `native.py` prefers over the wheel by
+    design. A test asserts the table never gates a symbol the built extension
+    lacks, so the backstop cannot itself invent an upgrade demand.
+
+  **`native-v0.2.0` must be published before the RapidShot tag that floors
+  against it**, or `pip install rapidshot[all]` resolves to nothing for as long
+  as the gap lasts. `RELEASING.md` records that ordering.
+
+- **`to_dlpack()` and `to_torch()` no longer emit a deprecation warning.** Both
+  went through CuPy's `toDlpack()`, which is deprecated and raised a
+  `VisibleDeprecationWarning` on every call — a library should not ship a
+  warning it can avoid. `to_dlpack()` now uses `__dlpack__()` and returns the
+  same PyCapsule as before; `to_torch()` hands Torch the array itself and lets
+  it call `__dlpack__`, which also avoids a single-use capsule. Checked against
+  CuPy 14.1.1 and Torch 2.11: `cupy.from_dlpack` and `torch.from_dlpack` accept
+  both forms, so this is not an API change for callers.
+
 - **CuPy `GRAY` is 6-9x faster, and byte-identical.** The Q8 luma was a chain
   of CuPy expressions: a kernel launch per line and a full-size uint16
   temporary for each, roughly six passes over an 8 MB frame to do arithmetic
@@ -222,6 +302,57 @@ resolution. See ROADMAP § 6.1.
   10 -> 4 in 2.4.0.
 
 #### Fixed
+
+- **The only test checking `GpuConverter` against a CPU reference had never run,
+  on any machine.** `test_nearest_output_matches_a_cpu_reference` fetched its
+  source pixels from `live_frame.frame_buffer` and skipped when that was absent
+  — and `Frame` has no `frame_buffer`. It is a GPU texture wrapper; the
+  attribute has never existed on it. So the check skipped silently every time,
+  everywhere, while reading as coverage in the suite.
+
+  It now reads the frame's own `ID3D11Texture2D` back through a D3D11 staging
+  surface, which is independent of everything under test: no D3D12, no compute
+  shader, no cross-adapter machinery. On Machine B the converter's nearest
+  output matches that reference **exactly** (max deviation 0.0), and a
+  negative control confirms the assertion still fires — a channel-swapped
+  reference is rejected at 1.0. Given how many silent wrong-pixel paths this
+  area has produced (§ 10, and four more closed in this release), a correctness
+  test that cannot fail was worse than none.
+
+- **A corrupt surface pitch crashed the process rather than raising.** `pitch`
+  sizes a ctypes array over the mapped surface, and only its lower bound was
+  checked -- so a value larger than the mapping described a region the surface
+  could not contain. This is not a clean failure: the test written for it took
+  the interpreter down with a **Windows fatal exception: access violation** in
+  `_read_rows` before the fix, which is what moved this off the "hardening
+  against values that cannot occur" list.
+
+  Both bounds now live in one place, `processor.base.check_surface_pitch`, used
+  by `shot()` and by `process()` in both processors. Padding beyond 64 KiB is
+  refused: drivers pad a row to an alignment boundary -- tens of bytes,
+  occasionally a few hundred -- and a 4K BGRA row is 30,720 bytes, so the bound
+  clears any real one by orders of magnitude. It completes a set: the other two
+  driver-reported sizes, `MAX_METADATA_BUFFER_BYTES` and
+  `MAX_POINTER_SHAPE_BUFFER_BYTES`, were already capped.
+
+- **Cursor shape metadata was handed out without being checked against its
+  buffer.** `Pitch`, `Width` and `Height` are the driver's, and `CursorInfo`
+  reports them beside the shape bytes -- so the library was vouching for a
+  description it had never verified. Nothing inside RapidShot indexes the
+  buffer with them, which is exactly why a mismatch was invisible here and a
+  crash in whoever walked the buffer by `shape_pitch`. A description that does
+  not fit is no longer handed out at all: "no shape available" is something a
+  consumer already handles, where a half-described buffer is what produces the
+  over-read.
+
+- **A missing CUDA driver was reported as a missing DLL.** `ctypes.WinDLL("nvcuda.dll")`
+  on a machine with no NVIDIA driver raises `OSError: [WinError 126] The
+  specified module could not be found`, which names a file rather than the
+  situation. `rapidshot.converter` already separates the two answers a caller
+  must tell apart -- `CrossAdapterRequired`, routine on a hybrid laptop, and an
+  import failure, which is a bug -- and a driver that is simply not installed
+  is a third case that was getting the least useful message of the three.
+
 
 - **`shot()` on a rotated display trusted its own docstring about the
   destination size.** The direct path validates the caller's buffer before

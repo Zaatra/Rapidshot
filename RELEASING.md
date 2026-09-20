@@ -29,6 +29,17 @@ secret, or on anyone's laptop. Nothing to leak, nothing to rotate.
 
 ## Cutting a release
 
+> **If this release raises the `rapidshot-native` floor, publish the native tag
+> first.** The two normally version independently, and that is the point of
+> keeping them apart — but a RapidShot release that floors the `native` extra at
+> a version PyPI does not have yet makes `pip install rapidshot[native]` and
+> `rapidshot[all]` unresolvable for as long as the gap lasts. 2.6.0 is the first
+> release where this bites: it calls `GpuConverter12` and `TensorTransfer`, both
+> added after `native-v0.1.0`, so it requires `rapidshot-native>=0.2.0`.
+>
+> Order: tag `native-v0.2.0`, wait for `release-native.yml` to publish, confirm
+> the wheel is installable from PyPI, *then* tag the RapidShot release.
+
 1. Update the version in **one** place — `rapidshot/_version.py`:
 
    ```python
