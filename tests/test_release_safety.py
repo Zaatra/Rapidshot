@@ -286,7 +286,6 @@ def test_dropping_a_com_pointer_releases_it_exactly_once():
     finally:
         for _ in range(headroom):
             probe.Release()
-        try:
-            device.release()
-        except Exception:
-            pass
+        # Device.release() only drops references, so nothing here can raise;
+        # if it ever does, that is a finding, not cleanup noise.
+        device.release()

@@ -128,13 +128,18 @@ def live_capture():
     rapidshot.reset()
 
 
-def _grab(camera, tries=600):
-    for _ in range(tries):
+def _grab(camera, timeout=3.0):
+    """The next new frame, or None if the screen stayed still for ``timeout``.
+
+    Bounded by a deadline rather than an attempt count, so a slow grab_frame()
+    cannot stretch the budget and a fast one cannot shrink it.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
         frame = camera.grab_frame()
-        if frame is not None:
+        if frame is not None or time.monotonic() >= deadline:
             return frame
-        time.sleep(0.005)
-    return None
+        time.sleep(0.004)
 
 
 def test_a_captured_frame_arrives_byte_exact_on_the_other_adapter(live_capture):
@@ -545,7 +550,12 @@ def test_wait_shared_fence_releases_the_gil(live_capture):
     worker.start()
     try:
         transfer = native.cross_adapter_transfer(frame)
-        time.sleep(0.05)                       # let the counter reach steady state
+        # Running, rather than a guessed settle time: the count has to move
+        # before a zero delta below can mean anything.
+        deadline = time.monotonic() + 2
+        while ticks[0] == 0 and time.monotonic() < deadline:
+            time.sleep(0.001)
+        assert ticks[0] > 0, "the counter thread never started"
         before = ticks[0]
         for _ in range(5):
             value = transfer.transfer_async(frame)
@@ -555,6 +565,7 @@ def test_wait_shared_fence_releases_the_gil(live_capture):
         stop.set()
         worker.join(timeout=2)
         frame.release()
+    assert not worker.is_alive(), "the counter thread did not stop"
 
     assert progressed > 0, (
         "another Python thread made no progress across five fence waits; "
@@ -890,15 +901,7 @@ def test_the_consumer_handshake_prevents_a_stale_read(live_capture):
     cp.cuda.Device(0).use()
     cp.zeros(1)
 
-    def _grab_one():
-        for _ in range(600):
-            f = live_capture.grab_frame()
-            if f is not None:
-                return f
-            time.sleep(0.004)
-        return None
-
-    seed = _grab_one()
+    seed = _grab(live_capture)
     if seed is None:
         pytest.skip("no frame captured -- the screen must be changing")
     transfer = native.cross_adapter_transfer(seed)
@@ -940,12 +943,7 @@ def test_the_consumer_handshake_prevents_a_stale_read(live_capture):
     releaser = cp.cuda.Stream(non_blocking=True)
 
     def grab():
-        for _ in range(600):
-            f = live_capture.grab_frame()
-            if f is not None:
-                return f
-            time.sleep(0.004)
-        return None
+        return _grab(live_capture)
 
     try:
         # 1. frame A lands.
@@ -1031,12 +1029,7 @@ def test_the_handshake_holds_over_a_sustained_loop(live_capture):
     cp.zeros(1)
 
     def grab():
-        for _ in range(600):
-            f = live_capture.grab_frame()
-            if f is not None:
-                return f
-            time.sleep(0.003)
-        return None
+        return _grab(live_capture)
 
     seed = grab()
     if seed is None:
@@ -1088,17 +1081,21 @@ def test_the_handshake_holds_over_a_sustained_loop(live_capture):
         transfer.transfer(f)
         a = np.frombuffer(transfer.read_back_destination(), np.uint8).copy()
         f.release()
-        time.sleep(0.12)
-        f = grab()
-        if f is None:
-            return None
-        transfer.transfer(f)
-        b = np.frombuffer(transfer.read_back_destination(), np.uint8)
-        f.release()
-        diff = np.flatnonzero(a != b)
-        if diff.size == 0:
-            return None
-        return min(int(diff[diff.size // 2]), transfer.total_bytes - SAMPLE)
+        # Keep grabbing until something differs, instead of sleeping a guessed
+        # interval and hoping the next frame has moved.
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            f = grab()
+            if f is None:
+                return None
+            transfer.transfer(f)
+            b = np.frombuffer(transfer.read_back_destination(), np.uint8)
+            f.release()
+            diff = np.flatnonzero(a != b)
+            if diff.size:
+                return min(int(diff[diff.size // 2]),
+                           transfer.total_bytes - SAMPLE)
+        return None
 
     try:
         offset = offset_that_changes()

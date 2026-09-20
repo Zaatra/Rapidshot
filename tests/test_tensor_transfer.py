@@ -83,15 +83,29 @@ def test_what_arrives_is_what_was_produced(transfer_pair, live_frame):
     np.testing.assert_array_equal(arrived, source)
 
 
-def test_transfer_before_process_does_not_raise(transfer_pair):
+def test_transfer_before_process_does_not_raise(live_frame):
     """Documented behaviour: an unwritten buffer is zeros, not an error.
 
     Pinned because the docstring promises it, and a caller who forgets
     `process()` should get a wrong-but-explicable result rather than a crash
     deep in D3D12.
+
+    Its own converter, not the module fixture: by the time this runs the
+    shared one has been processed, so it would not be "before process".
     """
-    _, transfer = transfer_pair
+    converter = rapidshot.GpuConverter(
+        live_frame, (OUT, OUT), dtype="float16", sampling="nearest"
+    )
+    try:
+        transfer = rapidshot.TensorTransfer(converter)
+    except RuntimeError as exc:
+        if "only one adapter" in str(exc):
+            pytest.skip("single-adapter machine; nothing to transfer to")
+        raise
     transfer.transfer()
+    arrived = np.asarray(transfer.read_back_destination())
+    assert arrived.size > 0
+    assert not arrived.any(), "an unwritten buffer arrived non-zero"
 
 
 # --------------------------------------------------------------------------

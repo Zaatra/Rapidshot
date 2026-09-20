@@ -146,7 +146,7 @@ def test_idle_buffers_are_invalidated_by_a_destroy():
         idle[0]
 
 
-def test_pool_argument_and_state_errors():
+def test_pool_argument_and_state_errors(caplog):
     with pytest.raises(ValueError, match="positive"):
         NumpyMemoryPool((1,), np.uint8, 0)
 
@@ -156,7 +156,10 @@ def test_pool_argument_and_state_errors():
     with pytest.raises(RuntimeError, match="not initialized"):
         raw.checkout()
     assert raw.get_stats() == {"total": 1, "available": 0, "in_use": 0, "initialized": False}
-    raw.release_all_buffers()        # warns, does not raise
+    with caplog.at_level(logging.WARNING, logger="rapidshot.memory_pool"):
+        raw.release_all_buffers()        # warns, does not raise
+    assert "not initialized" in caplog.text
+    assert raw.get_stats() == {"total": 1, "available": 0, "in_use": 0, "initialized": False}
 
 
 def test_initialize_twice_is_a_no_op():
@@ -503,7 +506,7 @@ def test_dpi_awareness_is_requested_once_and_reported(monkeypatch, caplog, set_r
     shcore = FakeShcore(set_result, current)
     calls = []
     monkeypatch.setattr(output_module.ctypes, "WinDLL",
-                        lambda name: calls.append(name) or shcore)
+                        lambda name: calls.append(name) or shcore, raising=False)
 
     with caplog.at_level(logging.DEBUG, logger=output_module.logger.name):
         output_module._ensure_process_dpi_awareness()

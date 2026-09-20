@@ -82,6 +82,16 @@ def vcall(interface, index, restype, argtypes, *args):
         interface, *args)
 
 
+def wait_for(predicate, timeout):
+    """Poll until ``predicate()`` holds, instead of sleeping a guessed time."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
 class CaptureLoop:
     """Capture continuously on a thread, counting frames and errors."""
 
@@ -92,7 +102,11 @@ class CaptureLoop:
         self._thread = threading.Thread(target=self._run, daemon=True)
 
     def _run(self):
-        camera = rapidshot.create(output_color="BGRA")
+        try:
+            camera = rapidshot.create(output_color="BGRA")
+        except Exception as e:              # noqa: BLE001 - reported by __enter__
+            self.errors.append(f"create: {type(e).__name__}: {str(e)[:150]}")
+            return
         try:
             while not self._stop:
                 try:
@@ -111,12 +125,20 @@ class CaptureLoop:
 
     def __enter__(self):
         self._thread.start()
-        time.sleep(1.2)                     # let capture settle
+        # Settled means frames are arriving, not that a guessed interval passed.
+        if not wait_for(lambda: self.frames > 0 or not self._thread.is_alive(),
+                        timeout=10):
+            self.__exit__()
+            pytest.fail(f"capture produced nothing in 10 s: {self.errors[:3]}")
+        if self.frames == 0:
+            pytest.skip(f"capture unavailable: {self.errors[:1]}")
         return self
 
     def __exit__(self, *exc):
         self._stop = True
         self._thread.join(timeout=5)
+        assert not self._thread.is_alive(), (
+            "capture thread did not stop within 5 s of being asked")
 
 
 @pytest.fixture
@@ -222,19 +244,18 @@ def test_capture_survives_exclusive_fullscreen(exclusive_fullscreen):
         assert before > 0, "capture produced nothing before the transition"
 
         exclusive_fullscreen()
-        during = loop.frames
-        assert during > before, (
+        assert wait_for(lambda: loop.frames > before, timeout=5), (
             "capture stopped producing frames in exclusive fullscreen")
+        during = loop.frames
 
         # Leaving is a *second* access-loss event, and the more likely half of
         # a real session -- a game being closed. Letting teardown do it meant
         # no capture thread was running when it happened, so only entry was
         # ever covered.
         exclusive_fullscreen.leave()
-        time.sleep(1.0)
-        after = loop.frames
+        recovered = wait_for(lambda: loop.frames > during, timeout=5)
 
-    assert after > during, (
+    assert recovered, (
         "capture did not recover after leaving exclusive fullscreen")
     assert loop.errors == [], (
         f"errors reached the caller across the transitions: {loop.errors[:3]}")
@@ -251,7 +272,9 @@ def test_access_loss_recovery_actually_runs(exclusive_fullscreen, caplog):
         with CaptureLoop() as loop:
             assert loop.frames > 0
             exclusive_fullscreen()
-            time.sleep(0.5)
+            entered_at = loop.frames
+            # Past the transition means frames flowing again after it.
+            recovered = wait_for(lambda: loop.frames > entered_at, timeout=5)
 
     messages = " ".join(record.getMessage().lower()
                         for record in caplog.records)
@@ -260,4 +283,4 @@ def test_access_loss_recovery_actually_runs(exclusive_fullscreen, caplog):
             "exclusive fullscreen did not disturb duplication on this Windows "
             "build; the access-loss path was not reached (see ROADMAP § 10)")
 
-    assert loop.frames > 0, "capture never recovered after access loss"
+    assert recovered, "capture never recovered after access loss"

@@ -167,4 +167,5 @@ def test_guard_passes_when_no_frame_outstanding():
 
     cam = ScreenCapture.__new__(ScreenCapture)
     cam._live_frame = None
-    cam._ensure_no_live_frame("grab()")  # must not raise
+    assert cam._ensure_no_live_frame("grab()") is None
+    assert cam._live_frame is None

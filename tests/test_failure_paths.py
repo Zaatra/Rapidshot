@@ -206,25 +206,29 @@ def test_device_error_also_releases_duplication():
 # --------------------------------------------------------------------------
 
 @pytest.mark.parametrize(
-    "hresult",
-    [DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_INVALID_CALL],
+    "hresult, expected",
+    [
+        (DXGI_ERROR_ACCESS_LOST, RapidShotReinitError),
+        (DXGI_ERROR_DEVICE_REMOVED, RapidShotDeviceError),
+        (DXGI_ERROR_INVALID_CALL, RapidShotConfigError),
+    ],
 )
-def test_error_paths_do_not_raise_valueerror_while_formatting(hresult):
+def test_error_paths_do_not_raise_valueerror_while_formatting(hresult, expected):
     """
     The error messages used to contain
     ``{hresult:#010x if isinstance(hresult, int) else hresult}``, which Python
     parses as an invalid *format specifier*. Every one of these paths raised
     ValueError on top of the original DXGI failure.
+
+    pytest.raises names the exact type, so a ValueError from the formatter --
+    or the wrong RapidShot* classification -- fails here instead of being
+    absorbed.
     """
     dup = make_duplicator(acquire_error=hresult)
-    try:
+    with pytest.raises(expected) as excinfo:
         dup.update_frame()
-    except ValueError as e:
-        if "format specifier" in str(e).lower():
-            pytest.fail(f"error formatting is broken: {e}")
-    except Exception:
-        pass  # a RapidShot* exception is the expected outcome
-    assert "0x" in dup.last_error
+    assert excinfo.value.hresult == hresult
+    assert f"{hresult & 0xFFFFFFFF:#010x}" in dup.last_error
 
 
 def test_release_frame_survives_a_failing_releaseframe():

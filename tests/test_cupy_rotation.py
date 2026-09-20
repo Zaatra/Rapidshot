@@ -224,3 +224,18 @@ def test_cupy_process_reads_an_offset_region_from_a_padded_surface():
         rect, width, height, (left, top, width, height), 0)
 
     np.testing.assert_array_equal(np.asarray(out), bgra[top:, left:])
+
+
+def test_cupy_process_refuses_an_impossible_pitch():
+    """Same bound as the NumPy path, for the same reason -- both build a
+    ctypes array from `pitch * height` over the mapped address."""
+    bgra = np.zeros((4, 6, 4), dtype=np.uint8)
+    height, width = bgra.shape[:2]
+    rect = FakeMappedRect(bgra)
+    rect.Pitch = 64 * 1024 * 1024
+
+    processor = CupyProcessor("BGRA")
+    processor.cp = np
+
+    with pytest.raises(ValueError, match="pitch"):
+        processor.process(rect, width, height, (0, 0, width, height), 0)

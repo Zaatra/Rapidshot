@@ -79,7 +79,7 @@ def test_the_package_imports_without_capture_or_the_gpu_path(monkeypatch):
 def _no_dlls(monkeypatch):
     def refuse(*args, **kwargs):
         raise OSError("DLL not found")
-    return lambda: monkeypatch.setattr(ctypes, "WinDLL", refuse)
+    return lambda: monkeypatch.setattr(ctypes, "WinDLL", refuse, raising=False)
 
 
 def test_io_imports_where_dxgi_is_missing(monkeypatch):
@@ -266,7 +266,11 @@ def test_the_cursor_snapshot_copies_every_field(pipeline):
     shape = cursor.PointerShapeInfo
     shape.Type, shape.Width, shape.Height, shape.Pitch = 2, 32, 32, 128
     shape.HotSpot.x, shape.HotSpot.y = 3, 4
-    cursor.Shape = b"pixels"
+    # Sized to match Pitch x Height. Metadata that does not fit its buffer is
+    # refused now, and `b"pixels"` was six bytes describing a 4 KiB cursor --
+    # the shape of mismatch that makes a consumer walk off the end.
+    pixels = bytes(128 * 32)
+    cursor.Shape = pixels
     cam._duplicator.cursor = cursor
     cam._duplicator.cursor_visible = 1
 
@@ -274,7 +278,7 @@ def test_the_cursor_snapshot_copies_every_field(pipeline):
     cursor.PointerPositionInfo.Position.x = 999        # a later acquire mutates it
 
     assert info.position == (30, 40)
-    assert (info.hotspot, info.shape, info.shape_type) == ((3, 4), b"pixels", 2)
+    assert (info.hotspot, info.shape, info.shape_type) == ((3, 4), pixels, 2)
     assert (info.shape_size, info.shape_pitch, info.visible) == ((32, 32), 128, True)
 
 
@@ -534,7 +538,7 @@ def test_dpi_setup_without_shcore_is_skipped(monkeypatch, caplog):
     def refuse(name):
         raise OSError("shcore.dll missing")
 
-    monkeypatch.setattr(output_module.ctypes, "WinDLL", refuse)
+    monkeypatch.setattr(output_module.ctypes, "WinDLL", refuse, raising=False)
     with caplog.at_level(logging.DEBUG, logger=output_module.logger.name):
         output_module._ensure_process_dpi_awareness()
     assert "Could not set process DPI awareness" in caplog.text
@@ -550,7 +554,7 @@ def test_an_unreadable_current_awareness_is_reported_as_unknown(monkeypatch, cap
         raise OSError("GetProcessDpiAwareness failed")
 
     shcore.GetProcessDpiAwareness = _Function(broken)
-    monkeypatch.setattr(output_module.ctypes, "WinDLL", lambda name: shcore)
+    monkeypatch.setattr(output_module.ctypes, "WinDLL", lambda name: shcore, raising=False)
     with caplog.at_level(logging.WARNING, logger=output_module.logger.name):
         output_module._ensure_process_dpi_awareness()
     assert "already set to -1" in caplog.text

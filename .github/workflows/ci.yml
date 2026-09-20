@@ -104,6 +104,15 @@ jobs:
         working-directory: native
         run: cargo build --release
 
+      # The #[cfg(test)] modules. Neither clippy nor build compiles them, and
+      # nothing else ran `cargo test`, so the kernel and layout tests in
+      # luma.rs, swizzle.rs, cross_adapter.rs, converter12.rs, preprocess*.rs
+      # and lib.rs only ever existed on paper. Debug profile: the release one
+      # is LTO with one codegen unit, which would roughly double this job.
+      - name: Rust unit tests
+        working-directory: native
+        run: cargo test --lib
+
       - name: Install into the package
         run: python native/install_dev.py
 
@@ -162,13 +171,18 @@ jobs:
           pip install -e .
 
       - name: Measure the noise floor
+        # --no-history throughout this job: the durable store exists so results
+        # survive a crash on a machine someone will come back to. A CI runner is
+        # discarded, nobody reads what it wrote, and the artifact below is the
+        # only output anyone looks at.
+        #
         # Establishes what this runner can actually resolve. A shared CI runner
         # is noisy, and a threshold that is not justified by a measured floor
         # produces false regressions -- which is how benchmark suites get ignored.
-        run: python benchmarks/perf_suite.py --synthetic-only --rounds 3 --reps 20 --self-test
+        run: python benchmarks/perf_suite.py --synthetic-only --rounds 3 --reps 20 --self-test --no-history
 
       - name: Run benchmarks
-        run: python benchmarks/perf_suite.py --synthetic-only --rounds 5 --reps 25 --out benchmarks/ci-results.json
+        run: python benchmarks/perf_suite.py --synthetic-only --rounds 5 --reps 25 --out benchmarks/ci-results.json --no-history
 
       - name: Compare against the committed baseline
         # Informational. CI hardware differs from the machine the baseline was
@@ -179,7 +193,7 @@ jobs:
         # baseline.json is recorded with it. Pointed at that file, every
         # conversion row would report a 6-20x "regression" on every run forever
         # -- which is how a benchmark suite teaches people to ignore it.
-        run: python benchmarks/perf_suite.py --synthetic-only --rounds 3 --reps 20 --compare benchmarks/baseline-nonative.json
+        run: python benchmarks/perf_suite.py --synthetic-only --rounds 3 --reps 20 --compare benchmarks/baseline-nonative.json --no-history
         continue-on-error: true
 
       - name: Performance badges must match the baseline

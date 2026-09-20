@@ -50,6 +50,31 @@ def tk_root():
             pass
 
 
+@pytest.fixture(autouse=True)
+def isolated_result_history(tmp_path_factory, monkeypatch):
+    """No test may write to the real benchmark history.
+
+    The runners default to ``build/performance-history``, and a test that calls
+    one of their ``main()`` functions would otherwise leave run directories in
+    the working tree -- indistinguishable, later, from runs that measured
+    something. Autouse rather than opt-in: the failure mode is silent, and a
+    test author has no reason to think about it.
+    """
+    # Inserted once, not once per test. This fixture is autouse, so appending
+    # unconditionally added a duplicate entry for every test in the suite --
+    # about 1900 of them by the end, each one lengthening every import lookup
+    # that follows.
+    benchmarks = str(Path(__file__).resolve().parent.parent / "benchmarks")
+    if benchmarks not in sys.path:
+        sys.path.insert(0, benchmarks)
+    try:
+        import result_store
+    except ImportError:  # pragma: no cover - benchmarks deps absent
+        return
+    monkeypatch.setattr(result_store, "DEFAULT_ROOT",
+                        tmp_path_factory.mktemp("history"))
+
+
 MOTION_SOURCE = Path(__file__).resolve().parent.parent / "benchmarks" / "motion_source.py"
 #: A rectangle inside the motion window (900x700 at +200+120 on the primary
 #: display), as (left, top, right, bottom).
@@ -59,8 +84,13 @@ MOTION_INSIDE = (240, 160, 1080, 780)
 @pytest.fixture(scope="module")
 def motion():
     """An animating window, or a skip when there is no desktop to draw on."""
+    # --window explicitly: the source covers the whole screen by default now,
+    # which is right for a benchmark and wrong for a test suite that would
+    # then run behind a topmost full-screen window. MOTION_INSIDE below is
+    # defined against this rectangle.
     proc = subprocess.Popen(
-        [sys.executable, str(MOTION_SOURCE), "--parent-controlled"],
+        [sys.executable, str(MOTION_SOURCE), "--parent-controlled",
+         "--window", "900x700+200+120"],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
     )
     deadline = time.monotonic() + 15

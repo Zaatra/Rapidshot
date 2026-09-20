@@ -40,12 +40,19 @@ def test_frame_cap_accounts_for_drawing_time():
 
 @pytest.fixture
 def fake_tk(monkeypatch):
-    state = SimpleNamespace(now=0.0, calls=[], emitted=[], fail=False, rectangles=0)
+    state = SimpleNamespace(now=0.0, calls=[], emitted=[], fail=False, rectangles=0,
+                            geometry=None, canvas_size=None)
 
     class Root:
         def title(self, value): pass
         def overrideredirect(self, value): pass
-        def geometry(self, value): pass
+        # The source sizes itself to the screen unless told otherwise, so the
+        # fake has to have a screen. 2560x1600 to match the machine these
+        # benchmarks are recorded on.
+        def winfo_screenwidth(self): return 2560
+        def winfo_screenheight(self): return 1600
+        def geometry(self, value):
+            state.geometry = value
         def attributes(self, *args): pass
         def protocol(self, *args): pass
         def update_idletasks(self): pass
@@ -58,7 +65,8 @@ def fake_tk(monkeypatch):
             state.calls.append("destroy")
 
     class Canvas:
-        def __init__(self, *args, **kwargs): pass
+        def __init__(self, *args, **kwargs):
+            state.canvas_size = (kwargs.get("width"), kwargs.get("height"))
         def pack(self): pass
         def create_rectangle(self, *args, **kwargs):
             state.rectangles += 1

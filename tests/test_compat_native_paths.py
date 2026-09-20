@@ -144,6 +144,28 @@ def test_shim_module_functions_delegate(monkeypatch):
     assert calls == ["device_info", "output_info", "reset", "clean_up"]
 
 
+def test_shim_module_functions_reach_the_real_factory():
+    """The test above patches rapidshot's functions, so it proves the shim calls
+    the right names, not that what comes back is rapidshot's. This runs the shim
+    unpatched, against the real factory, whenever one can be built."""
+    import comtypes
+
+    from rapidshot.util.errors import RapidShotError
+
+    rapidshot.reset()
+    try:
+        expected = rapidshot.device_info(), rapidshot.output_info()
+    except (rapidshot.RapidshotError, RapidShotError, OSError,
+            comtypes.COMError) as exc:
+        pytest.skip(f"no DXGI factory on this machine: {exc}")
+    try:
+        assert (dxcam.device_info(), dxcam.output_info()) == expected
+        assert "Device[0]" in expected[0]
+    finally:
+        dxcam.reset()
+    assert vars(rapidshot)["__factory"] is None, "the shim's reset() did not reach rapidshot"
+
+
 # --------------------------------------------------------------------------
 # native: pure-Python helpers
 # --------------------------------------------------------------------------

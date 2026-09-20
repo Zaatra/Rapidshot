@@ -239,3 +239,34 @@ def test_a_rotated_one_pixel_region_does_not_alias_the_pool_buffer():
 
         assert still_pooled is False, (width, height)
         assert not np.shares_memory(np.asarray(out), pooled), (width, height)
+
+
+def test_process_refuses_an_impossible_pitch():
+    """The lower bound has a twin. `MAX_METADATA_BUFFER_BYTES` and
+    `MAX_POINTER_SHAPE_BUFFER_BYTES` already cap the other two driver-reported
+    sizes at 16 MB apiece; the pitch was the one left unbounded, and it sizes
+    `(c_ubyte * (pitch * height))` directly.
+
+    A corrupt value does not fail cleanly there -- it describes a region
+    gigabytes long over an address that maps a few megabytes.
+    """
+    bgra = image()
+    height, width = bgra.shape[:2]
+    rect = FakeMappedRect(bgra)
+    rect.Pitch = 64 * 1024 * 1024
+
+    with pytest.raises(ValueError, match="pitch"):
+        NumpyProcessor("BGRA").process(rect, width, height, (0, 0, width, height), 0)
+
+
+def test_process_accepts_a_generously_padded_pitch():
+    """The bound must clear real padding by a wide margin. A 4K BGRA row is
+    30,720 bytes; drivers pad by tens of bytes, not megabytes."""
+    bgra = image()
+    height, width = bgra.shape[:2]
+    rect = FakeMappedRect(bgra, pitch=width * 4 + 4096)
+
+    out, _pooled = NumpyProcessor("BGRA").process(
+        rect, width, height, (0, 0, width, height), 0)
+
+    np.testing.assert_array_equal(np.asarray(out), bgra)

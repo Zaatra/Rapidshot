@@ -46,21 +46,44 @@ def test_the_capture_thread_itself_is_not_refused():
     cam = _camera()
     cam.is_capturing = True
     cam._capture_thread = threading.current_thread()
-    cam._refuse_while_capturing("grab()")   # must not raise
-    cam.is_capturing = False
+    try:
+        assert cam._refuse_while_capturing("grab()") is None
+        # Same camera, any other thread: refused. Without this the call above
+        # would also pass on a guard that never refuses anyone.
+        refused = []
+
+        def other():
+            try:
+                cam._refuse_while_capturing("grab()")
+            except RuntimeError as e:
+                refused.append(str(e))
+
+        worker = threading.Thread(target=other)
+        worker.start()
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+        assert refused and "continuous capture is running" in refused[0]
+    finally:
+        cam.is_capturing = False
 
 
-def _overlap_probe():
-    """A slow stand-in for a capture call that records peak concurrency."""
+def _overlap_probe(window=0.03):
+    """A slow stand-in for a capture call that records peak concurrency.
+
+    Each call stays inside for up to ``window`` seconds, leaving early the
+    moment a second caller is seen. The window is how long a missing lock has
+    to show itself; it can only make a broken lock look fine, never make a
+    working one fail, so a slow runner costs sensitivity rather than a flake.
+    """
     state = {"active": 0, "peak": 0}
-    guard = threading.Lock()
+    overlap = threading.Condition()
 
     def slow(*_args, **_kwargs):
-        with guard:
+        with overlap:
             state["active"] += 1
             state["peak"] = max(state["peak"], state["active"])
-        time.sleep(0.03)
-        with guard:
+            overlap.notify_all()
+            overlap.wait_for(lambda: state["peak"] > 1, timeout=window)
             state["active"] -= 1
         return None
 
@@ -72,12 +95,18 @@ def _run_concurrently(*targets):
     for t in threads:
         t.start()
     for t in threads:
-        t.join(timeout=5)
+        t.join(timeout=10)
+    stuck = [t.name for t in threads if t.is_alive()]
+    assert not stuck, f"threads still running after join: {stuck}"
 
 
 def test_the_probe_does_see_overlap_without_the_lock():
-    """Control: proves the test below can fail."""
-    slow, state = _overlap_probe()
+    """Control: proves the test below can fail.
+
+    A long window here, not a sleep: the first caller waits until the second
+    arrives, so overlap is guaranteed rather than likely.
+    """
+    slow, state = _overlap_probe(window=5.0)
     _run_concurrently(*[slow] * 4)
     assert state["peak"] > 1
 
@@ -120,4 +149,5 @@ def test_release_waits_for_a_grab_in_flight(monkeypatch):
     assert started.wait(2)
     cam.release()
     worker.join(timeout=5)
+    assert not worker.is_alive(), "the grab never finished"
     assert order[:2] == ["grab finished", "duplicator released"]

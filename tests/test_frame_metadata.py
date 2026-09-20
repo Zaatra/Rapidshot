@@ -194,3 +194,52 @@ class TestFrameStillUsesSlots:
     def test_new_fields_are_declared(self):
         for name in ("_sequence", "_generation", "_cursor"):
             assert name in Frame.__slots__
+
+
+# -- cursor metadata the library vouches for -----------------------------
+
+
+def _camera_with_cursor(shape, pitch, size):
+    from types import SimpleNamespace
+    from rapidshot.capture import ScreenCapture
+
+    camera = ScreenCapture.__new__(ScreenCapture)
+    camera._duplicator = SimpleNamespace(
+        cursor_visible=True,
+        cursor=SimpleNamespace(
+            Shape=shape,
+            PointerPositionInfo=SimpleNamespace(
+                Position=SimpleNamespace(x=1, y=2)),
+            PointerShapeInfo=SimpleNamespace(
+                Type=1, Width=size[0], Height=size[1], Pitch=pitch,
+                HotSpot=SimpleNamespace(x=0, y=0))))
+    return camera
+
+
+def test_cursor_metadata_that_fits_its_buffer_is_reported():
+    camera = _camera_with_cursor(bytes(4 * 8), pitch=8, size=(2, 4))
+
+    cursor = camera._cursor_info()
+
+    assert cursor.shape_pitch == 8
+    assert cursor.shape_size == (2, 4)
+    assert cursor.shape is not None
+
+
+def test_cursor_metadata_that_overruns_its_buffer_is_not_handed_out():
+    """`Pitch`, `Width` and `Height` come from the driver and the library
+    passes them straight to the caller beside the shape bytes -- so it is
+    vouching for a description it never checked. A consumer walking the buffer
+    by `shape_pitch` reads past the end of it.
+
+    Nothing inside RapidShot indexes with these, which is why this is not a
+    crash here; it is a crash in whoever trusts them.
+    """
+    camera = _camera_with_cursor(bytes(16), pitch=8, size=(2, 64))
+
+    cursor = camera._cursor_info()
+
+    assert cursor.shape is None
+    assert cursor.shape_pitch == 0
+    assert cursor.shape_size is None
+    assert cursor.visible is True          # the rest of the snapshot survives

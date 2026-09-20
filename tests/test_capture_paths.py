@@ -1476,15 +1476,22 @@ def test_accessors_and_repr(pipeline):
     assert repr(broken) == "<ScreenCapture: initialization incomplete>"
 
 
-def test_destructor_swallows_release_errors():
+def test_destructor_swallows_release_errors(caplog):
     cam = ScreenCapture.__new__(ScreenCapture)
+    calls = []
 
     def failing_release():
+        calls.append("release")
         raise RuntimeError("teardown failed")
 
     cam.release = failing_release
-    cam.__del__()   # must not raise
+    with caplog.at_level("WARNING", logger="rapidshot.capture"):
+        cam.__del__()   # must not raise
     del cam.release
+
+    # Swallowed, not skipped: release ran, and its failure was reported.
+    assert calls == ["release"]
+    assert "teardown failed" in caplog.text
 
 
 def test_module_keeps_the_old_cupy_names(monkeypatch):
