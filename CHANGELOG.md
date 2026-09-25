@@ -10,6 +10,22 @@ each release can be traced back to the plan it implements.
 
 ## [Unreleased]
 
+### Documentation
+
+- **2.6.0's performance is now measured, and the README quotes it.** 2.6.0
+  shipped claiming correctness but no hybrid throughput, because the only
+  recording was 2.5-era. Re-recorded 2026-09-25 against 2.6.0 and the
+  `rapidshot-native` 0.2.0 wheel on Machine B, in both MUX modes, three passes
+  per path, every path verified first. On the hybrid laptop,
+  `GpuConverter` + `TensorTransfer` reaches **162.2 fps to a CUDA tensor, pixels
+  27.6 ms old, 2.0 ms CPU per frame, against DXcam's 95.6 fps, 37.7 ms and
+  11.2 ms**; the full-frame cross-adapter path it replaces still runs at 80.9
+  fps. Through YOLO11n with NMS, discrete-only: 50.5 fps and detections 46.9 ms
+  after `Present()`, against DXcam's 37.7 fps and 53.8 ms. Five recordings in
+  `benchmarks/*-machineB-*-2.6.0.json`; the README's Desktop to model section
+  replaces the 2026-09-11 table, which stays in `docs/BENCHMARKS.md` as the
+  2.5-era record.
+
 ## [2.6.0] - 2026-09-20
 
 ### Highlights

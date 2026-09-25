@@ -48,7 +48,9 @@ Four things, each with the measurement behind it:
   adapter, then move the finished tensor rather than the whole frame: **2.46 MB
   instead of 16.38 MB** at 2560×1600. Verified end to end on real Optimus
   hardware (Intel UHD → RTX 4060), CUDA importing the transferred buffer — see
-  [Hybrid GPU laptops](#hybrid-gpu-laptops).
+  [Hybrid GPU laptops](#hybrid-gpu-laptops). Measured: **162 fps against DXcam's
+  96, pixels 10 ms younger, at under a fifth of the CPU** — see
+  [Desktop to model](#c-desktop-to-model).
 
 Upgrading from 2.5? See [Migrating from 2.5](#migrating-from-25) — the one
 breaking item is a new minimum native-extension version.
@@ -350,8 +352,10 @@ reported a crossing that never happened. WARP is the configuration that hid the
 bug, so a WARP result is not evidence for this path. The check above is the one
 that counts, and it needs two real GPUs.
 
-**No throughput figure is quoted yet.** Correctness is established; the hybrid
-performance recording is 2.5-era and will be re-recorded.
+**Measured against 2.6.0 on this laptop, 2026-09-25:** 162 fps to a CUDA
+tensor, pixels 27.6 ms old at the median, 2.0 ms of CPU per frame — against
+DXcam's 95.6 fps, 37.7 ms and 11.2 ms. The full table, including the full-frame
+transfer this replaces, is in [Desktop to model](#c-desktop-to-model).
 
 ## Correctness guarantees
 
@@ -412,24 +416,66 @@ staging pool sized to what a converting `grab()` can actually use, and
 
 Pixel **age**, not call duration: a source encodes a frame ID into the image and
 records every `Present()`, so each library is timed on one clock by how old its
-pixels were.
-[`benchmarks/section7-ingestion-machineB.json`](benchmarks/section7-ingestion-machineB.json),
-2026-09-11, Machine B, 2560×1600 at 165 Hz, medians across 3 passes, 8 s per
-path, every path verified to produce the correct tensor before being timed:
+pixels were when they became a `(1, 3, 640, 640)` FP16 tensor on CUDA.
+Recorded 2026-09-25 against **2.6.0 with the `rapidshot-native` 0.2.0 wheel from
+PyPI**, Machine B, 2560×1600 at 165 Hz, medians across 3 passes, 8 s per path,
+every path verified to produce the correct tensor before being timed.
+
+**Hybrid laptop** — Intel UHD captures, RTX 4060 runs CUDA
+([`section7-ingestion-machineB-hybrid-2.6.0.json`](benchmarks/section7-ingestion-machineB-hybrid-2.6.0.json)):
 
 | | unique frames/s | pixel age p50 / p95 | CPU per frame |
-| --- | --- | --- | --- |
-| mss | 33.0 | 57.6 / 60.7 ms | 15.3 ms |
-| DXcam (DXGI) | 108.2 | 36.6 / 39.6 ms | 8.9 ms |
-| DXcam (WGC) | 106.0 | 40.7 / 45.1 ms | 8.7 ms |
-| RapidShot `grab()` | **140.5** | **33.6 / 36.1 ms** | 7.7 ms |
-| RapidShot `grab()`, `nvidia_gpu=True` | 128.8 | 34.4 / 36.6 ms | **4.4 ms** |
+| --- | ---: | ---: | ---: |
+| mss | 29.1 | 56.5 / 64.3 ms | 19.5 ms |
+| DXcam (DXGI) | 95.6 | 37.7 / 43.4 ms | 11.2 ms |
+| DXcam (WGC) | 93.3 | 40.8 / 49.0 ms | 10.8 ms |
+| RapidShot `grab()` | 123.1 | 35.1 / 40.2 ms | 8.8 ms |
+| RapidShot `grab()`, `nvidia_gpu=True` | 125.6 | 34.8 / 38.8 ms | 5.2 ms |
+| RapidShot, full frame across adapters (2.5 path) | 80.9 | 34.9 / 37.5 ms | 5.2 ms |
+| **RapidShot 2.6, `GpuConverter` + `TensorTransfer`** | **162.2** | **27.6 / 29.9 ms** | **2.0 ms** |
 
-`grab()` returns 30% more unique frames with pixels 8% younger; `nvidia_gpu=True`
-does it at half DXcam's CPU. Each one's worst pass still beat DXcam's best.
+Converting on the capture GPU and moving only the 2.46 MB tensor gives **1.7×
+DXcam's frames, pixels 10 ms younger, at under a fifth of its CPU** — and its
+worst pass beat DXcam's best on all three columns. 162 fps is the 165 Hz panel,
+so that column is a floor. Moving the *whole frame* across adapters is still
+slower than DXcam, at 81 fps; on a hybrid laptop, convert first.
 
-**This recording predates 2.6** and does not include `GpuConverter`. It is kept
-because it is the honest current evidence; it will be re-recorded.
+**NVIDIA driving the display** — the MUX in discrete-only mode, so capture and
+CUDA share one adapter
+([`section7-ingestion-machineB-dgpu-2.6.0.json`](benchmarks/section7-ingestion-machineB-dgpu-2.6.0.json)):
+
+| | unique frames/s | pixel age p50 / p95 | CPU per frame |
+| --- | ---: | ---: | ---: |
+| mss | 40.7 | 46.0 / 52.1 ms | 14.1 ms |
+| DXcam (DXGI) | 124.0 | 35.1 / 38.5 ms | 10.1 ms |
+| DXcam (WGC) | 122.9 | 35.6 / 39.2 ms | 10.4 ms |
+| RapidShot `grab()` | 161.8 | 31.2 / 33.2 ms | 8.7 ms |
+| RapidShot `grab()`, `nvidia_gpu=True` | 151.6 | 33.9 / 35.1 ms | 6.6 ms |
+| **RapidShot 2.6, `GpuConverter`** | **164.3** | **25.9 / 26.6 ms** | **1.2 ms** |
+
+The `GpuConverter` row is two passes, not three, and it read frames as fast as
+the source presented them, so its frame rate is a floor rather than its ceiling.
+The two tables are different machine configurations; compare within one, not
+across.
+
+**Through a detector** — the same clock carried to *usable detections*: YOLO11n
+on the RTX 4060 through ONNX Runtime's CUDA provider, NMS included, with a scene
+of signage and a keyboard panning under the marker so the model has something
+to find. Discrete-only mode
+([`section7-inference-machineB-dgpu-2.6.0.json`](benchmarks/section7-inference-machineB-dgpu-2.6.0.json)):
+
+| | unique frames/s | detections ready p50 / p95 | CPU per frame |
+| --- | ---: | ---: | ---: |
+| mss | 23.7 | 67.6 / 71.0 ms | 32.1 ms |
+| DXcam (DXGI) | 37.7 | 53.8 / 57.7 ms | 28.0 ms |
+| RapidShot `grab()` | 41.3 | 51.6 / 56.2 ms | 26.2 ms |
+| **RapidShot 2.6, `GpuConverter`** | **50.5** | **46.9 / 51.2 ms** | **19.2 ms** |
+
+34% more frames through the model than DXcam, detections 6.9 ms sooner, and a
+third less CPU, with every pass ahead of DXcam's best. Every path found the
+same scene: 8.4–9.7 detections per frame. Three passes are consistent, not the
+five paired runs the harness itself requires before calling a difference a
+verdict ([ROADMAP](ROADMAP.md) § 7.0c).
 
 ### What none of this shows
 

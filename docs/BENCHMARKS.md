@@ -2,13 +2,15 @@
 
 Everything measured, with the methodology and the caveats, moved out of
 `README.md` so the README can describe what the library *is* rather than read as
-a benchmark paper. Nothing here has been re-edited or re-run for 2.6 — it is the
-2.1 / 2.4 / 2.5-era record, kept because a measurement is only worth what its
-context is worth, and deleting the context would leave numbers nobody can check.
+a benchmark paper. Most of it is the 2.1 / 2.4 / 2.5-era record, kept because a
+measurement is only worth what its context is worth, and deleting the context
+would leave numbers nobody can check.
 
 **For the current 2.6 figures**, see [Performance](../README.md#performance) in
-the README. The one number restated there and here is memory, and 2.6 changed
-it substantially — the tables below predate that change.
+the README. [Desktop to model](#desktop-to-model) below has the 2.6.0 recording
+of 2026-09-25 first, with what the README leaves out; everything after it
+predates 2.6. Memory is the other number 2.6 changed substantially, and the
+capture-only tables below predate that change.
 
 The raw recordings are committed beside this file's sources in
 [`benchmarks/`](../benchmarks/); every table names the JSON it came from.
@@ -227,6 +229,62 @@ incrementing frame ID into the image and records the time of every `Present()`;
 each path decodes the ID from what it captured, so every library is timed on
 one clock by how old its pixels were. RapidShot's own present timestamps would
 have given it an advantage no other library could match, so they are not used.
+
+#### 2.6.0 — recorded 2026-09-25
+
+The tables are in the README's [Desktop to model](../README.md#c-desktop-to-model),
+from five committed recordings:
+
+| recording | mode | what it times |
+| --- | --- | --- |
+| [`section7-ingestion-machineB-hybrid-2.6.0.json`](../benchmarks/section7-ingestion-machineB-hybrid-2.6.0.json) | hybrid | pixel age to the tensor |
+| [`section7-ingestion-machineB-dgpu-2.6.0.json`](../benchmarks/section7-ingestion-machineB-dgpu-2.6.0.json) | discrete-only | pixel age to the tensor |
+| [`section7-inference-machineB-dgpu-2.6.0.json`](../benchmarks/section7-inference-machineB-dgpu-2.6.0.json) | discrete-only | pixel age to usable YOLO11n detections |
+| [`ai-ingestion-machineB-hybrid-2.6.0.json`](../benchmarks/ai-ingestion-machineB-hybrid-2.6.0.json) | hybrid | call duration and CPU per tensor |
+| [`ai-ingestion-machineB-dgpu-2.6.0.json`](../benchmarks/ai-ingestion-machineB-dgpu-2.6.0.json) | discrete-only | call duration and CPU per tensor |
+
+Each file records the commit (library code identical to `v2.6.0`), the
+`rapidshot-native` 0.2.0 wheel it ran against, every pass in full, and under
+`excluded` any case that did not complete — two, both `GpuConverter` passes in
+discrete-only mode, which is why those rows rest on two passes.
+
+What the README leaves out:
+
+- **The convert-before-transfer path is not capped the way the full-frame one
+  is.** Moving the whole 16 MB frame across adapters still tops out at about 81
+  fps, below DXcam, as it did in the 2.5 recording further down. Converting on
+  the capture GPU first and moving 2.46 MB reached 162 fps, the panel's rate. The
+  "trade, not a win" verdict below is about the full-frame path.
+- **CPU per tensor, from the call-duration harness.** Its source updates about
+  97 times a second in hybrid mode, so its frame rates and call times describe
+  the source; CPU per frame is the column that compares. Hybrid: `GpuConverter` +
+  `TensorTransfer` **1.4 ms**, DXcam 13.2 ms, `grab()` 9.1 ms. Discrete-only:
+  `GpuConverter` **0.6 ms**, DXcam 11.0 ms, `grab()` 8.6 ms.
+- **The detector run was pinned differently.** Its processes were restricted to
+  logical processors 2–15 (mask `0xfffc`) instead of the 16 performance-core
+  threads the other runs used, so it is its own configuration and is not pooled
+  with them. Its inference stage, ~18–19 ms per frame, is also not comparable to
+  the hybrid recording below: in discrete-only mode the RTX 4060 renders the
+  desktop and the test scene as well as running the model.
+- **The direct single-adapter path is no longer the youngest.** In discrete-only
+  mode it and `grab()` tie at ~31 ms; `GpuConverter` is 25.9 ms. Its frame rate,
+  83 fps, still trails `grab()`'s 162.
+- **DXcam's WGC backend** trails its DXGI one on frames and pixel age in both
+  modes, and costs slightly less CPU in hybrid mode.
+
+Reproduce, once per MUX mode (the test source and model as in the build steps
+further down; each command once with `--verify`, then three times without):
+
+```bash
+python benchmarks/section7.py --category ingestion --workload motion --seconds 8 --continue-on-failure
+python benchmarks/ai_ingestion.py --call-duration --with-motion --seconds 8 --continue-on-failure
+python benchmarks/section7.py --category inference --workload motion --seconds 8 \
+  --paths mss dxcam rapidshot-cpu rapidshot-cupy rapidshot-direct rapidshot-converter \
+  --model build/section7/model/yolo11n.onnx --model-sha256 <sha256> \
+  --scene build/scenes/default --continue-on-failure
+```
+
+#### 2.5-era recording — 2026-09-11
 
 [`benchmarks/section7-ingestion-machineB.json`](benchmarks/section7-ingestion-machineB.json),
 recorded 2026-09-11 — Machine B, Intel iGPU capture with an RTX 4060 doing the

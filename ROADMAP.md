@@ -29,6 +29,13 @@ This document is written to be read cold. It states where the project actually i
 > The one thing worth doing during the freeze is **evidence**: § 7.5's
 > `rapidshot benchmark --full` and the hardware matrix. No AMD part has ever run
 > any of this (§ 2), and that gap is not closed by writing more code.
+>
+> **Evidence so far, 2026-09-25:** 2.6.0 re-measured on Machine B in both MUX
+> modes against the published `rapidshot-native` 0.2.0 wheel — ingestion, call
+> duration, and YOLO11n detections on a scene (`benchmarks/*-2.6.0.json`,
+> README § Performance). Convert-before-transfer closed the hybrid gap: 162 fps
+> against DXcam's 96, where the full-frame path still does 81. Next:
+> `rapidshot benchmark`, so the second data point is not this laptop again.
 
 ### Release status
 
