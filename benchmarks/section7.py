@@ -27,7 +27,26 @@ from result_store import CaseIdentity
 from result_validation import should_stop
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "native" / "target" / "release" / "latency_source.exe"
+BUILT_SOURCE = ROOT / "native" / "target" / "release" / "latency_source.exe"
+
+
+def find_source(built=BUILT_SOURCE):
+    """The test source to run: a local build first, then the rapidshot-native wheel's.
+
+    A local build wins because whoever rebuilt it is testing *that* build, the
+    same precedence `rapidshot.native` gives the development extension. Without
+    either, the local path is returned so the error names what to build.
+    """
+    if built.is_file():
+        return built
+    try:
+        import rapidshot_native
+        return Path(rapidshot_native.latency_source_path())
+    except (ImportError, AttributeError, FileNotFoundError):
+        return built
+
+
+SOURCE = find_source()
 
 
 def display_mode():
@@ -60,7 +79,8 @@ class VisualSource(MotionSource):
 
     def start(self):
         if not SOURCE.is_file():
-            raise RuntimeError("build source first: cargo build --release --bin latency_source --manifest-path native/Cargo.toml")
+            raise RuntimeError("no test source: pip install \"rapidshot-native>=0.2.1\", or build one with "
+                               "cargo build --release --bin latency_source --manifest-path native/Cargo.toml")
         self.stdout = (self.logs.directory / "motion.stdout.log").open("wb")
         self.stderr = (self.logs.directory / "motion.stderr.log").open("wb")
         self.reader = (self.logs.directory / "motion.stdout.log").open(encoding="utf-8")
@@ -752,7 +772,8 @@ def main(category="ingestion", argv=None):
         "instrumentation": "marker decode and completion barriers included; VRAM is device-wide",
         "workload": args.workload, "requested_source_fps": args.motion_fps,
         "environment": environment, "cpu_policy": policy.as_dict(),
-        "versions": {d.metadata['Name']: d.version for d in importlib.metadata.distributions()}}
+        "versions": {d.metadata['Name']: d.version for d in importlib.metadata.distributions()},
+        "native_loaded": machine_inventory.native_loaded(), "test_source": str(SOURCE)}
     # Opened before anything is measured, and deliberately not inside the try
     # below: a store that cannot be opened is a reason to stop, not a reason to
     # run the benchmark and discover afterwards that nothing was recorded.

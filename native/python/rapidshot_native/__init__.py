@@ -13,7 +13,7 @@ covers every supported Python version rather than one per minor release.
 
 from __future__ import annotations
 
-__all__ = ["__version__", "extension_path"]
+__all__ = ["__version__", "extension_path", "latency_source_path"]
 
 
 def _version() -> str:
@@ -56,3 +56,24 @@ def extension_path() -> str:
         if candidate.exists():
             return str(candidate)
     raise FileNotFoundError(f"no compiled extension next to {here}")
+
+
+def latency_source_path() -> str:
+    """Absolute path to the benchmark's controlled test source, `latency_source.exe`.
+
+    The pixel-age benchmark needs a source that stamps a frame ID into every
+    `Present()` and logs when it happened, so that every capture library is timed
+    on one clock. That source is a Rust binary built from the same crate
+    (`native/src/bin/latency_source.rs`) and shipped in this wheel so that a
+    tester with no toolchain can produce the same table the README quotes.
+
+    It is a standalone executable, not something `rapidshot` imports: nothing in
+    the capture path depends on it.
+    """
+    from pathlib import Path
+
+    candidate = Path(__file__).resolve().parent / "latency_source.exe"
+    if candidate.is_file():
+        return str(candidate)
+    raise FileNotFoundError(f"latency_source.exe is not in {candidate.parent}; "
+                            "rapidshot-native 0.2.1 or later ships it")

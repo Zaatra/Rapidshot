@@ -466,3 +466,28 @@ def test_prepare_run_applies_the_policy_before_taking_the_snapshot(monkeypatch):
     # The snapshot has to record the affinity the run actually had, which means
     # it cannot be taken first.
     assert order == ["policy", "snapshot"]
+
+
+# ---------------------------------------------------------------------------
+# Which native extension a recording ran against
+# ---------------------------------------------------------------------------
+
+def test_the_loaded_extension_is_reported_not_the_installed_one(monkeypatch):
+    from rapidshot import native
+    info = {"version": "0.1.0", "source": "development build (rapidshot/_rapidshot_native)"}
+    monkeypatch.setattr(native, "is_available", lambda: True)
+    monkeypatch.setattr(native, "build_info", lambda: info)
+    assert mi.native_loaded() == info
+
+
+def test_no_extension_is_none_rather_than_a_guess(monkeypatch):
+    from rapidshot import native
+    monkeypatch.setattr(native, "is_available", lambda: False)
+    assert mi.native_loaded() is None
+
+
+def test_a_failing_probe_is_recorded_rather_than_stopping_the_run(monkeypatch):
+    from rapidshot import native
+    monkeypatch.setattr(native, "is_available", lambda: True)
+    monkeypatch.setattr(native, "build_info", lambda: (_ for _ in ()).throw(OSError("boom")))
+    assert mi.native_loaded() == {"error": "OSError: boom"}

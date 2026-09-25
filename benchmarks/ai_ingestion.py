@@ -1083,7 +1083,8 @@ def main(argv=None) -> int:
                "target": {"shape": list(TARGET_SHAPE), "dtype": TARGET_DTYPE,
                           "resize": "bilinear-half-pixel"},
                "results": rows, "logs": str(logs.directory),
-               "environment": machine, "cpu_policy": policy.as_dict()}
+               "environment": machine, "cpu_policy": policy.as_dict(),
+               "native_loaded": machine_inventory.native_loaded()}
     motion = MotionSource(logs, args.motion_fps) if args.with_motion else None
     interrupted = False
     try:

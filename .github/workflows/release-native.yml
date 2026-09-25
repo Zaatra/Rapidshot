@@ -62,6 +62,19 @@ jobs:
           cargo fmt --check
           cargo clippy --release -- -D warnings
 
+      # `rapidshot benchmark` times every library against a controlled source that
+      # stamps a frame ID into each Present(). It is a bin target in this crate,
+      # which maturin does not build, so it is built here and copied into the
+      # package directory, where maturin includes it with the rest of
+      # python-source. Shipping it is what lets a tester without a Rust
+      # toolchain produce the pixel-age table the README quotes.
+      - name: Build the benchmark source
+        working-directory: native
+        shell: pwsh
+        run: |
+          cargo build --release --bin latency_source
+          Copy-Item target\release\latency_source.exe python\rapidshot_native\
+
       - name: Build the wheel
         # `-m` takes the *Cargo* manifest; maturin picks up native/pyproject.toml
         # from the same directory. Pointing it at the pyproject.toml instead
@@ -79,7 +92,7 @@ jobs:
           & "$env:RUNNER_TEMP\relcheck\Scripts\python.exe" -m pip install --quiet --upgrade pip
           & "$env:RUNNER_TEMP\relcheck\Scripts\python.exe" -m pip install --quiet (Get-ChildItem dist\*.whl)[0].FullName
           Push-Location $env:RUNNER_TEMP
-          & "$env:RUNNER_TEMP\relcheck\Scripts\python.exe" -c "import rapidshot_native; print('import ok', rapidshot_native.__version__); print(rapidshot_native.extension_path())"
+          & "$env:RUNNER_TEMP\relcheck\Scripts\python.exe" -c "import rapidshot_native; print('import ok', rapidshot_native.__version__); print(rapidshot_native.extension_path()); print(rapidshot_native.latency_source_path())"
           Pop-Location
 
       # `rapidshot` is what actually consumes this, and it looks in two places.

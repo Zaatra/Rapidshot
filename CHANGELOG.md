@@ -10,6 +10,19 @@ each release can be traced back to the plan it implements.
 
 ## [Unreleased]
 
+### Added — `rapidshot-native` 0.2.1
+
+- **The wheel ships the benchmark's test source.** `latency_source.exe`, the
+  controlled source that stamps a frame ID into every `Present()` so that every
+  capture library is timed on one clock, was only available to someone who
+  could build it with Cargo. It is now in the wheel, found through
+  `rapidshot_native.latency_source_path()`, and the benchmark harnesses use it
+  when no local build exists. The extension itself is unchanged from 0.2.0.
+- **Recordings name the extension that ran.** Results now carry
+  `native_loaded` — `rapidshot.native.build_info()`, including which route
+  provided it — alongside the installed-package list, which reports the wheel
+  even when an in-tree development build is what actually loads.
+
 ### Documentation
 
 - **2.6.0's performance is now measured, and the README quotes it.** 2.6.0

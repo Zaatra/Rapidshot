@@ -420,3 +420,30 @@ def test_the_source_defers_to_the_health_guard(monkeypatch, tmp_path):
     with pytest.raises(section7.MotionError, match="WHEA"):
         source.check()
     assert calls == ["guard"]
+
+
+def test_a_local_source_build_wins_over_the_wheel(monkeypatch, tmp_path):
+    built = tmp_path / "latency_source.exe"
+    built.write_bytes(b"MZ")
+    wheel = tmp_path / "wheel" / "latency_source.exe"
+    monkeypatch.setitem(sys.modules, "rapidshot_native",
+                        SimpleNamespace(latency_source_path=lambda: str(wheel)))
+    assert section7.find_source(built) == built
+
+
+def test_the_wheel_source_is_used_when_nothing_was_built(monkeypatch, tmp_path):
+    wheel = tmp_path / "latency_source.exe"
+    monkeypatch.setitem(sys.modules, "rapidshot_native",
+                        SimpleNamespace(latency_source_path=lambda: str(wheel)))
+    assert section7.find_source(tmp_path / "missing.exe") == wheel
+
+
+@pytest.mark.parametrize("module", [
+    None,                                            # rapidshot-native not installed
+    SimpleNamespace(),                               # 0.2.0: no latency_source_path
+    SimpleNamespace(latency_source_path=lambda: (_ for _ in ()).throw(FileNotFoundError())),
+])
+def test_without_any_source_the_error_names_the_local_build(monkeypatch, tmp_path, module):
+    monkeypatch.setitem(sys.modules, "rapidshot_native", module)
+    missing = tmp_path / "missing.exe"
+    assert section7.find_source(missing) == missing

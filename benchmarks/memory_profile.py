@@ -232,7 +232,8 @@ class WorkloadSource:
     def start(self):
         if not SOURCE.is_file():
             raise RuntimeError(
-                "build the source first: cargo build --release --bin latency_source "
+                "no test source: pip install \"rapidshot-native>=0.2.1\", or build one with "
+                "cargo build --release --bin latency_source "
                 "--manifest-path native/Cargo.toml")
         directory = self.logs.directory
         self.stdout = (directory / f"source-{self.workload}.stdout.log").open("wb")

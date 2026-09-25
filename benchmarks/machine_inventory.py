@@ -447,6 +447,21 @@ def performance_core_mask(cpu=None):
     return fastest["mask"], topology
 
 
+def native_loaded():
+    """Which native extension this process actually imports, not which is installed.
+
+    The distribution list a recording carries reports `rapidshot-native` 0.2.0
+    even when the in-tree development build is what loads -- it takes
+    precedence -- so a recording could credit a wheel that never ran. This asks
+    `rapidshot.native` instead, whose `source` field names the route.
+    """
+    try:
+        from rapidshot import native
+        return native.build_info() if native.is_available() else None
+    except Exception as exc:  # noqa: BLE001 - provenance must not stop a run
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
 def apply_cpu_policy(policy: str = "performance", *, cpu=None) -> CpuPolicy:
     """Restrict this process to the chosen cores and verify it took effect.
 

@@ -126,6 +126,14 @@ jobs:
       # found at the worst possible moment. This is the cheap half of that
       # workflow: build it, and confirm a clean environment outside the
       # repository can install and import it.
+      # maturin builds only the cdylib, so the benchmark's test source -- a bin
+      # target in the same crate, built by `cargo build --release` above -- is
+      # copied into the package directory for maturin to pick up with the rest
+      # of python-source. Same steps as release-native.yml.
+      - name: Stage the benchmark source in the wheel
+        shell: pwsh
+        run: Copy-Item native\target\release\latency_source.exe native\python\rapidshot_native\
+
       - name: Build the distributable wheel
         run: |
           pip install "maturin>=1.9,<2.0"
@@ -137,7 +145,7 @@ jobs:
           python -m venv "$env:RUNNER_TEMP\nativecheck"
           & "$env:RUNNER_TEMP\nativecheck\Scripts\python.exe" -m pip install --quiet (Get-ChildItem dist-native\*.whl)[0].FullName
           Push-Location $env:RUNNER_TEMP
-          & "$env:RUNNER_TEMP\nativecheck\Scripts\python.exe" -c "import rapidshot_native; print('ok', rapidshot_native.__version__, rapidshot_native.extension_path())"
+          & "$env:RUNNER_TEMP\nativecheck\Scripts\python.exe" -c "import rapidshot_native; print('ok', rapidshot_native.__version__, rapidshot_native.extension_path(), rapidshot_native.latency_source_path())"
           Pop-Location
 
       - name: The wheel must be abi3
