@@ -280,8 +280,16 @@ jobs:
           import rapidshot.core, rapidshot.processor, rapidshot.util, rapidshot._libs
           from rapidshot import native
           print("all subpackages import; native available:", native.is_available())
+          # The benchmark harness ships so testers can run it; it must import
+          # with only the base dependencies, and must not think it is in a
+          # checkout (that is what decides where it writes and what git it asks).
+          from rapidshot._bench import _paths, cli, section7, ai_ingestion, memory_profile
+          assert _paths.REPO is None, _paths.REPO
+          print("benchmark harness imports; results would go to", _paths.WORK)
           '@
           if ($LASTEXITCODE -ne 0) { throw "installed package failed to import" }
+          & "$env:RUNNER_TEMP/verify/Scripts/rapidshot.exe" --help
+          if ($LASTEXITCODE -ne 0) { throw "the rapidshot command is not installed" }
           Pop-Location
 
       - name: Every module must be importable

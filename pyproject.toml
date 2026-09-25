@@ -44,7 +44,22 @@ dependencies = [
     "comtypes>=1.1.0",
 ]
 
+[project.scripts]
+# `rapidshot benchmark` and `rapidshot diagnose`; also `python -m rapidshot`.
+rapidshot = "rapidshot.__main__:main"
+
 [project.optional-dependencies]
+# Everything `rapidshot benchmark` needs to produce the README's comparison on
+# a tester's machine: the test source (shipped in rapidshot-native from 0.2.1),
+# psutil for the harness's CPU accounting, and the libraries it compares
+# against. CuPy is not here, for the reason given under `all`: pick the
+# `gpu_cuda12` or `gpu_cuda13` extra as well to measure the GPU paths.
+benchmark = [
+    "rapidshot-native>=0.2.1; platform_system == 'Windows'",
+    "psutil>=5.9",
+    "mss>=9.0",
+    "dxcam>=0.0.5",
+]
 cv2 = ["opencv-python>=4.5.0"]
 # CuPy only. OpenCV was dropped from these extras in 2.3.0 because the code no
 # longer uses it here: CupyProcessor used to convert colour by copying the frame

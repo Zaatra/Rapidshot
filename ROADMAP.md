@@ -34,8 +34,9 @@ This document is written to be read cold. It states where the project actually i
 > modes against the published `rapidshot-native` 0.2.0 wheel — ingestion, call
 > duration, and YOLO11n detections on a scene (`benchmarks/*-2.6.0.json`,
 > README § Performance). Convert-before-transfer closed the hybrid gap: 162 fps
-> against DXcam's 96, where the full-frame path still does 81. Next:
-> `rapidshot benchmark`, so the second data point is not this laptop again.
+> against DXcam's 96, where the full-frame path still does 81.
+> `rapidshot benchmark` is built (§ 7.5) so the next data point is not this
+> laptop again; it ships with 2.6.1 and `rapidshot-native` 0.2.1.
 
 ### Release status
 
@@ -2993,6 +2994,18 @@ fps, pixel age, converter and tensor correctness, HDR capability, cross-adapter
 capability — attachable to an issue. Then publish the matrix. *"NVIDIA: 27
 systems, AMD: 14, Intel: 18"* would do more for credibility than most code
 changes, and § 3's rule still applies to every row of it.
+
+> **Built 2026-09-25, for 2.6.1.** `rapidshot benchmark` runs the § 7.0 pixel-age
+> harness — moved into the package as `rapidshot._bench` so a wheel can reach
+> it — against whatever capture libraries are installed, verifies every path,
+> and writes a sanitised Markdown + JSON report for a new `benchmark` issue
+> template. `--full` adds CPU per tensor (the call-duration harness). The test
+> source ships in `rapidshot-native` 0.2.1, so none of it needs a toolchain.
+>
+> **Not in it yet:** memory (`memory_profile.py` is in the package but not
+> wired to the command), HDR capability, and the cross-adapter *capability*
+> probe as distinct from the cross-adapter paths it times. The matrix itself is
+> the work that remains, and it is not code.
 
 **Freeze the public API here**, before 3.0 moves the boundary underneath it.
 

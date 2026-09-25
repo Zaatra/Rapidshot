@@ -470,7 +470,7 @@ def test_cross_adapter_reference_and_actual_height(harness, monkeypatch):
                              release=lambda: harness.events.append("camera-close"))
     monkeypatch.setitem(sys.modules, "rapidshot", SimpleNamespace(
         create=lambda: camera, native=SimpleNamespace(cross_adapter_transfer=lambda f: trans)))
-    monkeypatch.setitem(sys.modules, "gpu_tensor_to_cupy", SimpleNamespace(CudaTensor=View))
+    monkeypatch.setitem(sys.modules, "rapidshot._bench.gpu_tensor_to_cupy", SimpleNamespace(CudaTensor=View))
     result = bench.verify_path("rapidshot-xadapter")
     assert result["verified"]
     assert result["reference_shape"] == [3, 2, 4]
@@ -482,7 +482,7 @@ def test_cross_adapter_no_frame_does_not_enter_none(harness, monkeypatch):
     camera = SimpleNamespace(grab_frame=lambda: None, release=lambda: None)
     monkeypatch.setitem(sys.modules, "rapidshot", SimpleNamespace(create=lambda: camera,
                                                                 native=SimpleNamespace()))
-    monkeypatch.setitem(sys.modules, "gpu_tensor_to_cupy", SimpleNamespace(CudaTensor=None))
+    monkeypatch.setitem(sys.modules, "rapidshot._bench.gpu_tensor_to_cupy", SimpleNamespace(CudaTensor=None))
     produce, close, _ = bench._adapter_rapidshot_xadapter(harness.gpu, np)
     assert produce() is None
     close()
@@ -760,7 +760,7 @@ def test_async_transfer_waits_before_the_frame_is_released(harness, monkeypatch)
     monkeypatch.setitem(sys.modules, "rapidshot", SimpleNamespace(
         create=lambda: camera,
         native=SimpleNamespace(cross_adapter_transfer=lambda f: trans)))
-    monkeypatch.setitem(sys.modules, "gpu_tensor_to_cupy",
+    monkeypatch.setitem(sys.modules, "rapidshot._bench.gpu_tensor_to_cupy",
                         SimpleNamespace(CudaTensor=View))
 
     produce, close, meta = bench._adapter_rapidshot_xadapter_async(harness.gpu, np)
@@ -829,7 +829,7 @@ def converter_env(harness, monkeypatch, *, to_cupy=None, software=False):
     monkeypatch.setitem(sys.modules, "rapidshot", SimpleNamespace(
         create=lambda: camera, GpuConverter=Converter, TensorTransfer=Transfer,
         CrossAdapterRequired=Required, native=SimpleNamespace()))
-    monkeypatch.setitem(sys.modules, "gpu_tensor_to_cupy",
+    monkeypatch.setitem(sys.modules, "rapidshot._bench.gpu_tensor_to_cupy",
                         SimpleNamespace(CudaTensor=View))
     return SimpleNamespace(calls=calls, Required=Required)
 

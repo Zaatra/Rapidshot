@@ -477,6 +477,23 @@ same scene: 8.4–9.7 detections per frame. Three passes are consistent, not the
 five paired runs the harness itself requires before calling a difference a
 verdict ([ROADMAP](ROADMAP.md) § 7.0c).
 
+### Run it on your machine
+
+```bash
+pip install "rapidshot[benchmark]"
+rapidshot benchmark
+```
+
+The same harness as the tables above: every installed library and every
+RapidShot path this hardware supports, verified first, then three 8-second
+passes timed by pixel age. About five minutes; a test pattern fills the screen.
+It writes a Markdown report and a JSON file with no hostname, username or
+device IDs in them. Please
+[open a benchmark issue](https://github.com/Zaatra/Rapidshot/issues/new?template=benchmark.md)
+with both. Add `cupy-cuda12x` or `cupy-cuda13x` to include the GPU paths,
+`--full` for CPU per tensor as well, and `--check` to see what would run
+without running it.
+
 ### What none of this shows
 
 One machine, one resolution, one refresh rate, one driver. No AMD part has ever

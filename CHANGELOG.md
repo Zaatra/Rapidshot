@@ -10,6 +10,34 @@ each release can be traced back to the plan it implements.
 
 ## [Unreleased]
 
+### Added — `rapidshot benchmark`
+
+- **One command reproduces the README's desktop-to-model table on any
+  machine.** `pip install "rapidshot[benchmark]"` then `rapidshot benchmark`
+  (also `python -m rapidshot benchmark`): it finds which capture libraries are
+  installed and which RapidShot paths the hardware supports, verifies each one
+  produces the correct tensor, times three 8-second passes by pixel age, and
+  writes a Markdown report plus a JSON file for a GitHub issue. `--check` says
+  what would run and why without capturing; `--full` adds CPU per tensor.
+  Every path it does not measure is listed with the command that would enable
+  it, rather than left out.
+- **The report is sanitised for posting.** No hostname hash, username, profile
+  paths, or device instance IDs -- the first live run found the adapter device
+  path carrying the same per-machine instance ID as the PnP ID, and both are
+  cut to vendor, device and subsystem. GPU and driver names, laptop model,
+  resolution and refresh stay, because they are what a hardware matrix needs.
+- **The `benchmark` extra** installs everything the comparison needs:
+  `rapidshot-native>=0.2.1` (for the test source), `psutil`, `mss` and `dxcam`.
+- **The harness moved into the package**, as the private `rapidshot._bench`,
+  because `benchmarks/` never reaches a wheel. Every moved module keeps a
+  stand-in in `benchmarks/`, so `python benchmarks/section7.py ...` and the
+  tests' `import section7` work unchanged; the stand-in *is* the moved module,
+  so monkeypatching it patches what the harness uses. In a wheel the harness
+  writes to `%LOCALAPPDATA%\rapidshot\benchmark` and records a content
+  fingerprint instead of asking git, which in site-packages could report the
+  commit of whatever project contains the environment.
+- A `rapidshot` console script with `benchmark` and `diagnose` commands.
+
 ### Added — `rapidshot-native` 0.2.1
 
 - **The wheel ships the benchmark's test source.** `latency_source.exe`, the

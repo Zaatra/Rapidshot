@@ -1,17 +1,18 @@
-"""Present submission -> PNG/JPEG base64 data URL; no network request is sent."""
-import base64
-import io
+"""Moved to ``rapidshot._bench.agent_pipeline``, so ``rapidshot benchmark`` can run it from a wheel.
 
+This file keeps ``python benchmarks/agent_pipeline.py ...`` and ``import agent_pipeline`` (with
+``benchmarks/`` on the path) working: as a script it runs the moved module's own
+``__main__`` block, and as an import it *is* the moved module, so monkeypatching
+an attribute here patches what the harness actually uses.
+"""
+import runpy
+import sys
+from pathlib import Path
 
-def encode(rgb, codec="png", quality=90):
-    from PIL import Image
-    stream = io.BytesIO()
-    Image.fromarray(rgb).save(stream, format=codec.upper(),
-                             **({"quality": quality} if codec == "jpeg" else {}))
-    payload = stream.getvalue()
-    return f"data:image/{codec};base64," + base64.b64encode(payload).decode("ascii"), len(payload)
-
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 if __name__ == "__main__":
-    from section7 import main
-    raise SystemExit(main("agent"))
+    runpy.run_module("rapidshot._bench.agent_pipeline", run_name="__main__", alter_sys=True)
+else:
+    from rapidshot._bench import agent_pipeline as _module
+    sys.modules[__name__] = _module
