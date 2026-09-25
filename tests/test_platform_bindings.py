@@ -147,9 +147,17 @@ def test_no_module_in_the_package_calls_print():
     # Parsed, not grepped: `profiling.py` documents its own usage with a
     # `print(profiler.report())` line inside a docstring, which is an example
     # for the reader rather than output from the library.
+    #
+    # Programs are not library code: `python -m rapidshot` and the benchmark
+    # harness in `_bench/` exist to write to a terminal, and nothing a user
+    # imports reaches them -- which the test below holds, so this exemption
+    # cannot quietly widen.
     root = pathlib.Path(__file__).resolve().parent.parent / "rapidshot"
     offenders = []
     for path in root.rglob("*.py"):
+        relative = path.relative_to(root)
+        if relative.parts[0] in PROGRAMS:
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if (isinstance(node, ast.Call)
@@ -158,6 +166,42 @@ def test_no_module_in_the_package_calls_print():
                 offenders.append(f"{path.relative_to(root)}:{node.lineno}")
 
     assert offenders == [], f"print() in library code: {offenders}"
+
+
+#: Parts of the package that are command-line programs rather than library code.
+PROGRAMS = ("__main__.py", "_bench")
+
+
+def test_no_library_module_imports_the_programs():
+    """What keeps the print() exemption above honest.
+
+    `__main__.py` may reach into `_bench` (that is `rapidshot benchmark`), but
+    only inside a function; a module-level import anywhere would put printing
+    code on the path of `import rapidshot`.
+    """
+    import ast
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent / "rapidshot"
+    offenders = []
+    for path in root.rglob("*.py"):
+        relative = path.relative_to(root)
+        if relative.parts[0] == "_bench":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""] + [alias.name for alias in node.names]
+            else:
+                continue
+            if not any("_bench" in name or name.endswith("__main__") for name in names):
+                continue
+            if relative.parts[0] == "__main__.py" and node.col_offset > 0:
+                continue          # inside a function: only runs as a command
+            offenders.append(f"{relative}:{node.lineno}")
+    assert offenders == [], f"library code imports a program: {offenders}"
 
 
 # --------------------------------------------------------------------------
