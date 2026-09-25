@@ -20,7 +20,8 @@ rapidshot benchmark
 ```
 
 Add `cupy-cuda12x` or `cupy-cuda13x` (matching your CUDA driver) to measure the
-GPU paths too. It takes about five minutes and fills the screen with a test
+GPU paths too, and `--full` to include CPU per tensor and memory. It takes
+about five minutes (ten with `--full`) and fills the screen with a test
 pattern; please leave the machine alone while it runs.
 
 **The report**
@@ -33,5 +34,5 @@ from your profile, no device instance IDs.
 
 **Anything unusual?**
 
-Laptop on battery, a second monitor, HDR on, another GPU-heavy program open,
+Laptop on battery, a second monitor, another GPU-heavy program open,
 a path that failed -- anything that would help read the numbers.

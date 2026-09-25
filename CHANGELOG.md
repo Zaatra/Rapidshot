@@ -18,9 +18,20 @@ each release can be traced back to the plan it implements.
   installed and which RapidShot paths the hardware supports, verifies each one
   produces the correct tensor, times three 8-second passes by pixel age, and
   writes a Markdown report plus a JSON file for a GitHub issue. `--check` says
-  what would run and why without capturing; `--full` adds CPU per tensor.
+  what would run and why without capturing; `--full` adds CPU per tensor and
+  memory.
   Every path it does not measure is listed with the command that would enable
   it, rather than left out.
+- **Capabilities beside the timings.** Every report records whether each
+  display supports and has on HDR -- the Windows 11 24H2 query, which tells
+  HDR apart from SDR auto colour management -- next to the DXGI format a
+  capture actually received, and whether a frame can cross to a second
+  adapter, flagged when the only second adapter is WARP and the copy time
+  therefore says nothing about real hardware. `--full` adds memory: working
+  set, what capture adds over the same process before its first frame, and
+  growth as a slope, per library, on a static, a scrolling and a full-motion
+  screen. Every harness recording now carries the display's advanced-colour
+  state too.
 - **The report is sanitised for posting.** No hostname hash, username, profile
   paths, or device instance IDs -- the first live run found the adapter device
   path carrying the same per-machine instance ID as the PnP ID, and both are

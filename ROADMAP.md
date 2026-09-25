@@ -2999,13 +2999,13 @@ changes, and § 3's rule still applies to every row of it.
 > harness — moved into the package as `rapidshot._bench` so a wheel can reach
 > it — against whatever capture libraries are installed, verifies every path,
 > and writes a sanitised Markdown + JSON report for a new `benchmark` issue
-> template. `--full` adds CPU per tensor (the call-duration harness). The test
-> source ships in `rapidshot-native` 0.2.1, so none of it needs a toolchain.
->
-> **Not in it yet:** memory (`memory_profile.py` is in the package but not
-> wired to the command), HDR capability, and the cross-adapter *capability*
-> probe as distinct from the cross-adapter paths it times. The matrix itself is
-> the work that remains, and it is not code.
+> template. `--full` adds CPU per tensor (the call-duration harness) and
+> memory (`memory_profile`, all three workloads). Every report records HDR
+> capability -- the display's advanced-colour state beside the DXGI format a
+> capture received -- and the cross-adapter probe, marked unrepresentative
+> when the far side is WARP. The test source ships in `rapidshot-native`
+> 0.2.1, so none of it needs a toolchain. The matrix itself is the work that
+> remains, and it is not code.
 
 **Freeze the public API here**, before 3.0 moves the boundary underneath it.
 

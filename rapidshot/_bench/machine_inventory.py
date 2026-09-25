@@ -608,6 +608,11 @@ _QDC_ONLY_ACTIVE_PATHS = 0x00000002
 _DEVICE_INFO_GET_SOURCE_NAME = 1
 _DEVICE_INFO_GET_TARGET_NAME = 2
 _DEVICE_INFO_GET_ADAPTER_NAME = 4
+_DEVICE_INFO_GET_ADVANCED_COLOR_INFO = 9
+_DEVICE_INFO_GET_ADVANCED_COLOR_INFO_2 = 15     # Windows 11 24H2
+_COLOR_ENCODING = {0: "RGB", 1: "YCbCr 4:4:4", 2: "YCbCr 4:2:2", 3: "YCbCr 4:2:0",
+                   4: "intensity"}
+_COLOR_MODE = {0: "SDR", 1: "WCG", 2: "HDR"}
 
 _ROTATION = {1: 0, 2: 90, 3: 180, 4: 270}
 _SCALING = {1: "identity", 2: "centered", 3: "stretched",
@@ -712,6 +717,14 @@ class _ADAPTER_NAME(ctypes.Structure):
                 ("adapterDevicePath", wintypes.WCHAR * 128)]
 
 
+class _ADVANCED_COLOR_INFO(ctypes.Structure):
+    """Both versions share this layout; version 2 appends ``activeColorMode``
+    and reassigns the flag bits, which is why ``flags`` stays a raw UINT."""
+    _fields_ = [("header", _DEVICE_INFO_HEADER), ("flags", wintypes.UINT),
+                ("colorEncoding", wintypes.UINT), ("bitsPerColorChannel", wintypes.UINT),
+                ("activeColorMode", wintypes.UINT)]
+
+
 def _query_display_config():
     """Active display paths, with exact refresh rates and adapter identity.
 
@@ -765,6 +778,7 @@ def _query_display_config():
                                  "hz": (numerator / denominator) if denominator else None}
         _attach_mode(entry, path, modes, mode_count.value)
         _attach_names(entry, user32, path)
+        _attach_advanced_color(entry, user32, path)
         outputs.append(entry)
     return outputs
 
@@ -817,6 +831,44 @@ def _attach_names(entry, user32, path):
     adapter.header.adapterId = path.targetInfo.adapterId
     if user32.DisplayConfigGetDeviceInfo(ctypes.byref(adapter)) == 0:
         entry["adapter_device_path"] = adapter.adapterDevicePath
+
+
+def _attach_advanced_color(entry, user32, path):
+    """Whether the panel can do HDR, and whether it is doing it now.
+
+    An HDR desktop duplicates as ``R16G16B16A16_FLOAT`` instead of BGRA8, which
+    changes both the bytes a capture moves and the conversion it needs, so a
+    timing taken with HDR on is not the same measurement. The version-2 query
+    separates HDR from Windows 11's SDR auto colour management, which the
+    original reports as the same "advanced colour enabled" bit.
+    """
+    info = _ADVANCED_COLOR_INFO()
+    info.header.size = ctypes.sizeof(_ADVANCED_COLOR_INFO)
+    info.header.adapterId = path.targetInfo.adapterId
+    info.header.id = path.targetInfo.id
+    info.header.type = _DEVICE_INFO_GET_ADVANCED_COLOR_INFO_2
+    if user32.DisplayConfigGetDeviceInfo(ctypes.byref(info)) == 0:
+        flags = info.flags
+        entry["advanced_color"] = {
+            "supported": bool(flags & 1), "active": bool(flags & 2),
+            "limited_by_policy": bool(flags & 8),
+            "hdr_supported": bool(flags & 16), "hdr_enabled": bool(flags & 32),
+            "wide_color_supported": bool(flags & 64),
+            "mode": _COLOR_MODE.get(info.activeColorMode, info.activeColorMode),
+            "encoding": _COLOR_ENCODING.get(info.colorEncoding, info.colorEncoding),
+            "bits_per_channel": info.bitsPerColorChannel}
+        return
+    info.header.type = _DEVICE_INFO_GET_ADVANCED_COLOR_INFO
+    info.header.size = ctypes.sizeof(_ADVANCED_COLOR_INFO) - ctypes.sizeof(wintypes.UINT)
+    if user32.DisplayConfigGetDeviceInfo(ctypes.byref(info)) == 0:
+        flags = info.flags
+        entry["advanced_color"] = {
+            # Before 24H2 "enabled" is the closest thing to "HDR is on".
+            "supported": bool(flags & 1), "active": bool(flags & 2),
+            "hdr_supported": bool(flags & 1), "hdr_enabled": bool(flags & 2),
+            "mode": "HDR" if flags & 2 else "SDR",
+            "encoding": _COLOR_ENCODING.get(info.colorEncoding, info.colorEncoding),
+            "bits_per_channel": info.bitsPerColorChannel}
 
 
 def _dpi_awareness() -> dict:

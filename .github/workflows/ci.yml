@@ -283,7 +283,7 @@ jobs:
           # The benchmark harness ships so testers can run it; it must import
           # with only the base dependencies, and must not think it is in a
           # checkout (that is what decides where it writes and what git it asks).
-          from rapidshot._bench import _paths, cli, section7, ai_ingestion, memory_profile
+          from rapidshot._bench import _paths, cli, section7, ai_ingestion, memory_profile, capabilities
           assert _paths.REPO is None, _paths.REPO
           print("benchmark harness imports; results would go to", _paths.WORK)
           '@

@@ -9,7 +9,7 @@ GitHub issue.
 
     pip install "rapidshot[benchmark]"
     rapidshot benchmark            # pixel age to a tensor, ~3-5 minutes
-    rapidshot benchmark --full     # plus CPU per tensor and memory
+    rapidshot benchmark --full     # plus CPU per tensor and memory, ~10 minutes
     rapidshot benchmark --check    # what would run, without running it
 
 The report is sanitised: no hostname, no username, no file paths from your
@@ -52,6 +52,13 @@ CALL_DURATION = {
     "call_p50_ms": (lambda r: r["ms_p50"], "ms"),
     "cpu_ms_per_frame": (lambda r: r["cpu_seconds"] * 1000 / r["frames"], "ms"),
 }
+MEMORY = {
+    "fps": (lambda r: r["fps"], "fps"),
+    "working_set_mb": (lambda r: r["working_set_mb"], "MB"),
+    "capture_mb": (lambda r: r["working_set_over_baseline_mb"], "MB"),
+    "growth_mb_per_s": (lambda r: r["working_set_growth_mb_per_s"], "MB/s"),
+}
+MEMORY_WORKLOADS = ("static", "scroll", "motion")
 USABLE = ("passed", "contaminated")
 LABELS = {
     "mss": "mss",
@@ -180,7 +187,7 @@ def _run(module: str, args: list, log: Path) -> int:
             sink.write(line)
             # The harness prints a JSON row per case and a bracketed line per
             # step; only the latter is useful to watch.
-            if line.startswith("[") and "]" in line[:48]:
+            if line.lstrip().startswith("[") and "]" in line[:48]:
                 print("   ", line.rstrip(), flush=True)
         return proc.wait()
 
@@ -218,6 +225,30 @@ def run_call_duration(run_dir: Path, paths: list, passes: int, seconds: float) -
     return files
 
 
+def memory_libraries(pre: dict) -> list:
+    return ([lib for lib in ("mss", "dxcam") if pre["installed"][lib]]
+            + ["rapidshot", "rapidshot-frame"])
+
+
+def run_memory(run_dir: Path, pre: dict, seconds: float) -> Path:
+    """One run per library and workload; the slope, not a pass count, is the finding."""
+    out = run_dir / "memory.json"
+    print("  memory: static, scroll and full-motion screens", flush=True)
+    _run("rapidshot._bench.memory_profile",
+         ["--libraries", *memory_libraries(pre), "--workloads", *MEMORY_WORKLOADS,
+          "--seconds", str(seconds), "--continue-on-failure",
+          "--log-dir", str(run_dir / "memory-logs"), "--out", str(out)],
+         run_dir / "memory.log")
+    return out
+
+
+def run_capabilities(run_dir: Path) -> Path:
+    out = run_dir / "capabilities.json"
+    print("  capabilities: capture format, cross-adapter", flush=True)
+    _run("rapidshot._bench.capabilities", ["--out", str(out)], run_dir / "capabilities.log")
+    return out
+
+
 # ---------------------------------------------------------------------------
 # The report
 # ---------------------------------------------------------------------------
@@ -250,6 +281,39 @@ def summarise(payloads: list, metrics: dict) -> dict:
             entry[name] = ({"median": statistics.median(values), "min": min(values),
                             "max": max(values)} if values else None)
     return rows
+
+
+def summarise_memory(payload) -> dict:
+    """{library: {workload: {metric: value}}} for rows that measured something."""
+    out = {}
+    for row in (payload or {}).get("results", []):
+        entry = out.setdefault(row.get("library"), {})
+        if "error" in row or row.get("case_status", "passed") not in USABLE:
+            entry[row.get("workload")] = {
+                "error": (row.get("error") or row.get("case_status") or "failed")[:200]}
+            continue
+        values = {}
+        for name, (get, _unit) in MEMORY.items():
+            try:
+                values[name] = float(get(row))
+            except (KeyError, TypeError):
+                values[name] = None
+        entry[row.get("workload")] = values
+    return out
+
+
+def _primary_advanced_color(displays):
+    outputs = (displays or {}).get("outputs") or []
+    primary = next((o for o in outputs if o.get("primary")), outputs[0] if outputs else {})
+    return primary.get("advanced_color")
+
+
+def hdr_state(environment, capabilities) -> dict:
+    """The panel's claim (advanced colour) beside the evidence (the captured format)."""
+    capabilities = capabilities or {}
+    display = (_primary_advanced_color((environment or {}).get("displays"))
+               or _primary_advanced_color(capabilities.get("displays")))
+    return {"display": display, "capture": capabilities.get("capture")}
 
 
 def statuses(payloads: list) -> dict:
@@ -299,8 +363,10 @@ def _environment(payloads: list):
     return None
 
 
-def build_report(pre: dict, skipped: dict, pixel: dict, call=None) -> dict:
+def build_report(pre: dict, skipped: dict, pixel: dict, call=None, memory=None,
+                 capabilities=None) -> dict:
     pixel_passes = [_load(f) for name, f in pixel.items() if name != "verify"]
+    probed = _load(capabilities) if capabilities else None
     report = {
         "schema": "rapidshot-benchmark/1",
         "passes": len(pixel_passes),
@@ -312,11 +378,17 @@ def build_report(pre: dict, skipped: dict, pixel: dict, call=None) -> dict:
                       "statuses": statuses(pixel_passes)},
         "environment": _environment(pixel_passes),
     }
+    report["hdr"] = hdr_state(report["environment"], probed)
+    report["cross_adapter"] = (probed or {}).get("cross_adapter")
     if call:
         call_passes = [_load(f) for name, f in call.items() if name != "verify"]
         report["call_duration"] = {"summary": summarise(call_passes, CALL_DURATION),
                                    "verify": statuses([_load(call["verify"])]),
                                    "statuses": statuses(call_passes)}
+    if memory:
+        payload = _load(memory)
+        report["memory"] = {"seconds": (payload or {}).get("seconds"),
+                            "summary": summarise_memory(payload)}
     return sanitise(report)
 
 
@@ -325,6 +397,40 @@ def _native_label(native: dict) -> str:
         return "absent"
     version = native.get("wheel_version") or native.get("version") or "?"
     return version if native.get("source") == "rapidshot-native wheel" else f"{version} (development build)"
+
+
+def _hdr_line(hdr: dict) -> str:
+    display, capture = hdr.get("display") or {}, hdr.get("capture") or {}
+    if display:
+        text = (f"{'on' if display.get('hdr_enabled') else 'off'} "
+                f"(panel {'supports' if display.get('hdr_supported') else 'does not support'} HDR; "
+                f"{display.get('mode', '?')}, {display.get('bits_per_channel', '?')} bpc)")
+    else:
+        text = "unknown"
+    if capture.get("format"):
+        text += f"; capture receives {capture['format']}"
+    elif capture.get("error"):
+        text += f"; capture format not read ({capture['error']})"
+    return text
+
+
+def _cross_adapter_line(probe) -> str:
+    if not probe:
+        return "not probed"
+    if not probe.get("supported"):
+        return f"not supported — {probe.get('reason') or 'no reason given'}"
+    # Plain "to", not an arrow: the report is printed, and a redirected
+    # Windows console is cp1252.
+    line = f"supported, {probe.get('source', '?')} to {probe.get('destination', '?')}"
+    if probe.get("copy_ms_median") is not None:
+        line += f", {probe['copy_ms_median']:.2f} ms per 1080p copy"
+    if not probe.get("representative"):
+        line += " (to WARP: proves the mechanism, not the cost)"
+    return line
+
+
+def _num(value, digits=1, sign=False):
+    return "—" if value is None else f"{value:{'+' if sign else ''}.{digits}f}"
 
 
 def _cell(stat, digits=1):
@@ -349,6 +455,8 @@ def render_markdown(report: dict) -> str:
         f"- **Versions:** rapidshot {pre.get('rapidshot')}, rapidshot-native "
         f"{_native_label(native)}, "
         f"Python {pre.get('python')}, Windows {pre.get('windows')}",
+        f"- **HDR:** {_hdr_line(report.get('hdr') or {})}",
+        f"- **Cross-adapter:** {_cross_adapter_line(report.get('cross_adapter'))}",
         "",
         f"Screen to a (1, 3, 640, 640) FP16 tensor on CUDA; medians of {report.get('passes')} "
         f"pass{'' if report.get('passes') == 1 else 'es'}. "
@@ -379,6 +487,21 @@ def render_markdown(report: dict) -> str:
         for path, row in report["call_duration"]["summary"].items():
             lines.append(f"| {LABELS.get(path, path)} | {_cell(row['cpu_ms_per_frame'], 2)} ms | "
                          f"{_cell(row['call_p50_ms'], 2)} ms |")
+    if "memory" in report:
+        lines += ["", "Memory: working set, what capture adds over the same process before its "
+                  "first frame, and growth as a least-squares slope after warm-up.", "",
+                  "| library | screen | fps | working set | capture adds | growth |",
+                  "| --- | --- | ---: | ---: | ---: | ---: |"]
+        for library, workloads in report["memory"]["summary"].items():
+            for workload, m in workloads.items():
+                if "error" in m:
+                    lines.append(f"| {library} | {workload} | — | — | — | {m['error']} |")
+                    continue
+                growth = m.get("growth_mb_per_s")
+                lines.append(f"| {library} | {workload} | {_num(m.get('fps'))} | "
+                             f"{_num(m.get('working_set_mb'))} MB | "
+                             f"{_num(m.get('capture_mb'), sign=True)} MB | "
+                             f"{'—' if growth is None else f'{growth:+.3f} MB/s'} |")
     return "\n".join(lines) + "\n"
 
 
@@ -397,6 +520,8 @@ def _print_plan(pre, paths, skipped, args):
         print(f"  skipping {path}: {reason}")
     steps = 1 + args.passes
     estimate = steps * len(paths) * (args.seconds + 6) * (2 if args.full else 1)
+    if args.full:
+        estimate += len(MEMORY_WORKLOADS) * len(memory_libraries(pre)) * (args.seconds + 4)
     print(f"  about {max(1, round(estimate / 60))} min. A test pattern will fill the screen; "
           "leave the machine alone until it finishes.", flush=True)
 
@@ -405,7 +530,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="rapidshot benchmark", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--full", action="store_true",
-                        help="also measure CPU per tensor with the call-duration harness")
+                        help="also measure CPU per tensor (call-duration harness) and memory")
     parser.add_argument("--check", action="store_true",
                         help="print what would run and why, then exit without capturing")
     parser.add_argument("--passes", type=int, default=PASSES)
@@ -444,10 +569,12 @@ def main(argv=None) -> int:
     run_dir = WORK / "runs" / stamp
     run_dir.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
+    capabilities = run_capabilities(run_dir)
     pixel = run_pixel_age(run_dir, paths, args.passes, args.seconds)
     call = run_call_duration(run_dir, paths, args.passes, args.seconds) if args.full else None
+    memory = run_memory(run_dir, pre, args.seconds) if args.full else None
 
-    report = build_report(pre, skipped, pixel, call)
+    report = build_report(pre, skipped, pixel, call, memory, capabilities)
     report["duration_s"] = round(time.monotonic() - started)
     markdown = render_markdown(report)
     args.out.mkdir(parents=True, exist_ok=True)

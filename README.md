@@ -491,8 +491,9 @@ It writes a Markdown report and a JSON file with no hostname, username or
 device IDs in them. Please
 [open a benchmark issue](https://github.com/Zaatra/Rapidshot/issues/new?template=benchmark.md)
 with both. Add `cupy-cuda12x` or `cupy-cuda13x` to include the GPU paths,
-`--full` for CPU per tensor as well, and `--check` to see what would run
-without running it.
+`--full` for CPU per tensor and memory as well (about ten minutes), and
+`--check` to see what would run without running it. The report also says
+whether HDR was on and whether frames can cross between your GPUs.
 
 ### What none of this shows
 

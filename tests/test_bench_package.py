@@ -234,3 +234,121 @@ def test_a_development_build_is_labelled_as_one():
     assert cli._native_label({"version": "0.1.0", "source": "development build (x)"}) == \
         "0.1.0 (development build)"
     assert cli._native_label(None) == "absent"
+
+
+# ---------------------------------------------------------------------------
+# Memory, HDR and cross-adapter capability
+# ---------------------------------------------------------------------------
+
+def memory_row(library, workload, ws, over, growth, status="passed"):
+    return {"library": library, "workload": workload, "case_status": status, "fps": 60.0,
+            "working_set_mb": ws, "working_set_over_baseline_mb": over,
+            "working_set_growth_mb_per_s": growth, "elapsed_seconds": 8.0}
+
+
+def test_full_measures_memory_for_the_installed_libraries_only():
+    pre = preflight(installed={"mss": False, "dxcam": True, "winrt": False, "cupy": True,
+                               "psutil": True})
+    assert cli.memory_libraries(pre) == ["dxcam", "rapidshot", "rapidshot-frame"]
+
+
+@pytest.mark.parametrize("full, expected", [
+    (False, ["capabilities", "pixel"]),
+    (True, ["capabilities", "pixel", "call", "memory"]),
+])
+def test_what_each_mode_runs(monkeypatch, tmp_path, full, expected):
+    monkeypatch.setattr(cli, "preflight", lambda: preflight())
+    monkeypatch.setattr(cli, "WORK", tmp_path)
+    files = write_passes(tmp_path, [[row("dxcam", 95, 37, 11)]])
+    ran = []
+    monkeypatch.setattr(cli, "run_capabilities", lambda d: ran.append("capabilities") or d / "c.json")
+    monkeypatch.setattr(cli, "run_pixel_age", lambda *a: ran.append("pixel") or files)
+    monkeypatch.setattr(cli, "run_call_duration", lambda *a: ran.append("call") or files)
+    monkeypatch.setattr(cli, "run_memory", lambda *a: ran.append("memory") or tmp_path / "m.json")
+    argv = ["--yes", "--out", str(tmp_path / "out")] + (["--full"] if full else [])
+    assert cli.main(argv) == 0
+    assert ran == expected
+
+
+def test_the_memory_table_keeps_a_failed_row_and_its_reason(tmp_path):
+    memory = tmp_path / "memory.json"
+    memory.write_text(json.dumps({"seconds": 8.0, "results": [
+        memory_row("dxcam", "static", 120.0, 40.5, 0.001),
+        memory_row("rapidshot", "static", 110.0, 12.3, -0.002),
+        {"library": "rapidshot-frame", "workload": "motion", "error": "worker timeout"}]}))
+    files = write_passes(tmp_path, [[row("dxcam", 95, 37, 11)]])
+    report = cli.build_report(preflight(), {}, files, memory=memory)
+    assert report["memory"]["summary"]["rapidshot"]["static"]["capture_mb"] == 12.3
+    text = cli.render_markdown(report)
+    assert "| rapidshot | static | 60.0 | 110.0 MB | +12.3 MB | -0.002 MB/s |" in text
+    assert "| rapidshot-frame | motion | — | — | — | worker timeout |" in text
+
+
+def test_hdr_is_the_panels_claim_beside_the_format_capture_received(tmp_path):
+    environment = {"displays": {"outputs": [
+        {"primary": False, "advanced_color": {"hdr_supported": False, "hdr_enabled": False,
+                                              "mode": "SDR", "bits_per_channel": 8}},
+        {"primary": True, "advanced_color": {"hdr_supported": True, "hdr_enabled": True,
+                                             "mode": "HDR", "bits_per_channel": 10}}]}}
+    probed = tmp_path / "capabilities.json"
+    probed.write_text(json.dumps({
+        "capture": {"dxgi_format": 10, "format": "R16G16B16A16_FLOAT", "hdr": True},
+        "cross_adapter": {"supported": True, "representative": False,
+                          "source": "NVIDIA GeForce RTX 4060 Laptop GPU",
+                          "destination": "Microsoft Basic Render Driver", "copy_ms_median": 0.77}}))
+    files = write_passes(tmp_path, [[row("dxcam", 95, 37, 11)]], environment)
+    text = cli.render_markdown(cli.build_report(preflight(), {}, files, capabilities=probed))
+    assert ("**HDR:** on (panel supports HDR; HDR, 10 bpc); "
+            "capture receives R16G16B16A16_FLOAT") in text
+    assert "0.77 ms per 1080p copy (to WARP: proves the mechanism, not the cost)" in text
+
+
+def test_hdr_falls_back_to_the_probe_when_no_pass_recorded_an_environment(tmp_path):
+    probed = tmp_path / "capabilities.json"
+    probed.write_text(json.dumps({"displays": {"outputs": [
+        {"primary": True, "advanced_color": {"hdr_supported": False, "hdr_enabled": False,
+                                             "mode": "SDR", "bits_per_channel": 8}}]}}))
+    files = write_passes(tmp_path, [[row("dxcam", 95, 37, 11)]])
+    text = cli.render_markdown(cli.build_report(preflight(), {}, files, capabilities=probed))
+    assert "**HDR:** off (panel does not support HDR; SDR, 8 bpc)" in text
+
+
+def test_without_the_probe_the_report_says_so_rather_than_guessing(tmp_path):
+    files = write_passes(tmp_path, [[row("dxcam", 95, 37, 11)]])
+    text = cli.render_markdown(cli.build_report(preflight(), {}, files))
+    assert "**HDR:** unknown" in text and "**Cross-adapter:** not probed" in text
+
+
+class _DisplayConfig:
+    """DisplayConfigGetDeviceInfo, answering per request type with (status, flags, mode)."""
+
+    def __init__(self, answers):
+        self.answers = answers
+
+    def DisplayConfigGetDeviceInfo(self, pointer):
+        info = pointer._obj
+        status, flags, mode = self.answers.get(info.header.type, (87, 0, 0))
+        if status == 0:
+            info.flags, info.bitsPerColorChannel, info.activeColorMode = flags, 10, mode
+        return status
+
+
+@pytest.mark.parametrize("answers, expected", [
+    # 24H2: HDR on.
+    ({15: (0, 1 | 2 | 16 | 32, 2)}, {"hdr_enabled": True, "mode": "HDR"}),
+    # 24H2: SDR auto colour management. The old query calls this "enabled".
+    ({15: (0, 1 | 2 | 64, 1)}, {"active": True, "hdr_enabled": False, "mode": "WCG"}),
+    # Before 24H2 only the original query answers.
+    ({9: (0, 1 | 2, 0)}, {"hdr_enabled": True, "mode": "HDR"}),
+    ({}, None),
+])
+def test_advanced_colour_is_decoded_from_either_query(answers, expected):
+    from rapidshot._bench import machine_inventory
+    entry = {}
+    machine_inventory._attach_advanced_color(entry, _DisplayConfig(answers),
+                                             machine_inventory._PATH_INFO())
+    if expected is None:
+        assert "advanced_color" not in entry
+    else:
+        assert expected.items() <= entry["advanced_color"].items()
+        assert entry["advanced_color"]["bits_per_channel"] == 10
