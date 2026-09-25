@@ -49,8 +49,12 @@ Four things, each with the measurement behind it:
   instead of 16.38 MB** at 2560×1600. Verified end to end on real Optimus
   hardware (Intel UHD → RTX 4060), CUDA importing the transferred buffer — see
   [Hybrid GPU laptops](#hybrid-gpu-laptops). Measured: **162 fps against DXcam's
-  96, pixels 10 ms younger, at under a fifth of the CPU** — see
+  96, pixels 10 ms younger, at under a fifth of the CPU**, and through YOLO11n
+  **70 fps against 45, detections 7.8 ms sooner** — see
   [Desktop to model](#c-desktop-to-model).
+
+**2.6.1** adds `rapidshot benchmark`, which runs those measurements on your own
+machine — see [Run it on your machine](#run-it-on-your-machine).
 
 Upgrading from 2.5? See [Migrating from 2.5](#migrating-from-25) — the one
 breaking item is a new minimum native-extension version.
@@ -169,7 +173,8 @@ Upgrade the prebuilt wheel:
 ```
 
 Other extras: `rapidshot[gpu_cuda12]` or `[gpu_cuda13]` for CuPy (pick one —
-the `cupy-cudaNNx` wheels are mutually exclusive), and `rapidshot[all]` for
+the `cupy-cudaNNx` wheels are mutually exclusive), `rapidshot[benchmark]` for
+the [benchmark command](#run-it-on-your-machine), and `rapidshot[all]` for
 everything that is not CUDA-version-specific.
 
 Check what your machine actually has:
@@ -352,10 +357,12 @@ reported a crossing that never happened. WARP is the configuration that hid the
 bug, so a WARP result is not evidence for this path. The check above is the one
 that counts, and it needs two real GPUs.
 
-**Measured against 2.6.0 on this laptop, 2026-09-25:** 162 fps to a CUDA
-tensor, pixels 27.6 ms old at the median, 2.0 ms of CPU per frame — against
-DXcam's 95.6 fps, 37.7 ms and 11.2 ms. The full table, including the full-frame
-transfer this replaces, is in [Desktop to model](#c-desktop-to-model).
+**Measured on this laptop, 2026-09-25:** 162 fps to a CUDA tensor, pixels
+27.6 ms old at the median, 2.0 ms of CPU per frame — against DXcam's 95.6 fps,
+37.7 ms and 11.2 ms. Carried on through YOLO11n with NMS: 69.5 fps, detections
+41.4 ms after `Present()`, 12.9 ms of CPU per frame, against DXcam's 45.0 fps,
+49.2 ms and 20.9 ms. The full tables, including the full-frame transfer this
+replaces, are in [Desktop to model](#c-desktop-to-model).
 
 ## Correctness guarantees
 
@@ -417,9 +424,12 @@ staging pool sized to what a converting `grab()` can actually use, and
 Pixel **age**, not call duration: a source encodes a frame ID into the image and
 records every `Present()`, so each library is timed on one clock by how old its
 pixels were when they became a `(1, 3, 640, 640)` FP16 tensor on CUDA.
-Recorded 2026-09-25 against **2.6.0 with the `rapidshot-native` 0.2.0 wheel from
-PyPI**, Machine B, 2560×1600 at 165 Hz, medians across 3 passes, 8 s per path,
-every path verified to produce the correct tensor before being timed.
+Recorded 2026-09-25 on Machine B, 2560×1600 at 165 Hz, medians across 3 passes,
+8 s per path, every path verified to produce the correct tensor before being
+timed. The hybrid detector table was recorded against **2.6.1 with the
+`rapidshot-native` 0.2.1 wheel**, the others against **2.6.0 with 0.2.0**, both
+from PyPI. The library and extension code are the same in both: 2.6.1 added the
+benchmark command and shipped its test source.
 
 **Hybrid laptop** — Intel UHD captures, RTX 4060 runs CUDA
 ([`section7-ingestion-machineB-hybrid-2.6.0.json`](benchmarks/section7-ingestion-machineB-hybrid-2.6.0.json)):
@@ -461,7 +471,28 @@ across.
 **Through a detector** — the same clock carried to *usable detections*: YOLO11n
 on the RTX 4060 through ONNX Runtime's CUDA provider, NMS included, with a scene
 of signage and a keyboard panning under the marker so the model has something
-to find. Discrete-only mode
+to find.
+
+Hybrid laptop
+([`section7-inference-machineB-hybrid-2.6.1.json`](benchmarks/section7-inference-machineB-hybrid-2.6.1.json)):
+
+| | unique frames/s | detections ready p50 / p95 | CPU per frame |
+| --- | ---: | ---: | ---: |
+| mss | 23.6 | 62.9 / 65.7 ms | 26.3 ms |
+| DXcam (DXGI) | 45.0 | 49.2 / 52.7 ms | 20.9 ms |
+| RapidShot `grab()` | 51.3 | 46.5 / 50.7 ms | 19.2 ms |
+| RapidShot `grab()`, `nvidia_gpu=True` | 52.0 | 46.2 / 50.5 ms | 16.4 ms |
+| RapidShot, full frame across adapters (2.5 path) | 50.9 | 47.0 / 51.1 ms | 15.7 ms |
+| **RapidShot 2.6, `GpuConverter` + `TensorTransfer`** | **69.5** | **41.4 / 46.0 ms** | **12.9 ms** |
+
+1.55× DXcam's frames through the model, detections 7.8 ms sooner, 38% less CPU
+per frame — and its worst pass beat DXcam's best on all three columns. Unlike
+the capture-only table, the full-frame crossing is not behind DXcam here: it
+lands with the other full-frame paths at about 51 fps, so at this rate the
+crossing is no longer what limits it. Every path found the same scene: 8.5–9.3
+detections per frame.
+
+Discrete-only mode
 ([`section7-inference-machineB-dgpu-2.6.0.json`](benchmarks/section7-inference-machineB-dgpu-2.6.0.json)):
 
 | | unique frames/s | detections ready p50 / p95 | CPU per frame |
@@ -473,9 +504,14 @@ to find. Discrete-only mode
 
 34% more frames through the model than DXcam, detections 6.9 ms sooner, and a
 third less CPU, with every pass ahead of DXcam's best. Every path found the
-same scene: 8.4–9.7 detections per frame. Three passes are consistent, not the
-five paired runs the harness itself requires before calling a difference a
-verdict ([ROADMAP](ROADMAP.md) § 7.0c).
+same scene: 8.4–9.7 detections per frame.
+
+Compare within a table, not across the two. The model itself takes about 11 ms
+per frame in hybrid mode but about 18 ms in discrete-only, where the RTX 4060
+is also drawing the desktop, so the hybrid rows are faster for a reason that
+has nothing to do with capture. Three passes are consistent, not the five
+paired runs the harness itself requires before calling a difference a verdict
+([ROADMAP](ROADMAP.md) § 7.0c).
 
 ### Run it on your machine
 
@@ -516,8 +552,9 @@ which is a different claim:
 | NVIDIA dGPU driving the display (MUX) | Capture + CUDA on one adapter; this is where the byte-equal tensor export is verified |
 | Cross-adapter **frame** transfer, Intel → RTX 4060 | Byte-exact, 5 frames at 2560×1600 |
 | Cross-adapter **tensor** transfer + CUDA import | `TensorTransfer` on real Optimus, verified 2026-09-20 |
+| Hybrid, capture to YOLO11n detections | All six hybrid paths verified, then timed, 2026-09-25 |
 | Python 3.9 – 3.14 | CI matrix |
-| `rapidshot-native` 0.2.0 | Minimum for the 2.6 GPU features |
+| `rapidshot-native` 0.2.0 / 0.2.1 | 0.2.0 is the minimum for the 2.6 GPU features; 0.2.1 adds the benchmark's test source around the same extension |
 
 **Not verified**
 
@@ -574,6 +611,8 @@ import rapidshot
 print(rapidshot.diagnose())                 # adapters, outputs, extension, deps
 print(rapidshot.diagnose(probe_gpu=True))   # also probe D3D12 sharing
 ```
+
+From a shell, `rapidshot diagnose` prints the same report.
 
 | Symptom | Cause |
 | --- | --- |

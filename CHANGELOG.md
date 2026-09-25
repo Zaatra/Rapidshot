@@ -21,6 +21,17 @@ each release can be traced back to the plan it implements.
   treats a baseline taken on a different core set as a different machine, so a
   run with cores withheld never gates against one taken without.
 
+### Documentation
+
+- **The detector table now has its hybrid half.** YOLO11n through ONNX Runtime
+  CUDA, capture on the Intel iGPU, recorded 2026-09-25 against 2.6.1 and the
+  `rapidshot-native` 0.2.1 wheel, all six paths verified then timed over three
+  passes: `GpuConverter` + `TensorTransfer` reaches **69.5 fps with detections
+  41.4 ms after `Present()` and 12.9 ms of CPU per frame, against DXcam's 45.0
+  fps, 49.2 ms and 20.9 ms**. In
+  `benchmarks/section7-inference-machineB-hybrid-2.6.1.json`, and in the README
+  beside the discrete-only table.
+
 ### Fixed
 
 - A capture-path test counted duplicator releases from any earlier test's
