@@ -10,6 +10,8 @@ each release can be traced back to the plan it implements.
 
 ## [Unreleased]
 
+## [2.6.1] - 2026-09-25
+
 ### Added — `rapidshot benchmark`
 
 - **One command reproduces the README's desktop-to-model table on any
