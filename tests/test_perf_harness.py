@@ -549,6 +549,22 @@ class TestAutoBaselineSelection:
             perf_suite.resolve_auto_baseline(self.HOST, tmp_path)
         assert "cannot choose between them" in str(excinfo.value)
 
+    def test_a_different_core_set_is_a_different_apparatus(self, tmp_path):
+        """A machine that withholds core 0 (RAPIDSHOT_BENCH_EXCLUDE_CPUS=0,1).
+
+        Its 0xffff baselines must stop gating 0xfffc runs: same hardware, one
+        physical core fewer, and nothing in the rows would show it.
+        """
+        self._write(tmp_path, "baseline-all-cores.json", affinity_mask="0xffff")
+        with pytest.raises(SystemExit) as excinfo:
+            perf_suite.resolve_auto_baseline(
+                dict(self.HOST, affinity_mask="0xfffc"), tmp_path)
+        assert "differs on affinity_mask" in str(excinfo.value)
+        self._write(tmp_path, "baseline-core0-out.json", affinity_mask="0xfffc",
+                    rapidshot="2.3.0")
+        assert perf_suite.resolve_auto_baseline(
+            dict(self.HOST, affinity_mask="0xfffc"), tmp_path).name == "baseline-core0-out.json"
+
     def test_unreadable_baseline_is_reported_not_skipped(self, tmp_path):
         # Dropping it silently would hand the comparison to another machine's
         # file and look like a clean match.

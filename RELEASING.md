@@ -68,6 +68,10 @@ secret, or on anyone's laptop. Nothing to leak, nothing to rotate.
    python benchmarks/perf_suite.py --rounds 5 --reps 25 --compare auto
    ```
 
+   If the machine keeps cores out of benchmarks (`RAPIDSHOT_BENCH_EXCLUDE_CPUS`,
+   e.g. `0,1`), set it for every step here, and record the baseline with it
+   set: the affinity mask is part of what `--compare auto` matches on.
+
    `--compare auto` selects the committed baseline recorded on the machine you
    are running on, and **fails** if there is none. This step used to name
    `benchmarks/baseline.json`, which is one specific machine: run anywhere else

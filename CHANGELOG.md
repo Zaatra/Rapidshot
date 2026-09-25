@@ -10,6 +10,22 @@ each release can be traced back to the plan it implements.
 
 ## [Unreleased]
 
+### Changed — benchmark harness
+
+- **`RAPIDSHOT_BENCH_EXCLUDE_CPUS` keeps named cores out of every run.** Set to
+  logical processor numbers (`0,1` or `0-1`), it is removed from the
+  performance-core mask every runner pins to -- `perf_suite`, the § 7.0
+  harness, memory and ingestion -- and from `--no-pin` runs too, and each
+  recording's CPU policy names it. Unset, nothing changes. A malformed value
+  stops the run rather than being ignored. `perf_suite --compare auto` now
+  treats a baseline taken on a different core set as a different machine, so a
+  run with cores withheld never gates against one taken without.
+
+### Fixed
+
+- A capture-path test counted duplicator releases from any earlier test's
+  leftover camera, so it failed when the collector happened to run mid-test.
+
 ## [2.6.1] - 2026-09-25
 
 ### Added — `rapidshot benchmark`

@@ -75,6 +75,17 @@ def isolated_result_history(tmp_path_factory, monkeypatch):
                         tmp_path_factory.mktemp("history"))
 
 
+@pytest.fixture(autouse=True)
+def no_machine_cpu_exclusion(monkeypatch):
+    """Tests see the CPU policy as it is on a machine without an exclusion.
+
+    RAPIDSHOT_BENCH_EXCLUDE_CPUS is per-machine configuration; left in place it
+    would make every pinning test's expected mask depend on which machine ran
+    the suite. Tests of the exclusion set it themselves.
+    """
+    monkeypatch.delenv("RAPIDSHOT_BENCH_EXCLUDE_CPUS", raising=False)
+
+
 MOTION_SOURCE = Path(__file__).resolve().parent.parent / "benchmarks" / "motion_source.py"
 #: A rectangle inside the motion window (900x700 at +200+120 on the primary
 #: display), as (left, top, right, bottom).

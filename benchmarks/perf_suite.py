@@ -706,6 +706,11 @@ def machine_info() -> dict:
             info["cpu_topology"] = topology
             info["pinned_to_performance_cores"] = process_mask.value == mask
             info["affinity_mask"] = hex(process_mask.value)
+            # Only when set, so a machine without an exclusion records exactly
+            # what it always has.
+            excluded = machine_inventory.excluded_cpu_mask()
+            if excluded:
+                info["excluded_cpus"] = hex(excluded)
     except Exception as e:
         # Record the failure rather than dropping the keys. A recording with no
         # affinity provenance is indistinguishable from one taken before this
@@ -831,6 +836,13 @@ def resolve_auto_baseline(info: dict, directory: Path) -> Path:
             continue
         mismatched = [k for k in ("processor", "platform", "gpu")
                       if machine.get(k) != info.get(k)]
+        # The same machine on a different set of cores is a different
+        # apparatus: withholding a core (RAPIDSHOT_BENCH_EXCLUDE_CPUS)
+        # must send the gate to a baseline recorded the same way, or to none.
+        if (machine.get("affinity_mask") is not None
+                and info.get("affinity_mask") is not None
+                and machine["affinity_mask"] != info["affinity_mask"]):
+            mismatched.append("affinity_mask")
         # Absent on recordings that predate the field. Unknown is not a
         # mismatch on its own -- it would disqualify every older baseline --
         # but it cannot break a tie either, which is handled below.
@@ -936,7 +948,8 @@ def print_comparison(current: List[Result], baseline_path: Path,
     # precisely so that difference is visible, so it has to be *read* here --
     # otherwise a pinned baseline silently gates verdicts against an unpinned
     # run and the metadata documents a hazard that nothing acts on.
-    scheduling = _differing(("cpu_topology", "pinned_to_performance_cores"))
+    scheduling = _differing(("cpu_topology", "pinned_to_performance_cores",
+                             "affinity_mask"))
 
     # A baseline recorded before this provenance existed carries neither field,
     # and `_differing` ignores a key unless both sides have it -- so on a hybrid

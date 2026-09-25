@@ -404,6 +404,39 @@ def _summarise_caches(caches) -> dict:
 # CPU policy
 # ---------------------------------------------------------------------------
 
+#: Logical processors no benchmark may run on, as ``"0,1"`` or ``"0-1"``.
+#:
+#: Opt-in and per machine, for a core its owner wants kept idle: every runner
+#: withholds these whatever its policy, and every recording says so. Unset, the
+#: policy is unchanged, so no other machine's numbers lose a core. Name both
+#: hyperthreads of a physical core -- its second thread is the same silicon.
+EXCLUDE_CPUS_ENV = "RAPIDSHOT_BENCH_EXCLUDE_CPUS"
+
+
+def excluded_cpu_mask(value=None) -> int:
+    """The mask :data:`EXCLUDE_CPUS_ENV` names; 0 when it is unset.
+
+    A malformed value raises rather than being ignored: dropping a typo on the
+    floor would put back to work the core the setting exists to keep idle.
+    """
+    raw = os.environ.get(EXCLUDE_CPUS_ENV, "") if value is None else value
+    mask = 0
+    for part in (item.strip() for item in raw.split(",")):
+        if not part:
+            continue
+        first, _, last = part.partition("-")
+        try:
+            low, high = int(first), int(last or first)
+        except ValueError:
+            raise ValueError(f"{EXCLUDE_CPUS_ENV}={raw!r}: {part!r} is not a "
+                             "processor number or range") from None
+        if not 0 <= low <= high < 64:
+            raise ValueError(f"{EXCLUDE_CPUS_ENV}={raw!r}: {part!r} is outside 0-63")
+        for index in range(low, high + 1):
+            mask |= 1 << index
+    return mask
+
+
 @dataclasses.dataclass
 class CpuPolicy:
     """What was asked for, what was granted, and whether those agree."""
@@ -414,6 +447,7 @@ class CpuPolicy:
     effective_mask: int = None
     applied: bool = False
     reasons: list = dataclasses.field(default_factory=list)
+    excluded_mask: int = 0
 
     @property
     def verified(self) -> bool:
@@ -429,6 +463,7 @@ class CpuPolicy:
                 "effective_mask_hex": (None if self.effective_mask is None
                                        else hex(self.effective_mask)),
                 "applied": self.applied, "verified": self.verified,
+                "excluded_mask_hex": hex(self.excluded_mask) if self.excluded_mask else None,
                 "reasons": list(self.reasons)}
 
 
@@ -440,15 +475,30 @@ def performance_core_mask(cpu=None):
     returns ``None`` with ``"unknown"``, and the difference matters -- claiming
     uniformity that was never observed leaves a hybrid CPU silently unpinned
     while the recording says scheduling was known.
+
+    Cores named by :data:`EXCLUDE_CPUS_ENV` are removed from the mask, and a
+    uniform CPU with an exclusion gets a mask too -- every core but those --
+    because "no pinning needed" would hand the excluded ones back.
     """
     cpu = cpu if cpu is not None else _probe(discover_cpu)
     if not cpu.get("available", False):
         return None, "unknown"
     topology = cpu.get("topology", "unknown")
-    if topology != "hybrid":
+    excluded = excluded_cpu_mask()
+    if topology == "hybrid":
+        mask = max(cpu["efficiency_classes"],
+                   key=lambda item: item["efficiency_class"])["mask"]
+    elif topology == "uniform" and excluded:
+        mask = 0
+        for item in cpu["efficiency_classes"]:
+            mask |= item["mask"]
+    else:
         return None, topology
-    fastest = max(cpu["efficiency_classes"], key=lambda item: item["efficiency_class"])
-    return fastest["mask"], topology
+    mask &= ~excluded
+    if not mask:
+        raise ValueError(f"{EXCLUDE_CPUS_ENV} excludes every core the benchmark "
+                         "would run on")
+    return mask, topology
 
 
 def native_loaded():
@@ -481,11 +531,20 @@ def apply_cpu_policy(policy: str = "performance", *, cpu=None) -> CpuPolicy:
     """
     cpu = cpu if cpu is not None else _probe(discover_cpu)
     topology = cpu.get("topology", "unknown") if cpu.get("available") else "unknown"
-    result = CpuPolicy(policy=policy, topology=topology)
+    result = CpuPolicy(policy=policy, topology=topology,
+                       excluded_mask=excluded_cpu_mask())
+    if result.excluded_mask:
+        result.reasons.append(f"{EXCLUDE_CPUS_ENV} withholds "
+                              f"{hex(result.excluded_mask)} from every policy")
 
     if policy == "none":
         result.reasons.append("pinning disabled by policy; recorded as its own "
                               "configuration, not pooled with pinned runs")
+        current = _effective_mask()
+        if result.excluded_mask and current and current & result.excluded_mask:
+            # Unpinned still means "not on the excluded cores".
+            result.requested_mask = current & ~result.excluded_mask
+            result.applied = _set_affinity(result.requested_mask, result.reasons)
         result.effective_mask = _effective_mask()
         return result
 
@@ -528,16 +587,7 @@ def apply_cpu_policy(policy: str = "performance", *, cpu=None) -> CpuPolicy:
             return result
 
     result.requested_mask = mask
-    try:
-        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        k32.GetCurrentProcess.restype = ctypes.c_void_p
-        k32.SetProcessAffinityMask.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
-        if not k32.SetProcessAffinityMask(k32.GetCurrentProcess(), mask):
-            raise ctypes.WinError(ctypes.get_last_error())
-        result.applied = True
-    except Exception as exc:  # noqa: BLE001
-        result.reasons.append(f"SetProcessAffinityMask failed: "
-                              f"{type(exc).__name__}: {exc}")
+    result.applied = _set_affinity(mask, result.reasons)
 
     # Read it back rather than trusting the call. A policy that was asked for
     # and not granted must not be recorded as a policy that was in force.
@@ -552,6 +602,19 @@ def apply_cpu_policy(policy: str = "performance", *, cpu=None) -> CpuPolicy:
 def _effective_mask():
     probe = _probe(current_affinity)
     return probe.get("process_mask") if probe.get("available") else None
+
+
+def _set_affinity(mask, reasons) -> bool:
+    try:
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.GetCurrentProcess.restype = ctypes.c_void_p
+        k32.SetProcessAffinityMask.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+        if not k32.SetProcessAffinityMask(k32.GetCurrentProcess(), mask):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return True
+    except Exception as exc:  # noqa: BLE001
+        reasons.append(f"SetProcessAffinityMask failed: {type(exc).__name__}: {exc}")
+        return False
 
 
 def verify_affinity(expected_mask=None) -> dict:

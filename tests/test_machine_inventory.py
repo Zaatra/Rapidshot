@@ -127,6 +127,50 @@ def test_a_uniform_cpu_needs_no_mask_and_says_so():
     assert mi.performance_core_mask(uniform_cpu()) == (None, "uniform")
 
 
+@pytest.mark.parametrize("value, mask", [
+    ("", 0), ("0,1", 0b11), ("0-1", 0b11), (" 0 , 1 ,", 0b11), ("0-3,8", 0x10F),
+])
+def test_the_exclusion_setting_names_logical_processors(value, mask):
+    assert mi.excluded_cpu_mask(value) == mask
+
+
+@pytest.mark.parametrize("value", ["zero", "0-x", "3-1", "64", "-1"])
+def test_a_malformed_exclusion_refuses_rather_than_running_on_the_core(value):
+    """Ignoring a typo would put back to work the core the setting keeps idle."""
+    with pytest.raises(ValueError, match="RAPIDSHOT_BENCH_EXCLUDE_CPUS"):
+        mi.excluded_cpu_mask(value)
+
+
+def test_an_excluded_core_leaves_the_performance_mask(monkeypatch):
+    """Both hyperthreads of physical core 0 withheld from the fastest class."""
+    monkeypatch.setenv(mi.EXCLUDE_CPUS_ENV, "0,1")
+    assert mi.performance_core_mask(hybrid_cpu()) == (0x0000FFFC, "hybrid")
+
+
+def test_a_uniform_cpu_with_an_exclusion_is_pinned_away_from_it(monkeypatch):
+    """"No pinning needed" would hand the excluded core back."""
+    monkeypatch.setenv(mi.EXCLUDE_CPUS_ENV, "0")
+    assert mi.performance_core_mask(uniform_cpu()) == (0xFE, "uniform")
+
+
+def test_excluding_every_fast_core_is_an_error_not_an_unpinned_run(monkeypatch):
+    monkeypatch.setenv(mi.EXCLUDE_CPUS_ENV, "0-15")
+    with pytest.raises(ValueError, match="every core"):
+        mi.performance_core_mask(hybrid_cpu())
+
+
+def test_an_unpinned_run_still_keeps_off_the_excluded_cores(monkeypatch):
+    monkeypatch.setenv(mi.EXCLUDE_CPUS_ENV, "0,1")
+    applied = {"mask": 0xFFFFFFFF}
+    monkeypatch.setattr(mi, "_effective_mask", lambda: applied["mask"])
+    monkeypatch.setattr(mi, "_set_affinity",
+                        lambda mask, reasons: applied.update(mask=mask) or True)
+    policy = mi.apply_cpu_policy("none", cpu=hybrid_cpu())
+    assert applied["mask"] == 0xFFFFFFFC
+    assert policy.as_dict()["excluded_mask_hex"] == "0x3"
+    assert any("withholds 0x3" in reason for reason in policy.reasons)
+
+
 def test_an_unreadable_topology_is_unknown_not_uniform():
     """Claiming uniformity nobody observed leaves a hybrid CPU silently unpinned."""
     assert mi.performance_core_mask(mi._unavailable("nope")) == (None, "unknown")

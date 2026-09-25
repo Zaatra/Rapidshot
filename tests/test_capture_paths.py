@@ -1124,11 +1124,15 @@ def test_cleanup_failures_after_a_bad_stage_surface_still_surface_the_cause(
     error that reaches the caller must be the build failure, not the cleanup's.
     """
     cam, _, _, _ = pipeline()
-    original = cam._duplicator
+    built_before = len(FakeDuplicator.built)
     attempts = {"duplicator": 0, "stage": 0}
 
     def duplicator_release(self):
-        if self is original:
+        # Only the partial duplicator this rebuild creates counts. "Anything
+        # but the original" also counted a duplicator left by an earlier test
+        # when the collector finalised its camera mid-test -- 2 instead of 1,
+        # seen once on the native CI job and on no other.
+        if self not in FakeDuplicator.built[built_before:]:
             self.released = True
             return
         attempts["duplicator"] += 1
