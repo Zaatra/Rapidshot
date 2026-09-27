@@ -258,6 +258,102 @@ def test_a_silent_source_times_out(logs, monkeypatch):
         src.start()
 
 
+def test_a_restarted_source_is_not_ready_on_its_predecessors_word(logs, monkeypatch):
+    """The logs are appended so a restart keeps the stderr that says why the
+    first source died -- which leaves the first one's ready line in stdout."""
+    source(logs, monkeypatch, lines=b'{"event":"ready","width":900}\n').start()
+    stderr = logs.directory / "source-static.stderr.log"
+    stderr.write_bytes(b"Present not visible/successful: HRESULT(0x087A0001)\n")
+    with pytest.raises(RuntimeError, match="readiness timeout"):
+        source(logs, monkeypatch).start()
+    assert b"0x087A0001" in stderr.read_bytes()
+
+
+def test_presents_are_counted_from_the_sources_own_log(logs, monkeypatch):
+    src = source(logs, monkeypatch)
+    assert src.presents() == 0
+    src.present_log.write_bytes(b'{"event":"present","id":1}\n{"event":"present","id":2}\n'
+                                b'{"event":"other"}\n{"event":"present","id":3}\n')
+    assert src.presents() == 3
+
+
+@pytest.mark.parametrize("presented, wall, fps, exit_code, expected", [
+    (880, 9.0, 100, None, None),
+    (1, 9.0, 100, None, "presented 1 frames in 9.0 s against about 900"),
+    (440, 9.0, 100, None, "presented 440 frames"),
+    (900, 9.0, 100, 1, "exited (status 1)"),
+    (0, 9.0, 0, None, None),
+])
+def test_a_case_whose_source_stopped_says_so(presented, wall, fps, exit_code, expected):
+    """1 frame in 8 s from DXcam and RapidShot, while mss kept re-grabbing, is a
+    source that stopped -- and only the source can tell that from a still desktop."""
+    reason = mp.source_stall(presented, wall, fps, exit_code)
+    if expected is None:
+        assert reason is None
+    else:
+        assert expected in reason and "Rerun" in reason
+
+
+class FakeSource:
+    def __init__(self, logs, presents, exit_code=None, fps=100):
+        self.logs, self.workload, self.width, self.height, self.fps = logs, "scroll", 900, 700, fps
+        self._presents, self._exit, self.closed = list(presents), exit_code, False
+
+    def presents(self):
+        return self._presents.pop(0)
+
+    def exit_code(self):
+        return self._exit
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.mark.parametrize("library", ["mss", "dxcam"])
+def test_a_row_measured_while_the_source_was_stalled_is_failed_with_why(
+        logs, monkeypatch, library):
+    """mss's numbers from that screen look fine, and are just as mislabelled."""
+    monkeypatch.setattr(mp, "spawn_worker", lambda *a: {"library": library, "fps": 50.0})
+    monkeypatch.setattr(mp.time, "monotonic", Clock(step=9.0))
+    row = mp.measure_case(FakeSource(logs, [100, 101]), library, "scroll", 8.0, logs)
+    assert "presented 1 frames" in row["error"]
+
+
+def test_a_row_measured_while_the_source_ran_is_left_alone(logs, monkeypatch):
+    monkeypatch.setattr(mp, "spawn_worker", lambda *a: {"library": "dxcam", "fps": 99.0})
+    monkeypatch.setattr(mp.time, "monotonic", Clock(step=9.0))
+    row = mp.measure_case(FakeSource(logs, [100, 990]), "dxcam", "scroll", 8.0, logs)
+    assert "error" not in row
+
+
+def test_a_source_asked_for_more_than_the_panel_shows_is_not_a_stall(logs, monkeypatch):
+    """--source-fps 240 on a 100 Hz panel presents 100 a second under vsync."""
+    monkeypatch.setattr(mp, "spawn_worker", lambda *a: {"library": "dxcam", "fps": 99.0})
+    monkeypatch.setattr(mp.time, "monotonic", Clock(step=9.0))
+    row = mp.measure_case(FakeSource(logs, [0, 890], fps=240), "dxcam", "scroll", 8.0, logs,
+                          rate=min(240, 100))
+    assert "error" not in row
+
+
+def test_a_worker_error_is_not_overwritten_by_the_stall(logs, monkeypatch):
+    monkeypatch.setattr(mp, "spawn_worker", lambda *a: {"library": "dxcam", "error": "worker timeout"})
+    monkeypatch.setattr(mp.time, "monotonic", Clock(step=9.0))
+    row = mp.measure_case(FakeSource(logs, [0, 0]), "dxcam", "scroll", 8.0, logs)
+    assert row["error"] == "worker timeout"
+
+
+def test_a_source_that_exited_is_replaced_before_the_next_case(logs, monkeypatch):
+    started = []
+    monkeypatch.setattr(mp.WorkloadSource, "start", lambda self: started.append(self))
+    dead = FakeSource(logs, [], exit_code=1)
+    fresh = mp.running_source(dead)
+    assert dead.closed and started == [fresh]
+    assert (fresh.workload, fresh.width, fresh.height, fresh.fps) == ("scroll", 900, 700, 100)
+    assert '"exit_code": 1' in (logs.directory / "parent.log").read_text()
+    alive = FakeSource(logs, [])
+    assert mp.running_source(alive) is alive
+
+
 def test_a_missing_source_names_the_command_that_builds_it(logs, monkeypatch):
     """The binary is a Rust target, so 'not found' is not actionable on its own
     -- the message has to carry the cargo line."""

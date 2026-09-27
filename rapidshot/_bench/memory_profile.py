@@ -204,7 +204,10 @@ def run_worker(library, seconds):
         used = cpu1.user - cpu0.user + cpu1.system - cpu0.system
         result.update(
             frames=frames, misses=misses, elapsed_seconds=round(wall, 3),
-            fps=round(frames / wall, 1) if wall else 0.0,
+            # Three decimals, not one: at 1 frame in 8 s, 0.1 against the 0.125 the
+            # count implies failed the 5% throughput check, and a stalled screen
+            # was reported as an arithmetic disagreement.
+            fps=round(frames / wall, 3) if wall else 0.0,
             cpu_percent=round(100 * used / wall, 1) if wall else 0.0,
             cpu_ms_per_frame=round(used / frames * 1000, 3) if frames else None)
     except Exception as exc:
@@ -225,6 +228,7 @@ class WorkloadSource:
         self.logs, self.workload = logs, workload
         self.width, self.height, self.fps = width, height, fps
         self.proc = self.stdout = self.stderr = None
+        self.present_log = logs.directory / f"presents-{workload}.jsonl"
 
     def start(self):
         if not SOURCE.is_file():
@@ -233,18 +237,23 @@ class WorkloadSource:
                 "cargo build --release --bin latency_source "
                 "--manifest-path native/Cargo.toml")
         directory = self.logs.directory
-        self.stdout = (directory / f"source-{self.workload}.stdout.log").open("wb")
-        self.stderr = (directory / f"source-{self.workload}.stderr.log").open("wb")
+        stdout_path = directory / f"source-{self.workload}.stdout.log"
+        # Appended, not truncated: a source restarted after it exited must not
+        # erase the stderr that says why it did.
+        offset = stdout_path.stat().st_size if stdout_path.exists() else 0
+        self.stdout = stdout_path.open("ab")
+        self.stderr = (directory / f"source-{self.workload}.stderr.log").open("ab")
         command = [str(SOURCE), str(self.width), str(self.height), str(self.fps),
-                   self.workload, str(directory / f"presents-{self.workload}.jsonl")]
+                   self.workload, str(self.present_log)]
         self.logs.event("source-starting", command=command)
         self.proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=self.stdout,
                                      stderr=self.stderr, **_child_options())
-        reader = (directory / f"source-{self.workload}.stdout.log").open(encoding="utf-8")
+        reader = stdout_path.open("rb")
+        reader.seek(offset)
         deadline = time.monotonic() + 20
         try:
             while time.monotonic() < deadline:
-                line = reader.readline()
+                line = reader.readline().decode("utf-8", errors="replace")
                 if line.strip().startswith("{") and "ready" in line:
                     self.logs.event("source-ready", workload=self.workload)
                     return
@@ -254,6 +263,20 @@ class WorkloadSource:
         finally:
             reader.close()
         raise RuntimeError(f"source readiness timeout for workload {self.workload}")
+
+    def exit_code(self):
+        """None while the source runs. It exits on any Present() that is not S_OK --
+        occluded, for one -- and the screen then stops changing under every library
+        measured after it."""
+        return None if self.proc is None else self.proc.poll()
+
+    def presents(self) -> int:
+        """Frames presented so far, counted from the source's own log."""
+        try:
+            with self.present_log.open("rb") as log:
+                return sum(1 for line in log if b'"present"' in line)
+        except OSError:
+            return 0
 
     def close(self):
         if self.proc is not None and self.proc.poll() is None:
@@ -265,6 +288,59 @@ class WorkloadSource:
         for handle in (self.stdout, self.stderr):
             if handle is not None:
                 handle.close()
+
+
+#: A source presenting under half its rate while a library was measured did not
+#: drive the screen its workload is named for.
+SOURCE_STALL_FRACTION = 0.5
+
+
+def source_stall(presented, wall_seconds, source_fps, exit_code=None):
+    """Why the source did not drive the screen during one case, or None.
+
+    The library's own frame count cannot say: mss re-grabs whatever is on screen,
+    and a stalled source leaves DXcam and RapidShot with a still desktop, which
+    they correctly report as no new frames. Only the source knows it stopped.
+    """
+    if exit_code is not None:
+        return (f"the test source exited (status {exit_code}), so the screen stopped "
+                "changing; the source's stderr log says why. Rerun the benchmark")
+    expected = source_fps * wall_seconds
+    if expected > 0 and presented < SOURCE_STALL_FRACTION * expected:
+        return (f"the test source presented {presented} frames in {wall_seconds:.1f} s "
+                f"against about {expected:.0f}, so the screen stopped changing. "
+                "Rerun the benchmark")
+    return None
+
+
+def running_source(source):
+    """``source``, or a fresh one in its place if it has exited: one lost case,
+    not the rest of the workload with it."""
+    if source.exit_code() is None:
+        return source
+    source.logs.event("source-restarting", workload=source.workload,
+                      exit_code=source.exit_code())
+    source.close()
+    fresh = WorkloadSource(source.logs, source.workload, source.width, source.height,
+                           source.fps)
+    fresh.start()
+    return fresh
+
+
+def measure_case(source, library, workload, seconds, logs, rate=None):
+    """One worker, failed with the reason if the source stopped driving the screen:
+    its numbers would describe a still desktop, not this workload.
+
+    ``rate`` is what the source can actually present: its own rate, capped by the
+    panel's refresh, since it presents with vsync.
+    """
+    presented, started = source.presents(), time.monotonic()
+    row = spawn_worker(library, workload, seconds, logs)
+    stall = source_stall(source.presents() - presented, time.monotonic() - started,
+                         rate or source.fps, source.exit_code())
+    if stall and "error" not in row:
+        row["error"] = stall
+    return row
 
 
 def spawn_worker(library, workload, seconds, logs):
@@ -404,11 +480,13 @@ def main(argv=None) -> int:
                         print(f"  [{workload}/{library}] already {done}{hint}", flush=True)
                         continue
                     guard.check(force=True)
+                    source = running_source(source)
                     print(f"  [{workload}/{library}] ...", flush=True)
                     with result_store.case_context(
                             store, identity, retry=action == "retry",
                             required=MEMORY_REQUIRED) as case:
-                        row = spawn_worker(library, workload, args.seconds, logs)
+                        row = measure_case(source, library, workload, args.seconds, logs,
+                                           rate=min(args.source_fps, mode["refresh_hz"]))
                         row["workload"] = workload
                         row["animated_rect"] = list(animated)
                         row["captured_rect"] = list(captured)
@@ -416,6 +494,7 @@ def main(argv=None) -> int:
                         case.contamination = list(coverage)
                     if case.record is not None:
                         row = dict(row, case_status=case.record.status,
+                                   case_reasons=list(case.record.reasons),
                                    case={"run_id": store.run_id,
                                          "case_id": case.record.case_id,
                                          "attempt_id": case.record.attempt_id})

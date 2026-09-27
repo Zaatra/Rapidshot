@@ -10,6 +10,25 @@ each release can be traced back to the plan it implements.
 
 ## [Unreleased]
 
+### Fixed — `rapidshot benchmark`
+
+- **A memory row measured while the test pattern had stopped now says so.**
+  The test source exits on any `Present()` that is not `S_OK` -- when it is
+  occluded, for one -- and nothing noticed: the libraries measured after it saw
+  a still desktop. On an Intel desktop running 2.6.2, DXcam, `grab()` and
+  `grab_frame()` each got one frame in eight seconds of the scroll workload
+  while mss, which re-grabs regardless, reported ordinary numbers. The harness
+  now counts the source's presents during every case, fails a case whose source
+  exited or presented under half its rate with that reason and a request to
+  rerun, restarts a source that exited so the rest of the workload is still
+  measured, and keeps the source's stderr across the restart.
+- **Unusable rows give their reasons.** The report printed a bare `invalid`;
+  it now prints the status with the reasons the harness recorded.
+- **A low frame count is no longer rejected as an arithmetic error.** The
+  memory harness rounded fps to one decimal, so one frame in eight seconds
+  (0.125) became 0.1 and failed the 5% throughput check -- which is what
+  flagged the stalled rows above, by accident. It now keeps three decimals.
+
 ## [2.6.2] - 2026-09-27
 
 ### Fixed — `rapidshot benchmark`

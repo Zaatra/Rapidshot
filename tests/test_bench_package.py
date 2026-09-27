@@ -330,7 +330,17 @@ def test_the_memory_table_keeps_a_failed_row_and_its_reason(tmp_path):
     assert report["memory"]["summary"]["rapidshot"]["static"]["capture_mb"] == 12.3
     text = cli.render_markdown(report)
     assert "| rapidshot | static | 60.0 | 110.0 MB | +12.3 MB | -0.002 MB/s |" in text
-    assert "| rapidshot-frame | motion | — | — | — | worker timeout |" in text
+    assert "| rapidshot-frame | motion | — | — | — | failed: worker timeout |" in text
+
+
+def test_an_unusable_memory_row_gives_its_reasons_not_a_bare_status(tmp_path):
+    memory = tmp_path / "memory.json"
+    stalled = dict(memory_row("dxcam", "scroll", 96.8, 10.5, 0.04), fps=0.125,
+                   case_status="invalid",
+                   case_reasons=["fps=0.1 disagrees with frames/elapsed_seconds=0.125"])
+    memory.write_text(json.dumps({"seconds": 8.0, "results": [stalled]}))
+    text = cli.render_markdown(cli.build_report(preflight(), {}, None, memory=memory))
+    assert "| dxcam | scroll | — | — | — | invalid: fps=0.1 disagrees" in text
 
 
 def test_hdr_is_the_panels_claim_beside_the_format_capture_received(tmp_path):

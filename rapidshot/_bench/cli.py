@@ -316,14 +316,21 @@ def summarise(payloads: list, metrics: dict) -> dict:
     return rows
 
 
+def _why_not_usable(row) -> str:
+    """The status and its reasons. A bare "invalid" gives a tester nothing to act
+    on, and the likeliest cause -- the test pattern stopped -- only needs a rerun."""
+    status = row.get("case_status") or ("failed" if "error" in row else "unusable")
+    reasons = [row["error"]] if row.get("error") else list(row.get("case_reasons") or [])
+    return (f"{status}: {'; '.join(reasons)}" if reasons else status)[:300]
+
+
 def summarise_memory(payload) -> dict:
     """{library: {workload: {metric: value}}} for rows that measured something."""
     out = {}
     for row in (payload or {}).get("results", []):
         entry = out.setdefault(row.get("library"), {})
         if "error" in row or row.get("case_status", "passed") not in USABLE:
-            entry[row.get("workload")] = {
-                "error": (row.get("error") or row.get("case_status") or "failed")[:200]}
+            entry[row.get("workload")] = {"error": _why_not_usable(row)}
             continue
         values = {}
         for name, (get, _unit) in MEMORY.items():
