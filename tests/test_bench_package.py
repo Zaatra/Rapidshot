@@ -182,6 +182,27 @@ def test_without_cupy_full_times_the_no_cuda_finish_lines_and_skips_call_duratio
     assert ran == ["capabilities", ("no-cuda", list(section7_adapters.NO_CUDA_PATHS)), "memory"]
 
 
+def test_the_display_is_held_on_for_the_run_and_released_after(monkeypatch, tmp_path):
+    """The display timeout turns the panel off mid-run, and every test source
+    launched after that exits occluded."""
+    states = []
+    monkeypatch.setattr(cli, "_set_execution_state", states.append)
+    monkeypatch.setattr(cli, "preflight", lambda: preflight())
+    monkeypatch.setattr(cli, "WORK", tmp_path)
+    files = write_passes(tmp_path, [[row("dxcam", 95, 37, 11)]])
+
+    def capabilities(run_dir):
+        assert states == [cli._KEEP_DISPLAY_ON]
+        return run_dir / "c.json"
+
+    monkeypatch.setattr(cli, "run_capabilities", capabilities)
+    monkeypatch.setattr(cli, "run_pixel_age", lambda *a: (_ for _ in ()).throw(RuntimeError("x")))
+    with pytest.raises(RuntimeError):
+        cli.main(["--yes", "--out", str(tmp_path / "out")])
+    assert states == [cli._KEEP_DISPLAY_ON, cli._ES_CONTINUOUS]
+    assert cli._KEEP_DISPLAY_ON == 0x80000003
+
+
 def test_the_no_cuda_harness_is_asked_for_by_name(monkeypatch, tmp_path):
     seen = []
     monkeypatch.setattr(cli, "_run", lambda module, args, log: seen.append(args) or 0)

@@ -46,6 +46,20 @@ each release can be traced back to the plan it implements.
   memory harness rounded fps to one decimal, so one frame in eight seconds
   (0.125) became 0.1 and failed the 5% throughput check -- which is what
   flagged the stalled rows above, by accident. It now keeps three decimals.
+- **A test source that stops presenting is relaunched before anything is
+  measured against it.** On the Intel desktop about 15% of sources launched
+  after an earlier one presented 3 frames, after which the display stopped
+  completing their flips: every `Present()` still returned `S_OK`, 2 s late,
+  with the window visible and uncloaked, and it never recovered. First launches
+  never did it (0 of 57) and the trigger is still unknown. The memory harness
+  and section 7 now require 20 presents within a second of "ready" (half the
+  source's rate when that is lower), relaunching up to three times and logging
+  each `source-unhealthy`. On trial there it caught all four stalls that
+  occurred, each on the first relaunch, and lost no case.
+- **The display is held on for the run.** Left alone, as a benchmark must be,
+  the display timeout turned the panel off partway, and every source launched
+  after that exited occluded. `rapidshot benchmark` now asks Windows to keep
+  the display on until it finishes.
 - **A flagged pass says what flagged it.** Every contaminated pass got the same
   `*` and "read as fast as the test source presented, so the frame rate is a
   floor" -- on the Intel desktop, mss at 33 fps and DXcam at 84 against a

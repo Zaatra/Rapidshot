@@ -207,7 +207,12 @@ def logs(tmp_path):
     return RunLogs(tmp_path)
 
 
-def source(logs, monkeypatch, *, lines=b"", exits=None, binary=True):
+def source(logs, monkeypatch, *, lines=b"", exits=None, binary=True, steady=None):
+    """``steady`` is what each launch's healthy-start check returns, in order;
+    by default every launch presents steadily."""
+    verdicts = list(steady or [])
+    monkeypatch.setattr(mp, "presenting_steadily",
+                        lambda path, fps: (verdicts.pop(0) if verdicts else True, 7))
     monkeypatch.setattr(mp, "SOURCE", SimpleNamespace(
         is_file=lambda: binary, __str__=lambda self: "latency_source.exe"))
 
@@ -267,6 +272,26 @@ def test_a_restarted_source_is_not_ready_on_its_predecessors_word(logs, monkeypa
     with pytest.raises(RuntimeError, match="readiness timeout"):
         source(logs, monkeypatch).start()
     assert b"0x087A0001" in stderr.read_bytes()
+
+
+READY = b'{"event":"ready","width":900}' + b"\n"
+
+
+def test_a_source_that_stops_after_its_first_frames_is_relaunched(logs, monkeypatch):
+    """About 15% of later launches on the Intel desktop presented 3 frames and
+    then had every flip held for 2 s; a relaunch cleared it every time."""
+    src = source(logs, monkeypatch, lines=READY, steady=[False, True])
+    src.start()
+    events = (logs.directory / "parent.log").read_text()
+    assert events.count('"event": "source-ready"') == 2
+    assert '"event": "source-unhealthy"' in events and '"attempt": 1' in events
+
+
+def test_a_source_that_never_presents_steadily_stops_the_workload(logs, monkeypatch):
+    src = source(logs, monkeypatch, lines=READY, steady=[False, False, False])
+    with pytest.raises(RuntimeError, match="stopped presenting after its first frames on 3"):
+        src.start()
+    assert (logs.directory / "parent.log").read_text().count("source-unhealthy") == 3
 
 
 def test_presents_are_counted_from_the_sources_own_log(logs, monkeypatch):

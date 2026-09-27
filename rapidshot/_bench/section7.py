@@ -16,7 +16,8 @@ import time
 from .ai_ingestion import (RunLogs, MotionSource, MotionError, HealthGuard, _child_options, spawn,
                           save_results, stage)
 from .benchmark_contract import (PIPELINE_TOLERANCE_RGB8, SHAPE, TENSOR_GEOMETRY, PresentLog,
-                                canonical_rgb, percentiles, qpc_clock, sha256)
+                                SOURCE_LAUNCHES, canonical_rgb, percentiles,
+                                presenting_steadily, qpc_clock, sha256)
 from .section7_adapters import Adapter, PATHS, CPU_PATHS, NO_CUDA_PATHS
 from . import detection as detection_module
 from . import machine_inventory
@@ -81,12 +82,30 @@ class VisualSource(MotionSource):
         self.present_log = logs.directory / "presents.jsonl"
 
     def start(self):
+        """Launch, and relaunch a source that stops presenting after its first
+        frames; see benchmark_contract.HEALTHY_PRESENTS."""
         if not SOURCE.is_file():
             raise RuntimeError("no test source: pip install \"rapidshot-native>=0.2.1\", or build one with "
                                "cargo build --release --bin latency_source --manifest-path native/Cargo.toml")
-        self.stdout = (self.logs.directory / "motion.stdout.log").open("wb")
-        self.stderr = (self.logs.directory / "motion.stderr.log").open("wb")
+        for attempt in range(1, SOURCE_LAUNCHES + 1):
+            self._launch()
+            steady, seen = presenting_steadily(self.present_log, self.fps)
+            if steady:
+                return
+            self.logs.event("source-unhealthy", workload=self.args.workload,
+                            attempt=attempt, presents=seen)
+            self.close()
+        raise MotionError(f"the test source stopped presenting after its first frames on "
+                          f"{SOURCE_LAUNCHES} launches; see motion logs and rerun")
+
+    def _launch(self):
+        self.ready, self.pending = False, ""
+        # Appended, with the reader starting at the end: a relaunch keeps the
+        # log of the source it replaced and does not reread its "ready".
+        self.stdout = (self.logs.directory / "motion.stdout.log").open("ab")
+        self.stderr = (self.logs.directory / "motion.stderr.log").open("ab")
         self.reader = (self.logs.directory / "motion.stdout.log").open(encoding="utf-8")
+        self.reader.seek(0, 2)
         command = [str(SOURCE), str(self.args.width), str(self.args.height),
                    str(self.fps), self.args.workload, str(self.present_log)]
         if self.scene is not None:

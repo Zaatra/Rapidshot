@@ -55,6 +55,7 @@ from . import result_validation
 from .result_validation import should_stop
 from .ai_ingestion import RunLogs, _child_options, save_results, stage  # noqa: E402
 from .section7 import SOURCE, HealthGuard, display_mode  # noqa: E402
+from .benchmark_contract import SOURCE_LAUNCHES, count_presents, presenting_steadily
 from ._paths import worker_command
 
 LIBRARIES = ("mss", "dxcam", "rapidshot", "rapidshot-frame")
@@ -231,11 +232,27 @@ class WorkloadSource:
         self.present_log = logs.directory / f"presents-{workload}.jsonl"
 
     def start(self):
+        """Launch, and relaunch a source that stops presenting after its first
+        frames (see benchmark_contract.HEALTHY_PRESENTS): measured against it,
+        every library after the stall reads a still screen."""
         if not SOURCE.is_file():
             raise RuntimeError(
                 "no test source: pip install \"rapidshot-native>=0.2.1\", or build one with "
                 "cargo build --release --bin latency_source "
                 "--manifest-path native/Cargo.toml")
+        for attempt in range(1, SOURCE_LAUNCHES + 1):
+            self._launch()
+            steady, seen = presenting_steadily(self.present_log, self.fps)
+            if steady:
+                return
+            self.logs.event("source-unhealthy", workload=self.workload, attempt=attempt,
+                            presents=seen)
+            self.close()
+        raise RuntimeError(
+            f"the {self.workload} test source stopped presenting after its first frames "
+            f"on {SOURCE_LAUNCHES} launches; see its logs and rerun the benchmark")
+
+    def _launch(self):
         directory = self.logs.directory
         stdout_path = directory / f"source-{self.workload}.stdout.log"
         # Appended, not truncated: a source restarted after it exited must not
@@ -272,11 +289,7 @@ class WorkloadSource:
 
     def presents(self) -> int:
         """Frames presented so far, counted from the source's own log."""
-        try:
-            with self.present_log.open("rb") as log:
-                return sum(1 for line in log if b'"present"' in line)
-        except OSError:
-            return 0
+        return count_presents(self.present_log)
 
     def close(self):
         if self.proc is not None and self.proc.poll() is None:

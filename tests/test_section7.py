@@ -330,6 +330,9 @@ def test_a_display_query_that_fails_is_not_silently_zero(monkeypatch):
         section7.display_mode()
 
 
+READY = b'{"event":"ready"}' + b"\n"
+
+
 class FakeSource:
     """Stands in for the built binary: a Path instance refuses attribute
     patching, and `str()` resolves on the type rather than the instance."""
@@ -356,22 +359,57 @@ def test_the_source_is_launched_with_the_requested_mode(monkeypatch, tmp_path):
         def __init__(self, *args, **kwargs):
             commands.append(list(args[0]))
             self.stdin = None
+            kwargs["stdout"].write(READY)
+            kwargs["stdout"].flush()
 
         def poll(self):
             return None
 
     monkeypatch.setattr(section7.subprocess, "Popen", Proc)
     monkeypatch.setattr(section7, "SOURCE", FakeSource())
+    monkeypatch.setattr(section7, "presenting_steadily", lambda path, fps: (True, 20))
     logs = section7.RunLogs(tmp_path)
     args = SimpleNamespace(width=2560, height=1600, motion_fps=165.0,
                            workload="scroll")
     guard = SimpleNamespace(check=lambda force=False: None)
     source = section7.VisualSource(logs, args, guard)
-    source.ready = True          # readiness itself is covered by MotionSource
     source.start()
     command = commands[0]
     assert command[1:5] == ["2560", "1600", "165.0", "scroll"]
     assert command[5].endswith("presents.jsonl")
+
+
+def test_a_pass_source_that_stalls_is_relaunched_without_losing_its_log(monkeypatch, tmp_path):
+    """section7 starts a source per pass, so it meets the same stall; the
+    relaunch must not reread the first source's ready line or erase its log."""
+    launches = []
+
+    class Proc:
+        pid = 4244
+
+        def __init__(self, *args, **kwargs):
+            launches.append(self)
+            self.stdin = None
+            kwargs["stdout"].write(READY)
+            kwargs["stdout"].flush()
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+    verdicts = [(False, 3), (True, 20)]
+    monkeypatch.setattr(section7.subprocess, "Popen", Proc)
+    monkeypatch.setattr(section7, "SOURCE", FakeSource())
+    monkeypatch.setattr(section7, "presenting_steadily", lambda path, fps: verdicts.pop(0))
+    logs = section7.RunLogs(tmp_path)
+    args = SimpleNamespace(width=900, height=700, motion_fps=60.0, workload="motion")
+    source = section7.VisualSource(logs, args, SimpleNamespace(check=lambda force=False: None))
+    source.start()
+    assert len(launches) == 2 and source.ready
+    assert (logs.directory / "motion.stdout.log").read_text().count("ready") == 2
+    assert '"presents": 3' in (logs.directory / "parent.log").read_text()
 
 
 def test_a_silent_source_does_not_hang_the_run(monkeypatch, tmp_path):
@@ -537,3 +575,15 @@ def test_verification_reads_every_kind_of_tensor_back():
     assert section7.host_copy(SimpleNamespace(numpy=lambda: host), None, np) is host
     cupy = SimpleNamespace(asnumpy=lambda t: host)
     assert section7.host_copy(object(), cupy, np) is host
+
+
+@pytest.mark.parametrize("fps, presents, steady", [
+    (100, 20, True), (100, 7, False), (30, 15, True), (30, 14, False), (0, 20, True)])
+def test_a_source_is_steady_once_it_keeps_presenting(tmp_path, fps, presents, steady):
+    log = tmp_path / "presents.jsonl"
+    log.write_text("".join(json.dumps({"event": "present", "id": i}) + "\n"
+                           for i in range(presents)))
+    ticks = iter(range(100))
+    result = contract.presenting_steadily(log, fps, clock=lambda: next(ticks) * 0.25,
+                                          sleep=lambda _s: None)
+    assert result == (steady, presents)

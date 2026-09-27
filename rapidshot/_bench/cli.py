@@ -21,6 +21,7 @@ matrix worth anything.
 from __future__ import annotations
 
 import argparse
+import contextlib
 from datetime import datetime, timezone
 import importlib.util
 import json
@@ -722,6 +723,33 @@ def _print_plan(pre, paths, skipped, args):
           "leave the machine alone until it finishes.", flush=True)
 
 
+#: SetThreadExecutionState flags: ES_CONTINUOUS | ES_SYSTEM_REQUIRED |
+#: ES_DISPLAY_REQUIRED while running, then ES_CONTINUOUS alone to release them.
+_ES_CONTINUOUS = 0x80000000
+_KEEP_DISPLAY_ON = _ES_CONTINUOUS | 0x00000001 | 0x00000002
+
+
+def _set_execution_state(flags: int) -> None:
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetThreadExecutionState(flags)
+    except (AttributeError, OSError):
+        pass  # not Windows; there is no display timeout to hold off
+
+
+@contextlib.contextmanager
+def display_held():
+    """Keep the display on for the run. A benchmark is left alone by design, so
+    the idle timeout turns the display off partway, and every test source
+    launched after that exits with DXGI_STATUS_OCCLUDED, so an unattended --full
+    can die partway (seen on the Intel desktop, with a 10-minute timeout)."""
+    _set_execution_state(_KEEP_DISPLAY_ON)
+    try:
+        yield
+    finally:
+        _set_execution_state(_ES_CONTINUOUS)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="rapidshot benchmark", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -770,15 +798,16 @@ def main(argv=None) -> int:
     run_dir = WORK / "runs" / stamp
     run_dir.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
-    capabilities = run_capabilities(run_dir)
-    target = tensor_target(pre)
-    pixel = (run_pixel_age(run_dir, paths, args.passes, args.seconds, target)
-             if paths else None)
-    # The call-duration harness has one finish line, CUDA; without it the pixel-age
-    # table's CPU-per-frame column is the CPU cost, from the same frames.
-    call = (run_call_duration(run_dir, paths, args.passes, args.seconds)
-            if args.full and paths and target == "cuda" else None)
-    memory = run_memory(run_dir, pre, args.seconds) if args.full else None
+    with display_held():
+        capabilities = run_capabilities(run_dir)
+        target = tensor_target(pre)
+        pixel = (run_pixel_age(run_dir, paths, args.passes, args.seconds, target)
+                 if paths else None)
+        # The call-duration harness has one finish line, CUDA; without it the
+        # pixel-age table's CPU-per-frame column is the CPU cost, from the same frames.
+        call = (run_call_duration(run_dir, paths, args.passes, args.seconds)
+                if args.full and paths and target == "cuda" else None)
+        memory = run_memory(run_dir, pre, args.seconds) if args.full else None
 
     report = build_report(pre, skipped, pixel, call, memory, capabilities, target)
     report["duration_s"] = round(time.monotonic() - started)

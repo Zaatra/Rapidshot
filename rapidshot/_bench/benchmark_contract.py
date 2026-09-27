@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import time
 
 OUT = 640
 SHAPE = (1, 3, OUT, OUT)
@@ -167,6 +168,45 @@ def sha256(path):
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+#: A test source that has said it is ready must then present steadily. On the
+#: Intel desktop about 15% of sources launched after an earlier one presented
+#: 3 frames, after which the display stopped completing their flips: every
+#: Present() still returned S_OK, 2 s late, with the window visible and
+#: uncloaked, and it never recovered. The first launch of a run never did it
+#: (0 of 57), and the trigger is unknown. A relaunch cleared it every time.
+HEALTHY_PRESENTS = 20
+HEALTHY_WINDOW_S = 1.0
+SOURCE_LAUNCHES = 3
+
+
+def count_presents(path) -> int:
+    """Frames a source has presented, from its own log (truncated at each launch)."""
+    try:
+        with Path(path).open("rb") as log:
+            return sum(1 for line in log if b'"present"' in line)
+    except OSError:
+        return 0
+
+
+def presenting_steadily(path, fps=0.0, *, clock=time.monotonic, sleep=time.sleep):
+    """(steady, presents seen) for a source that has just reported ready.
+
+    Steady means HEALTHY_PRESENTS within HEALTHY_WINDOW_S, or half the source's
+    rate over that window when it presents slower than that.
+    """
+    required = HEALTHY_PRESENTS
+    if fps and fps > 0:
+        required = max(2, min(HEALTHY_PRESENTS, int(fps * HEALTHY_WINDOW_S / 2)))
+    deadline = clock() + HEALTHY_WINDOW_S
+    while True:
+        seen = count_presents(path)
+        if seen >= required:
+            return True, seen
+        if clock() >= deadline:
+            return False, seen
+        sleep(0.02)
 
 
 def open_mss():
