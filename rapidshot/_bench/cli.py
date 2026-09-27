@@ -107,6 +107,8 @@ def preflight() -> dict:
         "rapidshot": rapidshot.__version__,
         "python": platform.python_version(),
         "windows": platform.version(),
+        # "11" on build 22000 and later, which `version()` alone reports as 10.0.x.
+        "windows_release": platform.release(),
         "cpu": _cpu_name(),
         "native": native.build_info() if native.is_available() else None,
         "test_source": str(section7.SOURCE) if section7.SOURCE and section7.SOURCE.is_file() else None,
@@ -115,7 +117,7 @@ def preflight() -> dict:
         "capture_adapters": [a.description for a in topology.capture_adapters],
         "installed": {name: _installed(module) for name, module in
                       (("mss", "mss"), ("dxcam", "dxcam"), ("winrt", "winrt"),
-                       ("cupy", "cupy"), ("psutil", "psutil"))},
+                       ("cupy", "cupy"), ("cv2", "cv2"), ("psutil", "psutil"))},
     }
     try:
         info["display"] = section7.display_mode()
@@ -124,37 +126,55 @@ def preflight() -> dict:
     return info
 
 
+#: Why every path is skipped on a machine without CuPy. The tensor is what makes
+#: the rows comparable, so there is no CPU-only stand-in to fall back to.
+NO_CUPY = ("every path ends in an FP16 tensor on CUDA, which needs an NVIDIA GPU and "
+           "CuPy for your CUDA version, e.g. pip install cupy-cuda12x")
+NO_CV2 = "resizes with OpenCV on the CPU: pip install opencv-python"
+
+
 def choose_paths(pre: dict):
-    """(paths to run, {path: why it is skipped}). Nothing is skipped silently."""
+    """(paths to run, {path: why it is skipped}). Nothing is skipped silently.
+
+    mss, DXcam and grab() are CPU capture, but the harness still converts their
+    frames to the same FP16 tensor on CUDA as the GPU paths -- with cv2 on the
+    CPU, then CuPy -- so without CuPy nothing here can produce a row.
+    """
     have = pre["installed"]
-    paths, skipped = [], {}
+    cpu, skipped = [], {}
     if have["mss"]:
-        paths.append("mss")
+        cpu.append("mss")
     else:
         skipped["mss"] = "not installed: pip install mss"
     if have["dxcam"]:
-        paths.append("dxcam")
+        cpu.append("dxcam")
         if have["winrt"]:
-            paths.append("dxcam-wgc")
+            cpu.append("dxcam-wgc")
         else:
             skipped["dxcam-wgc"] = 'needs pip install "dxcam[winrt]"'
     else:
         skipped["dxcam"] = "not installed: pip install dxcam"
-    paths.append("rapidshot-cpu")
+    cpu.append("rapidshot-cpu")
 
     gpu = ["rapidshot-cupy", "rapidshot-direct", "rapidshot-converter"]
     if pre["topology"] == "hybrid":
         # Capture on one GPU, CUDA on another: the case convert-before-transfer
         # exists for, and the only one where the cross-adapter rows mean anything.
         gpu += ["rapidshot-xadapter", "rapidshot-converter-xadapter"]
+
+    if not have["cupy"]:
+        skipped.update({p: NO_CUPY for p in cpu})
+        cpu = []
+    elif not have.get("cv2"):
+        skipped.update({p: NO_CV2 for p in cpu})
+        cpu = []
     if not pre["native"]:
         skipped.update({p: 'needs rapidshot-native: pip install "rapidshot[native]"' for p in gpu})
     elif not have["cupy"]:
-        skipped.update({p: "needs CuPy for your CUDA version, e.g. pip install cupy-cuda12x"
-                        for p in gpu})
+        skipped.update({p: NO_CUPY for p in gpu})
     else:
-        paths += gpu
-    return paths, skipped
+        cpu += gpu
+    return cpu, skipped
 
 
 def blockers(pre: dict) -> list:
@@ -225,8 +245,21 @@ def run_call_duration(run_dir: Path, paths: list, passes: int, seconds: float) -
     return files
 
 
+def memory_skipped(pre: dict) -> dict:
+    """{library: why} for the memory rows that cannot run. None of them needs CuPy."""
+    have, out = pre["installed"], {}
+    for lib in ("mss", "dxcam"):
+        if not have[lib]:
+            out[lib] = f"not installed: pip install {lib}"
+    if have["dxcam"] and not have.get("cv2"):
+        # dxcam.create() converts colour with its default cv2 backend.
+        out["dxcam"] = "DXcam's colour conversion needs OpenCV: pip install opencv-python"
+    return out
+
+
 def memory_libraries(pre: dict) -> list:
-    return ([lib for lib in ("mss", "dxcam") if pre["installed"][lib]]
+    skipped = memory_skipped(pre)
+    return ([lib for lib in ("mss", "dxcam") if lib not in skipped]
             + ["rapidshot", "rapidshot-frame"])
 
 
@@ -363,9 +396,12 @@ def _environment(payloads: list):
     return None
 
 
-def build_report(pre: dict, skipped: dict, pixel: dict, call=None, memory=None,
+def build_report(pre: dict, skipped: dict, pixel=None, call=None, memory=None,
                  capabilities=None) -> dict:
+    """``pixel`` is None when no path could run (no CuPy); the rest still reports."""
+    pixel = pixel or {}
     pixel_passes = [_load(f) for name, f in pixel.items() if name != "verify"]
+    memory_payload = _load(memory) if memory else None
     probed = _load(capabilities) if capabilities else None
     report = {
         "schema": "rapidshot-benchmark/1",
@@ -374,9 +410,11 @@ def build_report(pre: dict, skipped: dict, pixel: dict, call=None, memory=None,
         "preflight": pre,
         "skipped": skipped,
         "pixel_age": {"summary": summarise(pixel_passes, PIXEL_AGE),
-                      "verify": statuses([_load(pixel["verify"])]),
+                      "verify": statuses([_load(pixel["verify"])] if "verify" in pixel else []),
                       "statuses": statuses(pixel_passes)},
-        "environment": _environment(pixel_passes),
+        # The memory runner records the same environment, so a machine with no
+        # tensor path still says what it is.
+        "environment": _environment(pixel_passes + [memory_payload]),
     }
     report["hdr"] = hdr_state(report["environment"], probed)
     report["cross_adapter"] = (probed or {}).get("cross_adapter")
@@ -386,9 +424,9 @@ def build_report(pre: dict, skipped: dict, pixel: dict, call=None, memory=None,
                                    "verify": statuses([_load(call["verify"])]),
                                    "statuses": statuses(call_passes)}
     if memory:
-        payload = _load(memory)
-        report["memory"] = {"seconds": (payload or {}).get("seconds"),
-                            "summary": summarise_memory(payload)}
+        report["memory"] = {"seconds": (memory_payload or {}).get("seconds"),
+                            "summary": summarise_memory(memory_payload),
+                            "skipped": memory_skipped(pre)}
     return sanitise(report)
 
 
@@ -397,6 +435,11 @@ def _native_label(native: dict) -> str:
         return "absent"
     version = native.get("wheel_version") or native.get("version") or "?"
     return version if native.get("source") == "rapidshot-native wheel" else f"{version} (development build)"
+
+
+def _windows_label(pre: dict) -> str:
+    release, version = pre.get("windows_release"), pre.get("windows")
+    return f"Windows {release} ({version})" if release else f"Windows {version}"
 
 
 def _hdr_line(hdr: dict) -> str:
@@ -454,17 +497,20 @@ def render_markdown(report: dict) -> str:
         f"at {display.get('refresh_hz', '?')} Hz",
         f"- **Versions:** rapidshot {pre.get('rapidshot')}, rapidshot-native "
         f"{_native_label(native)}, "
-        f"Python {pre.get('python')}, Windows {pre.get('windows')}",
+        f"Python {pre.get('python')}, {_windows_label(pre)}",
         f"- **HDR:** {_hdr_line(report.get('hdr') or {})}",
         f"- **Cross-adapter:** {_cross_adapter_line(report.get('cross_adapter'))}",
         "",
-        f"Screen to a (1, 3, 640, 640) FP16 tensor on CUDA; medians of {report.get('passes')} "
-        f"pass{'' if report.get('passes') == 1 else 'es'}. "
-        "Pixel age is from `Present()` to the tensor.",
+        "Screen to a (1, 3, 640, 640) FP16 tensor on CUDA"
+        + (f"; medians of {report['passes']} pass{'' if report['passes'] == 1 else 'es'}. "
+           "Pixel age is from `Present()` to the tensor." if report.get("passes") else "."),
         "",
-        "| path | unique fps | pixel age p50 / p95 | CPU per frame | passes |",
-        "| --- | ---: | ---: | ---: | ---: |",
     ]
+    if report["pixel_age"]["summary"]:
+        lines += ["| path | unique fps | pixel age p50 / p95 | CPU per frame | passes |",
+                  "| --- | ---: | ---: | ---: | ---: |"]
+    else:
+        lines.append("No path produced a tensor.")
     for path, row in report["pixel_age"]["summary"].items():
         flag = " *" if "contaminated" in row["statuses"] else ""
         lines.append(f"| {LABELS.get(path, path)} | {_cell(row['unique_fps'])}{flag} | "
@@ -476,14 +522,22 @@ def render_markdown(report: dict) -> str:
                if p not in report["pixel_age"]["summary"]}
     if missing or report["skipped"]:
         lines += ["", "Not measured:"]
+        # One line per reason: without CuPy it is the same one for every path.
+        by_reason = {}
         for path, reason in report["skipped"].items():
-            lines.append(f"- {LABELS.get(path, path)}: {reason}")
+            by_reason.setdefault(reason, []).append(LABELS.get(path, path))
+        for reason, labels in by_reason.items():
+            lines.append(f"- {', '.join(labels)}: {reason}")
         for path, runs in missing.items():
             reason = next((r["reason"] for r in runs if r["reason"]), runs[0]["status"])
             lines.append(f"- {LABELS.get(path, path)}: {runs[0]['status']} — {reason}")
     if "call_duration" in report:
         lines += ["", "CPU per tensor (call-duration harness; its fps is bounded by its test window):",
-                  "", "| path | CPU per frame | call p50 |", "| --- | ---: | ---: |"]
+                  ""]
+        if report["call_duration"]["summary"]:
+            lines += ["| path | CPU per frame | call p50 |", "| --- | ---: | ---: |"]
+        else:
+            lines.append("No path produced a tensor.")
         for path, row in report["call_duration"]["summary"].items():
             lines.append(f"| {LABELS.get(path, path)} | {_cell(row['cpu_ms_per_frame'], 2)} ms | "
                          f"{_cell(row['call_p50_ms'], 2)} ms |")
@@ -502,6 +556,10 @@ def render_markdown(report: dict) -> str:
                              f"{_num(m.get('working_set_mb'))} MB | "
                              f"{_num(m.get('capture_mb'), sign=True)} MB | "
                              f"{'—' if growth is None else f'{growth:+.3f} MB/s'} |")
+        memory_skips = report["memory"].get("skipped") or {}
+        if memory_skips:
+            lines += ["", "Memory not measured:"]
+            lines += [f"- {library}: {reason}" for library, reason in memory_skips.items()]
     return "\n".join(lines) + "\n"
 
 
@@ -515,9 +573,13 @@ def _print_plan(pre, paths, skipped, args):
     print(f"  GPUs: {', '.join(pre['adapters']) or 'none'} ({pre['topology']})")
     print(f"  display: {display.get('width', '?')}x{display.get('height', '?')} "
           f"at {display.get('refresh_hz', '?')} Hz")
-    print(f"  will measure: {', '.join(paths)}")
+    print(f"  will measure: {', '.join(paths) or 'no path to a tensor'}")
     for path, reason in skipped.items():
         print(f"  skipping {path}: {reason}")
+    if args.full:
+        print(f"  memory: {', '.join(memory_libraries(pre))}")
+        for library, reason in memory_skipped(pre).items():
+            print(f"  skipping {library} memory: {reason}")
     steps = 1 + args.passes
     estimate = steps * len(paths) * (args.seconds + 6) * (2 if args.full else 1)
     if args.full:
@@ -551,6 +613,11 @@ def main(argv=None) -> int:
             parser.error(f"unknown path(s): {', '.join(unknown)}")
         paths = [p for p in paths if p in args.paths]
     problems = blockers(pre)
+    if not paths and not args.full:
+        # Only the capability probe would run; --full still measures memory,
+        # and records the machine, HDR state and captured format beside it.
+        problems.append("no path to a tensor can run here (see above); run with --full "
+                        "to measure memory, HDR and capture format without them")
     _print_plan(pre, paths, skipped, args)
     if problems:
         for problem in problems:
@@ -570,8 +637,9 @@ def main(argv=None) -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
     capabilities = run_capabilities(run_dir)
-    pixel = run_pixel_age(run_dir, paths, args.passes, args.seconds)
-    call = run_call_duration(run_dir, paths, args.passes, args.seconds) if args.full else None
+    pixel = run_pixel_age(run_dir, paths, args.passes, args.seconds) if paths else None
+    call = (run_call_duration(run_dir, paths, args.passes, args.seconds)
+            if args.full and paths else None)
     memory = run_memory(run_dir, pre, args.seconds) if args.full else None
 
     report = build_report(pre, skipped, pixel, call, memory, capabilities)

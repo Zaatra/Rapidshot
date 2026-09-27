@@ -526,7 +526,9 @@ passes timed by pixel age. About five minutes; a test pattern fills the screen.
 It writes a Markdown report and a JSON file with no hostname, username or
 device IDs in them. Please
 [open a benchmark issue](https://github.com/Zaatra/Rapidshot/issues/new?template=benchmark.md)
-with both. Add `cupy-cuda12x` or `cupy-cuda13x` to include the GPU paths,
+with both. Every path ends in a tensor on CUDA, so the timed tables need an
+NVIDIA GPU and `cupy-cuda12x` or `cupy-cuda13x`; without them, `--full` still
+measures memory, HDR and the captured format. Add
 `--full` for CPU per tensor and memory as well (about ten minutes), and
 `--check` to see what would run without running it. The report also says
 whether HDR was on and whether frames can cross between your GPUs.

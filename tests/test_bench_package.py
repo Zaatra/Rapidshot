@@ -87,7 +87,8 @@ def preflight(**overrides):
             "test_source": "C:/x/latency_source.exe", "topology": "hybrid",
             "adapters": ["Intel(R) UHD Graphics", "NVIDIA GeForce RTX 4060 Laptop GPU"],
             "capture_adapters": ["Intel(R) UHD Graphics"],
-            "installed": {"mss": True, "dxcam": True, "winrt": True, "cupy": True, "psutil": True},
+            "installed": {"mss": True, "dxcam": True, "winrt": True, "cupy": True, "cv2": True,
+                          "psutil": True},
             "display": {"width": 2560, "height": 1600, "refresh_hz": 165}}
     base.update(overrides)
     return base
@@ -106,13 +107,61 @@ def test_one_gpu_does_not_attempt_a_crossing():
 
 
 def test_every_skip_says_how_to_fix_it():
-    pre = preflight(installed={"mss": False, "dxcam": True, "winrt": False, "cupy": False,
-                               "psutil": True})
+    pre = preflight(installed={"mss": False, "dxcam": True, "winrt": False, "cupy": True,
+                               "cv2": True, "psutil": True}, native=None)
     paths, skipped = cli.choose_paths(pre)
     assert paths == ["dxcam", "rapidshot-cpu"]
     assert "pip install mss" in skipped["mss"]
     assert "winrt" in skipped["dxcam-wgc"]
-    assert all("CuPy" in reason for path, reason in skipped.items() if path.startswith("rapidshot"))
+    assert all("rapidshot[native]" in reason for path, reason in skipped.items()
+               if path.startswith("rapidshot"))
+
+
+def test_without_cupy_nothing_is_promised_because_every_path_ends_on_cuda():
+    # 2.6.1 planned mss, DXcam and grab() here, then every one of them failed
+    # importing CuPy: an Intel-only machine reported two empty tables.
+    pre = preflight(topology="single", installed={"mss": True, "dxcam": True, "winrt": True,
+                                                  "cupy": False, "cv2": True, "psutil": True})
+    paths, skipped = cli.choose_paths(pre)
+    assert paths == []
+    assert set(skipped) == {"mss", "dxcam", "dxcam-wgc", "rapidshot-cpu", "rapidshot-cupy",
+                            "rapidshot-direct", "rapidshot-converter"}
+    assert all("CuPy" in reason and "NVIDIA" in reason for reason in skipped.values())
+
+
+def test_without_opencv_the_cpu_paths_name_it_and_the_gpu_paths_still_run():
+    pre = preflight(installed={"mss": True, "dxcam": True, "winrt": True, "cupy": True,
+                               "cv2": False, "psutil": True})
+    paths, skipped = cli.choose_paths(pre)
+    assert paths == ["rapidshot-cupy", "rapidshot-direct", "rapidshot-converter",
+                     "rapidshot-xadapter", "rapidshot-converter-xadapter"]
+    assert all("opencv-python" in skipped[p] for p in ("mss", "dxcam", "dxcam-wgc", "rapidshot-cpu"))
+    assert cli.memory_libraries(pre) == ["mss", "rapidshot", "rapidshot-frame"]
+    assert "opencv-python" in cli.memory_skipped(pre)["dxcam"]
+
+
+def test_without_cupy_check_refuses_a_run_that_would_measure_nothing(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "preflight", lambda: preflight(
+        installed={"mss": True, "dxcam": True, "winrt": True, "cupy": False, "cv2": True,
+                   "psutil": True}))
+    assert cli.main(["--check"]) == 2
+    captured = capsys.readouterr()
+    assert "will measure: no path to a tensor" in captured.out
+    assert "--full" in captured.err
+
+
+def test_without_cupy_full_measures_memory_and_skips_the_tensor_harnesses(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "preflight", lambda: preflight(
+        installed={"mss": True, "dxcam": True, "winrt": True, "cupy": False, "cv2": True,
+                   "psutil": True}))
+    monkeypatch.setattr(cli, "WORK", tmp_path)
+    ran = []
+    monkeypatch.setattr(cli, "run_capabilities", lambda d: ran.append("capabilities") or d / "c.json")
+    monkeypatch.setattr(cli, "run_pixel_age", lambda *a: pytest.fail("pixel age with no paths"))
+    monkeypatch.setattr(cli, "run_call_duration", lambda *a: pytest.fail("call duration with no paths"))
+    monkeypatch.setattr(cli, "run_memory", lambda *a: ran.append("memory") or tmp_path / "m.json")
+    assert cli.main(["--yes", "--full", "--out", str(tmp_path / "out")]) == 0
+    assert ran == ["capabilities", "memory"]
 
 
 def test_without_the_native_wheel_the_gpu_paths_name_it():
@@ -247,8 +296,8 @@ def memory_row(library, workload, ws, over, growth, status="passed"):
 
 
 def test_full_measures_memory_for_the_installed_libraries_only():
-    pre = preflight(installed={"mss": False, "dxcam": True, "winrt": False, "cupy": True,
-                               "psutil": True})
+    pre = preflight(installed={"mss": False, "dxcam": True, "winrt": False, "cupy": False,
+                               "cv2": True, "psutil": True})
     assert cli.memory_libraries(pre) == ["dxcam", "rapidshot", "rapidshot-frame"]
 
 
@@ -311,6 +360,29 @@ def test_hdr_falls_back_to_the_probe_when_no_pass_recorded_an_environment(tmp_pa
     files = write_passes(tmp_path, [[row("dxcam", 95, 37, 11)]])
     text = cli.render_markdown(cli.build_report(preflight(), {}, files, capabilities=probed))
     assert "**HDR:** off (panel does not support HDR; SDR, 8 bpc)" in text
+
+
+def test_a_report_with_no_tensor_path_still_says_what_the_machine_is(tmp_path):
+    environment = {"hardware": {"system": {"Manufacturer": "HP", "Model": "ProDesk 600 G6"}}}
+    memory = tmp_path / "memory.json"
+    memory.write_text(json.dumps({"seconds": 8.0, "environment": environment,
+                                  "results": [memory_row("rapidshot", "static", 110.0, 12.3, 0.0)]}))
+    pre = preflight(installed={"mss": True, "dxcam": True, "winrt": True, "cupy": False,
+                               "cv2": False, "psutil": True})
+    report = cli.build_report(pre, {"mss": cli.NO_CUPY, "rapidshot-cpu": cli.NO_CUPY}, None,
+                              memory=memory)
+    text = cli.render_markdown(report)
+    assert "**Machine:** HP ProDesk 600 G6" in text
+    assert "No path produced a tensor." in text and "| path |" not in text
+    assert "medians of" not in text
+    assert "- mss, RapidShot grab(): every path ends in an FP16 tensor on CUDA" in text
+    assert "- dxcam: DXcam's colour conversion needs OpenCV" in text
+
+
+def test_windows_11_is_not_reported_as_windows_10():
+    assert cli._windows_label(preflight(windows_release="11")) == "Windows 11 (10.0.26200)"
+    # Reports written by 2.6.1 have no release field.
+    assert cli._windows_label(preflight()) == "Windows 10.0.26200"
 
 
 def test_without_the_probe_the_report_says_so_rather_than_guessing(tmp_path):

@@ -10,6 +10,23 @@ each release can be traced back to the plan it implements.
 
 ## [Unreleased]
 
+### Fixed — `rapidshot benchmark`
+
+- **Without CuPy it no longer promises paths that cannot run.** Every path,
+  mss and DXcam included, ends in the same FP16 tensor on CUDA, but 2.6.1 only
+  skipped the three GPU paths when CuPy was missing: `--check` listed mss,
+  DXcam and `grab()`, each then failed importing CuPy, and an Intel-only
+  machine reported two empty tables. Now every tensor path is skipped with the
+  reason, a run that would measure nothing stops before starting and points to
+  `--full`, and `--full` measures memory, HDR state and the captured format
+  without the tensor harnesses. The report takes the machine's description from
+  the memory run when no timing pass recorded one.
+- **OpenCV is part of `rapidshot[benchmark]`.** The CPU paths resize with it
+  and DXcam's default colour conversion needs it; without it the DXcam memory
+  rows failed. The planner now says so instead of running them.
+- **Windows 11 is reported as Windows 11**, not by its `10.0.26200` kernel
+  version alone.
+
 ### Changed — benchmark harness
 
 - **`RAPIDSHOT_BENCH_EXCLUDE_CPUS` keeps named cores out of every run.** Set to
