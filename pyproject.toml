@@ -54,8 +54,9 @@ rapidshot = "rapidshot.__main__:main"
 # psutil for the harness's CPU accounting, the libraries it compares against,
 # and OpenCV, which both the CPU paths' resize and DXcam's default colour
 # conversion use. CuPy is not here, for the reason given under `all`: pick the
-# `gpu_cuda12` or `gpu_cuda13` extra as well. Every timed path ends in a tensor
-# on CUDA, so without it only memory, HDR and capture format are measured.
+# `gpu_cuda12` or `gpu_cuda13` extra as well to finish the tensor on CUDA, as
+# the README's tables do. Without it the tensor is finished in system memory,
+# or on the capture GPU for GpuConverter, and reported separately.
 benchmark = [
     "rapidshot-native>=0.2.1; platform_system == 'Windows'",
     "psutil>=5.9",

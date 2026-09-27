@@ -15,7 +15,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "benchmarks"))
 
-from rapidshot._bench import _paths, cli  # noqa: E402
+from rapidshot._bench import _paths, cli, section7_adapters  # noqa: E402
 
 MOVED = ["section7", "section7_adapters", "benchmark_contract", "ai_ingestion",
          "machine_inventory", "result_store", "result_validation", "telemetry",
@@ -117,16 +117,34 @@ def test_every_skip_says_how_to_fix_it():
                if path.startswith("rapidshot"))
 
 
-def test_without_cupy_nothing_is_promised_because_every_path_ends_on_cuda():
-    # 2.6.1 planned mss, DXcam and grab() here, then every one of them failed
-    # importing CuPy: an Intel-only machine reported two empty tables.
-    pre = preflight(topology="single", installed={"mss": True, "dxcam": True, "winrt": True,
-                                                  "cupy": False, "cv2": True, "psutil": True})
+NO_CUPY = {"mss": True, "dxcam": True, "winrt": True, "cupy": False, "cv2": True,
+           "psutil": True}
+
+
+def test_without_cupy_every_path_that_can_finish_elsewhere_is_planned():
+    # 2.6.1 planned the CPU paths for a CUDA finish line they could not reach;
+    # 2.6.2 dropped them. Without CuPy their tensor is finished in system memory,
+    # and GpuConverter's on the capture GPU -- the Intel desktop's measurement.
+    pre = preflight(topology="single", installed=NO_CUPY)
     paths, skipped = cli.choose_paths(pre)
-    assert paths == []
-    assert set(skipped) == {"mss", "dxcam", "dxcam-wgc", "rapidshot-cpu", "rapidshot-cupy",
-                            "rapidshot-direct", "rapidshot-converter"}
+    assert paths == ["mss", "dxcam", "dxcam-wgc", "rapidshot-cpu", "rapidshot-converter"]
+    assert paths == list(section7_adapters.NO_CUDA_PATHS)
+    assert set(skipped) == {"rapidshot-cupy", "rapidshot-direct"}
     assert all("CuPy" in reason and "NVIDIA" in reason for reason in skipped.values())
+    assert cli.tensor_target(pre) == "no-cuda"
+
+
+def test_an_nvidia_machine_without_cupy_skips_the_crossing_it_cannot_measure():
+    _, skipped = cli.choose_paths(preflight(installed=NO_CUPY))
+    assert "CuPy" in skipped["rapidshot-converter-xadapter"]
+    assert "CuPy" in skipped["rapidshot-xadapter"]
+
+
+def test_without_cupy_or_the_native_wheel_the_cpu_paths_still_run():
+    paths, skipped = cli.choose_paths(preflight(topology="single", installed=NO_CUPY,
+                                                native=None))
+    assert paths == ["mss", "dxcam", "dxcam-wgc", "rapidshot-cpu"]
+    assert "rapidshot[native]" in skipped["rapidshot-converter"]
 
 
 def test_without_opencv_the_cpu_paths_name_it_and_the_gpu_paths_still_run():
@@ -140,28 +158,46 @@ def test_without_opencv_the_cpu_paths_name_it_and_the_gpu_paths_still_run():
     assert "opencv-python" in cli.memory_skipped(pre)["dxcam"]
 
 
-def test_without_cupy_check_refuses_a_run_that_would_measure_nothing(monkeypatch, capsys):
+def test_check_refuses_a_run_that_would_measure_nothing(monkeypatch, capsys):
     monkeypatch.setattr(cli, "preflight", lambda: preflight(
-        installed={"mss": True, "dxcam": True, "winrt": True, "cupy": False, "cv2": True,
-                   "psutil": True}))
+        native=None, installed=dict(NO_CUPY, cv2=False)))
     assert cli.main(["--check"]) == 2
     captured = capsys.readouterr()
     assert "will measure: no path to a tensor" in captured.out
     assert "--full" in captured.err
 
 
-def test_without_cupy_full_measures_memory_and_skips_the_tensor_harnesses(monkeypatch, tmp_path):
-    monkeypatch.setattr(cli, "preflight", lambda: preflight(
-        installed={"mss": True, "dxcam": True, "winrt": True, "cupy": False, "cv2": True,
-                   "psutil": True}))
+def test_without_cupy_full_times_the_no_cuda_finish_lines_and_skips_call_duration(
+        monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "preflight", lambda: preflight(topology="single", installed=NO_CUPY))
     monkeypatch.setattr(cli, "WORK", tmp_path)
     ran = []
     monkeypatch.setattr(cli, "run_capabilities", lambda d: ran.append("capabilities") or d / "c.json")
-    monkeypatch.setattr(cli, "run_pixel_age", lambda *a: pytest.fail("pixel age with no paths"))
-    monkeypatch.setattr(cli, "run_call_duration", lambda *a: pytest.fail("call duration with no paths"))
+    monkeypatch.setattr(cli, "run_pixel_age",
+                        lambda d, paths, passes, seconds, target: ran.append((target, paths)) or {})
+    monkeypatch.setattr(cli, "run_call_duration", lambda *a: pytest.fail("call duration ends on CUDA"))
     monkeypatch.setattr(cli, "run_memory", lambda *a: ran.append("memory") or tmp_path / "m.json")
     assert cli.main(["--yes", "--full", "--out", str(tmp_path / "out")]) == 0
-    assert ran == ["capabilities", "memory"]
+    assert ran == ["capabilities", ("no-cuda", list(section7_adapters.NO_CUDA_PATHS)), "memory"]
+
+
+def test_the_no_cuda_harness_is_asked_for_by_name(monkeypatch, tmp_path):
+    seen = []
+    monkeypatch.setattr(cli, "_run", lambda module, args, log: seen.append(args) or 0)
+    cli.run_pixel_age(tmp_path, ["mss"], 1, 1.0, "no-cuda")
+    cli.run_pixel_age(tmp_path, ["mss"], 1, 1.0)
+    assert [a[a.index("--category") + 1] for a in seen] == ["no-cuda"] * 2 + ["ingestion"] * 2
+
+
+def test_no_cuda_rows_get_their_own_labelled_table(tmp_path):
+    files = write_passes(tmp_path, [[row("rapidshot-cpu", 100.0, 53.2, 10.0),
+                                     row("rapidshot-converter", 100.0, 42.1, 0.68)]])
+    text = cli.render_markdown(cli.build_report(preflight(), {}, files, target="no-cuda"))
+    assert "FP16 tensor, **no CUDA**" in text and "Not comparable with the CUDA table" in text
+    assert "| RapidShot grab() | system memory | 100.0 |" in text
+    assert "| RapidShot GpuConverter | capture GPU (D3D12) | 100.0 |" in text
+    cuda = cli.render_markdown(cli.build_report(preflight(), {}, files))
+    assert "tensor on CUDA" in cuda and "system memory" not in cuda
 
 
 def test_without_the_native_wheel_the_gpu_paths_name_it():
@@ -385,7 +421,7 @@ def test_a_report_with_no_tensor_path_still_says_what_the_machine_is(tmp_path):
     assert "**Machine:** HP ProDesk 600 G6" in text
     assert "No path produced a tensor." in text and "| path |" not in text
     assert "medians of" not in text
-    assert "- mss, RapidShot grab(): every path ends in an FP16 tensor on CUDA" in text
+    assert "- mss, RapidShot grab(): ends in an FP16 tensor on CUDA" in text
     assert "- dxcam: DXcam's colour conversion needs OpenCV" in text
 
 

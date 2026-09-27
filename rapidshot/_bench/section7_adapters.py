@@ -12,6 +12,9 @@ PATHS = ("mss", "dxcam", "dxcam-wgc", "rapidshot-cpu", "rapidshot-cupy",
          "rapidshot-xadapter", "rapidshot-xadapter-async", "rapidshot-xadapter-semaphore",
          "rapidshot-direct", "rapidshot-converter-xadapter", "rapidshot-converter")
 CPU_PATHS = PATHS[:4]
+#: What `--category no-cuda` measures: CPU capture to a NumPy tensor, and
+#: GpuConverter to its tensor on the capture adapter. Every other path ends on CUDA.
+NO_CUDA_PATHS = (*CPU_PATHS, "rapidshot-converter")
 
 #: The frame-ID marker is 48 cells of 8 px read from row 8, so it only decodes
 #: at 1:1. 384x16 BGRA is ~24 kB.
@@ -85,6 +88,9 @@ class Adapter:
             raw = None
         stages["capture_call_ms"] = (time.perf_counter() - t0) * 1000
         try:
+            if raw is None and cp is None:
+                # Only GpuConverter finishes without CUDA (NO_CUDA_PATHS).
+                return self._converter_capture(frame, stages, None)
             if raw is None:
                 from .gpu_tensor_to_cupy import CudaTensor
                 from rapidshot import native
@@ -156,7 +162,10 @@ class Adapter:
             # Idiomatic per backend; `canonical_rgb` stays the reference that
             # verification compares against. See pipeline_rgb's docstring.
             rgb = pipeline_rgb(raw, xp)
-            if xp is np:
+            if cp is None:
+                # Finished in system memory: nothing crosses to a device.
+                tensor = normalized_tensor(rgb, np)
+            elif xp is np:
                 h2d = rgb.nbytes
                 tensor = normalized_tensor(cp.asarray(rgb), cp)
             else:
@@ -241,6 +250,15 @@ class Adapter:
             tensor = self.view.array.view(cp.float16).reshape(1, 3, OUT, OUT)
             marker = self.marker_view.array.view(cp.uint8).reshape(
                 MARKER_CROP[3], MARKER_CROP[2], 4)
+        elif cp is None:
+            # No CUDA: the tensor stays on the capture adapter, complete, since
+            # process() waits on its D3D12 fence. The frame ID still has to be
+            # read, so the 24 kB marker crop comes back to the CPU -- timed,
+            # and inside the pixel age like every other path's marker read.
+            tensor = tensor_handle
+            t0 = time.perf_counter()
+            marker = marker_handle.numpy()[0]
+            stages["marker_readback_ms"] = (time.perf_counter() - t0) * 1000
         else:
             # No transfer at all: only possible when capture and CUDA are the
             # same adapter. `to_cupy()` raises CrossAdapterRequired otherwise,
@@ -260,7 +278,7 @@ class Adapter:
                 np.frombuffer(raw, dtype=np.uint8), self.reference_transfer).copy()
 
         t0 = time.perf_counter()
-        frame_id = decode_marker(marker, cp)
+        frame_id = decode_marker(marker, np if cp is None else cp)
         stages["marker_decode_ms"] = (time.perf_counter() - t0) * 1000
         self.sync()
         return Captured(tensor, frame_id, stages, 0, reference)

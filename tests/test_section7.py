@@ -447,3 +447,93 @@ def test_without_any_source_the_error_names_the_local_build(monkeypatch, tmp_pat
     monkeypatch.setitem(sys.modules, "rapidshot_native", module)
     missing = tmp_path / "missing.exe"
     assert section7.find_source(missing) == missing
+
+
+# -- no-cuda: the same tensor, finished without CUDA ---------------------------
+
+
+@pytest.mark.parametrize("category, reaches_cupy", [("no-cuda", False), ("ingestion", True)])
+def test_the_no_cuda_worker_never_imports_cupy(monkeypatch, tmp_path, capsys,
+                                               category, reaches_cupy):
+    """On the Intel desktop every worker died importing CuPy; this one must not
+    try. With CuPy unimportable, the worker gets as far as building its adapter."""
+    monkeypatch.setitem(sys.modules, "cupy", None)
+    handed = []
+
+    def adapter(path, cp, np_, **kwargs):
+        handed.append(cp)
+        raise RuntimeError("stop before capture")
+
+    monkeypatch.setattr(section7, "Adapter", adapter)
+    log = tmp_path / "presents.jsonl"
+    log.write_text("")
+    section7.main(category, ["--worker", "mss", "--present-log", str(log)])
+    row = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    if reaches_cupy:
+        assert "cupy" in row["error"].lower() and handed == []
+    else:
+        assert row["error"] == "RuntimeError: stop before capture" and handed == [None]
+
+
+def test_no_cuda_measures_the_cpu_paths_and_the_converter_by_default():
+    assert section7.default_paths("no-cuda") == [
+        "mss", "dxcam", "dxcam-wgc", "rapidshot-cpu", "rapidshot-converter"]
+    assert section7.default_paths("agent") == list(section7_adapters.CPU_PATHS)
+    assert section7.default_paths("ingestion") == list(section7_adapters.PATHS)
+
+
+@pytest.mark.parametrize("path", ["rapidshot-direct", "rapidshot-cupy",
+                                  "rapidshot-converter-xadapter"])
+def test_no_cuda_refuses_a_path_that_ends_on_cuda(path):
+    with pytest.raises(SystemExit):
+        section7.main("no-cuda", ["--paths", "mss", path])
+
+
+def frame_with_marker(frame_id, height=1080, width=1920):
+    frame = np.full((height, width, 4), 64, dtype=np.uint8)
+    frame[:16, :384] = marker(frame_id)
+    return frame
+
+
+def bare_adapter(path, cam):
+    adapter = object.__new__(section7_adapters.Adapter)
+    adapter.path, adapter.cp, adapter.np = path, None, np
+    adapter.verify = adapter.agent = False
+    adapter.cam, adapter.monitor = cam, None
+    adapter.converter = adapter.marker_converter = None
+    return adapter
+
+
+def test_a_cpu_path_without_cuda_finishes_in_system_memory(monkeypatch):
+    pytest.importorskip("cv2")
+    monkeypatch.setitem(sys.modules, "cupy", None)
+    cam = SimpleNamespace(grab=lambda: frame_with_marker(4242))
+    captured = bare_adapter("rapidshot-cpu", cam).capture()
+    assert isinstance(captured.tensor, np.ndarray)
+    assert (captured.tensor.shape, captured.tensor.dtype) == (contract.SHAPE, np.float16)
+    assert captured.frame_id == 4242 and captured.h2d_bytes == 0
+
+
+def test_gpuconverter_without_cuda_finishes_on_the_capture_gpu(monkeypatch):
+    """process() waits on its D3D12 fence, so its return is the finish line; the
+    frame ID comes from reading back only the 24 kB marker crop, timed."""
+    monkeypatch.setitem(sys.modules, "cupy", None)
+    released = []
+    frame = SimpleNamespace(release=lambda: released.append(True))
+    tensor = SimpleNamespace(numpy=lambda: pytest.fail("the tensor was read back in the timed path"))
+    marker_tensor = SimpleNamespace(numpy=lambda: marker(77)[None])
+    adapter = bare_adapter("rapidshot-converter", SimpleNamespace(grab_frame=lambda: frame))
+    adapter.converter = SimpleNamespace(process=lambda f: tensor)
+    adapter.marker_converter = SimpleNamespace(process=lambda f: marker_tensor)
+    captured = adapter.capture()
+    assert captured.tensor is tensor and captured.frame_id == 77
+    assert {"d3d_convert_ms", "marker_readback_ms", "marker_decode_ms"} <= set(captured.stages)
+    assert released == [True]
+
+
+def test_verification_reads_every_kind_of_tensor_back():
+    host = np.zeros(contract.SHAPE, np.float16)
+    assert section7.host_copy(host, None, np) is not None
+    assert section7.host_copy(SimpleNamespace(numpy=lambda: host), None, np) is host
+    cupy = SimpleNamespace(asnumpy=lambda t: host)
+    assert section7.host_copy(object(), cupy, np) is host

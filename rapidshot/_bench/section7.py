@@ -17,7 +17,7 @@ from .ai_ingestion import (RunLogs, MotionSource, MotionError, HealthGuard, _chi
                           save_results, stage)
 from .benchmark_contract import (PIPELINE_TOLERANCE_RGB8, SHAPE, TENSOR_GEOMETRY, PresentLog,
                                 canonical_rgb, percentiles, qpc_clock, sha256)
-from .section7_adapters import Adapter, PATHS, CPU_PATHS
+from .section7_adapters import Adapter, PATHS, CPU_PATHS, NO_CUDA_PATHS
 from . import detection as detection_module
 from . import machine_inventory
 from . import scenes as scenes_module
@@ -113,6 +113,28 @@ class VisualSource(MotionSource):
         super().check()
 
 
+#: Categories whose workers never import CuPy. `no-cuda` is pixel age to the same
+#: (1, 3, 640, 640) FP16 tensor, finished where a machine without NVIDIA keeps
+#: it: in system memory for CPU capture, on the capture GPU for GpuConverter.
+CUDA_FREE = ("agent", "no-cuda")
+
+
+def default_paths(category):
+    if category == "agent":
+        return list(CPU_PATHS)
+    if category == "no-cuda":
+        return list(NO_CUDA_PATHS)
+    return list(PATHS)
+
+
+def host_copy(tensor, cp, np):
+    """The tensor as a NumPy array, for verification only: a D3D12 GpuTensor
+    reads itself back, a CuPy array is copied off the device, NumPy is itself."""
+    if hasattr(tensor, "numpy"):  # GpuTensor; ndarray has no .numpy()
+        return tensor.numpy()
+    return np.asarray(tensor) if cp is None else cp.asnumpy(tensor)
+
+
 def worker(args):
     result = {"path": args.worker, "category": args.category}
     # Read before the imports below, not after. NumPy's BLAS, ONNX Runtime and
@@ -126,7 +148,7 @@ def worker(args):
         stage("imports", path=args.worker)
         import numpy as np
         import psutil
-        if args.category != "agent":
+        if args.category not in CUDA_FREE:
             import cupy as cp
         now, frequency = qpc_clock()
         tracker = PresentLog(args.present_log, frequency)
@@ -216,7 +238,7 @@ def worker(args):
                 # in RGB8, which FP16 represents exactly for k/255, against the
                 # documented tolerance, and record the deviation actually seen.
                 reference = canonical_rgb(sample.reference, np).astype(np.int16)
-                actual = cp.asnumpy(sample.tensor)
+                actual = host_copy(sample.tensor, cp, np)
                 if actual.shape != SHAPE or actual.dtype != np.float16:
                     raise ValueError(f"tensor is {actual.shape} {actual.dtype}, expected {SHAPE} float16")
                 rgb8 = np.rint(actual[0].astype(np.float32) * 255).transpose(1, 2, 0).astype(np.int16)
@@ -654,7 +676,8 @@ def parse_result(path, verify, returncode, stdout, stderr):
 def main(category="ingestion", argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--worker", choices=PATHS)
-    parser.add_argument("--category", choices=("ingestion", "inference", "agent"), default=category)
+    parser.add_argument("--category", choices=("ingestion", "inference", "agent", "no-cuda"),
+                        default=category)
     parser.add_argument("--paths", nargs="+", choices=PATHS)
     parser.add_argument("--seconds", type=float, default=8)
     parser.add_argument("--warmup", type=int, default=5)
@@ -751,7 +774,11 @@ def main(category="ingestion", argv=None):
         row = worker(args)
         print(json.dumps(row, allow_nan=False), flush=True)
         return int("error" in row)
-    args.paths = args.paths or list(CPU_PATHS if args.category == "agent" else PATHS)
+    args.paths = args.paths or default_paths(args.category)
+    if args.category == "no-cuda" and set(args.paths) - set(NO_CUDA_PATHS):
+        parser.error("--category no-cuda measures " + ", ".join(NO_CUDA_PATHS) + "; "
+                     + ", ".join(sorted(set(args.paths) - set(NO_CUDA_PATHS)))
+                     + " end on CUDA")
     # Pinned here, in the parent, before any worker is spawned: affinity is
     # inherited, so this is the only place it can be applied early enough for
     # every child. Each worker verifies it independently anyway, because

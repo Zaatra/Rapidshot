@@ -19,10 +19,10 @@ pip install "rapidshot[benchmark]"
 rapidshot benchmark
 ```
 
-Add `cupy-cuda12x` or `cupy-cuda13x` (matching your CUDA driver): every timed
-path ends in a tensor on CUDA. Without an NVIDIA GPU, run `rapidshot benchmark
---full`, which still measures memory, HDR and the captured format. `--full`
-also includes CPU per tensor and memory. It takes
+With an NVIDIA GPU, add `cupy-cuda12x` or `cupy-cuda13x` (matching your CUDA
+driver) so the tensor is finished on CUDA. Without one, the benchmark finishes
+it in system memory, or on the capture GPU for GpuConverter, and says so in the
+report. `--full` also includes CPU per tensor and memory. It takes
 about five minutes (ten with `--full`) and fills the screen with a test
 pattern; please leave the machine alone while it runs.
 

@@ -126,19 +126,32 @@ def preflight() -> dict:
     return info
 
 
-#: Why every path is skipped on a machine without CuPy. The tensor is what makes
-#: the rows comparable, so there is no CPU-only stand-in to fall back to.
-NO_CUPY = ("every path ends in an FP16 tensor on CUDA, which needs an NVIDIA GPU and "
-           "CuPy for your CUDA version, e.g. pip install cupy-cuda12x")
+#: Why a path is skipped without CuPy: it ends on CUDA, which needs NVIDIA.
+NO_CUPY = ("ends in an FP16 tensor on CUDA, which needs an NVIDIA GPU and CuPy for your "
+           "CUDA version, e.g. pip install cupy-cuda12x")
 NO_CV2 = "resizes with OpenCV on the CPU: pip install opencv-python"
+NO_NATIVE = 'needs rapidshot-native: pip install "rapidshot[native]"'
+#: Where the tensor is finished, per target. The two never share a table.
+TARGETS = {
+    "cuda": "ingestion",
+    "no-cuda": "no-cuda",
+}
+
+
+def tensor_target(pre: dict) -> str:
+    """"cuda" with CuPy, the README table's finish line; otherwise "no-cuda": the
+    same tensor finished in system memory (CPU capture) or on the capture GPU
+    (GpuConverter), which is where a machine without NVIDIA keeps it."""
+    return "cuda" if pre["installed"]["cupy"] else "no-cuda"
 
 
 def choose_paths(pre: dict):
     """(paths to run, {path: why it is skipped}). Nothing is skipped silently.
 
-    mss, DXcam and grab() are CPU capture, but the harness still converts their
-    frames to the same FP16 tensor on CUDA as the GPU paths -- with cv2 on the
-    CPU, then CuPy -- so without CuPy nothing here can produce a row.
+    mss, DXcam and grab() are CPU capture, resized with cv2 on the CPU. With CuPy
+    their tensor then goes to CUDA like every GPU path's; without it, it stays in
+    system memory, and GpuConverter is the one GPU path that finishes without
+    CUDA -- on the capture adapter.
     """
     have = pre["installed"]
     cpu, skipped = [], {}
@@ -155,26 +168,22 @@ def choose_paths(pre: dict):
     else:
         skipped["dxcam"] = "not installed: pip install dxcam"
     cpu.append("rapidshot-cpu")
+    if not have.get("cv2"):
+        skipped.update({p: NO_CV2 for p in cpu})
+        cpu = []
 
     gpu = ["rapidshot-cupy", "rapidshot-direct", "rapidshot-converter"]
     if pre["topology"] == "hybrid":
         # Capture on one GPU, CUDA on another: the case convert-before-transfer
         # exists for, and the only one where the cross-adapter rows mean anything.
         gpu += ["rapidshot-xadapter", "rapidshot-converter-xadapter"]
-
     if not have["cupy"]:
-        skipped.update({p: NO_CUPY for p in cpu})
-        cpu = []
-    elif not have.get("cv2"):
-        skipped.update({p: NO_CV2 for p in cpu})
-        cpu = []
+        skipped.update({p: NO_CUPY for p in gpu if p != "rapidshot-converter"})
+        gpu = ["rapidshot-converter"]
     if not pre["native"]:
-        skipped.update({p: 'needs rapidshot-native: pip install "rapidshot[native]"' for p in gpu})
-    elif not have["cupy"]:
-        skipped.update({p: NO_CUPY for p in gpu})
-    else:
-        cpu += gpu
-    return cpu, skipped
+        skipped.update({p: NO_NATIVE for p in gpu})
+        gpu = []
+    return cpu + gpu, skipped
 
 
 def blockers(pre: dict) -> list:
@@ -212,8 +221,9 @@ def _run(module: str, args: list, log: Path) -> int:
         return proc.wait()
 
 
-def run_pixel_age(run_dir: Path, paths: list, passes: int, seconds: float) -> dict:
-    common = ["--category", "ingestion", "--workload", "motion", "--paths", *paths,
+def run_pixel_age(run_dir: Path, paths: list, passes: int, seconds: float,
+                  target: str = "cuda") -> dict:
+    common = ["--category", TARGETS[target], "--workload", "motion", "--paths", *paths,
               "--continue-on-failure"]
     files = {}
     steps = [("verify", ["--verify"])] + [(f"pass{n}", ["--seconds", str(seconds)])
@@ -405,8 +415,8 @@ def _environment(payloads: list):
 
 
 def build_report(pre: dict, skipped: dict, pixel=None, call=None, memory=None,
-                 capabilities=None) -> dict:
-    """``pixel`` is None when no path could run (no CuPy); the rest still reports."""
+                 capabilities=None, target="cuda") -> dict:
+    """``pixel`` is None when no path could run; the rest still reports."""
     pixel = pixel or {}
     pixel_passes = [_load(f) for name, f in pixel.items() if name != "verify"]
     memory_payload = _load(memory) if memory else None
@@ -417,7 +427,8 @@ def build_report(pre: dict, skipped: dict, pixel=None, call=None, memory=None,
         "recorded": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "preflight": pre,
         "skipped": skipped,
-        "pixel_age": {"summary": summarise(pixel_passes, PIXEL_AGE),
+        "pixel_age": {"target": target,
+                      "summary": summarise(pixel_passes, PIXEL_AGE),
                       "verify": statuses([_load(pixel["verify"])] if "verify" in pixel else []),
                       "statuses": statuses(pixel_passes)},
         # The memory runner records the same environment, so a machine with no
@@ -488,6 +499,23 @@ def _cell(stat, digits=1):
     return "—" if not stat else f"{stat['median']:.{digits}f}"
 
 
+#: Where a no-CUDA row's tensor ends up; every CPU capture path's is system memory.
+FINISHED_IN = {"rapidshot-converter": "capture GPU (D3D12)"}
+
+
+def _pixel_age_heading(report: dict) -> str:
+    passes = report.get("passes")
+    tail = (f"; medians of {passes} pass{'' if passes == 1 else 'es'}. "
+            "Pixel age is from `Present()` to the tensor." if passes else ".")
+    if report["pixel_age"].get("target") == "no-cuda":
+        # Its own table: these rows answer the README's question with a
+        # different finish line, and must never be read beside its CUDA rows.
+        return ("Screen to a (1, 3, 640, 640) FP16 tensor, **no CUDA**: in system memory "
+                "after CPU capture, on the capture GPU (D3D12) after GpuConverter. Not "
+                "comparable with the CUDA table in the README" + tail)
+    return "Screen to a (1, 3, 640, 640) FP16 tensor on CUDA" + tail
+
+
 def render_markdown(report: dict) -> str:
     pre = report["preflight"]
     env = report.get("environment") or {}
@@ -509,19 +537,21 @@ def render_markdown(report: dict) -> str:
         f"- **HDR:** {_hdr_line(report.get('hdr') or {})}",
         f"- **Cross-adapter:** {_cross_adapter_line(report.get('cross_adapter'))}",
         "",
-        "Screen to a (1, 3, 640, 640) FP16 tensor on CUDA"
-        + (f"; medians of {report['passes']} pass{'' if report['passes'] == 1 else 'es'}. "
-           "Pixel age is from `Present()` to the tensor." if report.get("passes") else "."),
+        _pixel_age_heading(report),
         "",
     ]
+    no_cuda = report["pixel_age"].get("target") == "no-cuda"
     if report["pixel_age"]["summary"]:
-        lines += ["| path | unique fps | pixel age p50 / p95 | CPU per frame | passes |",
-                  "| --- | ---: | ---: | ---: | ---: |"]
+        lines += (["| path | tensor in | unique fps | pixel age p50 / p95 | CPU per frame | passes |",
+                   "| --- | --- | ---: | ---: | ---: | ---: |"] if no_cuda else
+                  ["| path | unique fps | pixel age p50 / p95 | CPU per frame | passes |",
+                   "| --- | ---: | ---: | ---: | ---: |"])
     else:
         lines.append("No path produced a tensor.")
     for path, row in report["pixel_age"]["summary"].items():
         flag = " *" if "contaminated" in row["statuses"] else ""
-        lines.append(f"| {LABELS.get(path, path)} | {_cell(row['unique_fps'])}{flag} | "
+        where = f" {FINISHED_IN.get(path, 'system memory')} |" if no_cuda else ""
+        lines.append(f"| {LABELS.get(path, path)} |{where} {_cell(row['unique_fps'])}{flag} | "
                      f"{_cell(row['age_p50_ms'])} / {_cell(row['age_p95_ms'])} ms | "
                      f"{_cell(row['cpu_ms_per_frame'])} ms | {row['passes']} |")
     if any("contaminated" in r["statuses"] for r in report["pixel_age"]["summary"].values()):
@@ -539,6 +569,9 @@ def render_markdown(report: dict) -> str:
         for path, runs in missing.items():
             reason = next((r["reason"] for r in runs if r["reason"]), runs[0]["status"])
             lines.append(f"- {LABELS.get(path, path)}: {runs[0]['status']} — {reason}")
+    if report["pixel_age"].get("target") == "no-cuda" and "memory" in report:
+        lines += ["", "CPU per tensor (call-duration harness): not measured; it ends on CUDA. "
+                  "The CPU per frame above is the same cost, from the pixel-age frames."]
     if "call_duration" in report:
         lines += ["", "CPU per tensor (call-duration harness; its fps is bounded by its test window):",
                   ""]
@@ -582,6 +615,9 @@ def _print_plan(pre, paths, skipped, args):
     print(f"  display: {display.get('width', '?')}x{display.get('height', '?')} "
           f"at {display.get('refresh_hz', '?')} Hz")
     print(f"  will measure: {', '.join(paths) or 'no path to a tensor'}")
+    if paths and tensor_target(pre) == "no-cuda":
+        print("  no CUDA: tensors finish in system memory, or on the capture GPU for "
+              "GpuConverter; reported in their own table")
     for path, reason in skipped.items():
         print(f"  skipping {path}: {reason}")
     if args.full:
@@ -589,7 +625,8 @@ def _print_plan(pre, paths, skipped, args):
         for library, reason in memory_skipped(pre).items():
             print(f"  skipping {library} memory: {reason}")
     steps = 1 + args.passes
-    estimate = steps * len(paths) * (args.seconds + 6) * (2 if args.full else 1)
+    harnesses = 2 if args.full and tensor_target(pre) == "cuda" else 1
+    estimate = steps * len(paths) * (args.seconds + 6) * harnesses
     if args.full:
         estimate += len(MEMORY_WORKLOADS) * len(memory_libraries(pre)) * (args.seconds + 4)
     print(f"  about {max(1, round(estimate / 60))} min. A test pattern will fill the screen; "
@@ -645,12 +682,16 @@ def main(argv=None) -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
     capabilities = run_capabilities(run_dir)
-    pixel = run_pixel_age(run_dir, paths, args.passes, args.seconds) if paths else None
+    target = tensor_target(pre)
+    pixel = (run_pixel_age(run_dir, paths, args.passes, args.seconds, target)
+             if paths else None)
+    # The call-duration harness has one finish line, CUDA; without it the pixel-age
+    # table's CPU-per-frame column is the CPU cost, from the same frames.
     call = (run_call_duration(run_dir, paths, args.passes, args.seconds)
-            if args.full and paths else None)
+            if args.full and paths and target == "cuda" else None)
     memory = run_memory(run_dir, pre, args.seconds) if args.full else None
 
-    report = build_report(pre, skipped, pixel, call, memory, capabilities)
+    report = build_report(pre, skipped, pixel, call, memory, capabilities, target)
     report["duration_s"] = round(time.monotonic() - started)
     markdown = render_markdown(report)
     args.out.mkdir(parents=True, exist_ok=True)

@@ -10,6 +10,19 @@ each release can be traced back to the plan it implements.
 
 ## [Unreleased]
 
+### Added — `rapidshot benchmark`
+
+- **Pixel age without CUDA.** Every published row finishes the (1, 3, 640, 640)
+  FP16 tensor on CUDA, so a machine without an NVIDIA GPU measured nothing.
+  Without CuPy the benchmark now runs the harness's new `no-cuda` category: the
+  same tensor, finished in system memory for mss, DXcam and `grab()`, and on
+  the capture GPU for `GpuConverter`, whose `process()` returns once its D3D12
+  fence has signalled; its frame ID is read from a 24 kB marker crop, timed.
+  These rows get a table of their own, labelled by where each tensor ends, and
+  are not comparable with the CUDA table. The call-duration harness still ends
+  on CUDA and is skipped. Prototyped and verified on an Intel Core Ultra 5 235
+  desktop with no CUDA: every path within 1 RGB8 level of the reference.
+
 ### Fixed — `rapidshot benchmark`
 
 - **A memory row measured while the test pattern had stopped now says so.**
