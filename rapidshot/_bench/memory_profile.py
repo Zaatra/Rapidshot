@@ -108,9 +108,10 @@ def _capture_loop(library):
     """
     if library == "mss":
         import mss
+        from .benchmark_contract import primary_monitor
 
         session = mss.mss()
-        monitor = session.monitors[1]
+        monitor = primary_monitor(session.monitors)
 
         def grab():
             session.grab(monitor)

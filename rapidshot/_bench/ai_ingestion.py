@@ -182,10 +182,11 @@ def _close_camera(cam):
 
 def _adapter_mss(cp, np, verify=False):
     import mss
+    from .benchmark_contract import primary_monitor
 
     sct = mss.mss()
     try:
-        monitor = sct.monitors[1]
+        monitor = primary_monitor(sct.monitors)
     except BaseException:
         sct.close()
         raise

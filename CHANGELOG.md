@@ -28,6 +28,13 @@ each release can be traced back to the plan it implements.
   memory harness rounded fps to one decimal, so one frame in eight seconds
   (0.125) became 0.1 and failed the 5% throughput check -- which is what
   flagged the stalled rows above, by accident. It now keeps three decimals.
+- **mss captures the primary display.** Every harness took `monitors[1]`, which
+  is the first display Windows enumerates, not the primary -- on an Intel
+  desktop with two, it was the secondary. mss's pixel-age verification failed
+  there, and its memory rows were measured on a screen the test source was not
+  drawing on. The harnesses now use the display mss marks as primary (10.2 and
+  later), or the one at the desktop origin. Published mss rows are unaffected:
+  they were recorded on single-display machines and passed verification.
 
 ## [2.6.2] - 2026-09-27
 

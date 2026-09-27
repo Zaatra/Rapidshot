@@ -389,6 +389,40 @@ def test_a_report_with_no_tensor_path_still_says_what_the_machine_is(tmp_path):
     assert "- dxcam: DXcam's colour conversion needs OpenCV" in text
 
 
+SECONDARY_FIRST = [{"left": -1920, "top": 0, "width": 3840, "height": 1080},
+                   {"left": 1920, "top": 0, "width": 1920, "height": 1080},
+                   {"left": 0, "top": 0, "width": 1920, "height": 1080}]
+
+
+@pytest.mark.parametrize("monitors, expected", [
+    # mss 10.2 on an Intel desktop: the HDMI secondary enumerated first.
+    ([SECONDARY_FIRST[0], dict(SECONDARY_FIRST[1], is_primary=False),
+      dict(SECONDARY_FIRST[2], is_primary=True)], 2),
+    # mss < 10.2 has no is_primary; the primary is the one at the desktop origin.
+    (SECONDARY_FIRST, 2),
+    # One display, as on every machine the published rows came from.
+    (SECONDARY_FIRST[:1] + SECONDARY_FIRST[2:], 1),
+    # Nothing to go on: the old behaviour, not an exception.
+    ([SECONDARY_FIRST[0], {"left": 5, "top": 5, "width": 1, "height": 1}], 1),
+])
+def test_mss_captures_the_primary_display_where_the_source_draws(monitors, expected):
+    from rapidshot._bench.benchmark_contract import primary_monitor
+    assert primary_monitor(monitors) is monitors[expected]
+
+
+def test_no_harness_hard_codes_the_first_enumerated_display():
+    """`sct.monitors[1]` failed mss's pixel-age verification on a two-display
+    desktop and measured its memory rows on the wrong screen."""
+    import re
+    offenders = [f"{path.relative_to(REPO)}:{number}"
+                 for folder in (REPO / "rapidshot" / "_bench", REPO / "benchmarks")
+                 for path in sorted(folder.glob("*.py"))
+                 for number, line in enumerate(
+                     path.read_text(encoding="utf-8").splitlines(), 1)
+                 if re.search(r"\w\.monitors\[1\]", line)]
+    assert offenders == []
+
+
 def test_windows_11_is_not_reported_as_windows_10():
     assert cli._windows_label(preflight(windows_release="11")) == "Windows 11 (10.0.26200)"
     # Reports written by 2.6.1 have no release field.

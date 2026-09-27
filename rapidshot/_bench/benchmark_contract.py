@@ -167,3 +167,20 @@ def sha256(path):
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def primary_monitor(monitors):
+    """mss's entry for the primary display, which is where the test source draws.
+
+    Not ``monitors[1]``: that is the first display Windows enumerates, which on a
+    machine with two is as often the secondary. mss >= 10.2 marks the primary;
+    older versions do not, but on Windows the primary is by definition the one
+    at the desktop origin.
+    """
+    displays = list(monitors[1:])
+    for test in (lambda m: m.get("is_primary"),
+                 lambda m: (m.get("left"), m.get("top")) == (0, 0)):
+        match = next((m for m in displays if test(m)), None)
+        if match is not None:
+            return match
+    return displays[0]

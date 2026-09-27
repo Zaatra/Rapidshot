@@ -5,7 +5,8 @@ import sys
 import time
 
 from .benchmark_contract import (canonical_rgb, normalized_tensor, decode_marker,
-                                pipeline_rgb, CELL, MARKER_BITS, MARKER_HEIGHT, OUT)
+                                pipeline_rgb, primary_monitor, CELL, MARKER_BITS,
+                                MARKER_HEIGHT, OUT)
 
 PATHS = ("mss", "dxcam", "dxcam-wgc", "rapidshot-cpu", "rapidshot-cupy",
          "rapidshot-xadapter", "rapidshot-xadapter-async", "rapidshot-xadapter-semaphore",
@@ -41,7 +42,7 @@ class Adapter:
             import mss
             self.cam = mss.mss()
             try:
-                self.monitor = self.cam.monitors[1]
+                self.monitor = primary_monitor(self.cam.monitors)
             except BaseException:
                 self.close()
                 raise
