@@ -362,30 +362,31 @@ def statuses(payloads: list) -> dict:
 _INSTANCE = re.compile(r"(PCI\\VEN_[0-9A-F]{4}&DEV_[0-9A-F]{4}(?:&SUBSYS_[0-9A-F]{8})?)[^\"]*", re.I)
 
 
-def sanitise(value, *, secrets=None):
+def sanitise(value, *, redactions=None):
     """Remove what identifies a person or a particular box, keep what identifies hardware.
 
     Dropped: the hostname hash, adapter and monitor device paths, and the instance part of
     every PnP device ID (``PCI\\VEN_10DE&DEV_28E0&SUBSYS_...`` survives; the
     ``\\4&1B0D88EE&0&0008`` after it, which is unique to one machine, does not).
     Replaced: the user profile path, and the user name wherever else it appears.
+    ``redactions`` is that list of (identifying text, placeholder) pairs.
     """
-    if secrets is None:
+    if redactions is None:
         home = str(Path.home())
         user = os.environ.get("USERNAME") or Path.home().name
-        secrets = [(home, "%USERPROFILE%")] + ([(user, "<user>")] if len(user) >= 3 else [])
+        redactions = [(home, "%USERPROFILE%")] + ([(user, "<user>")] if len(user) >= 3 else [])
     if isinstance(value, dict):
         # Every *device_path carries the same per-machine instance ID in
         # `\\?\PCI#VEN_...#4&1b0d88ee&0&0008#{...}` form.
-        return {k: sanitise(v, secrets=secrets) for k, v in value.items()
+        return {k: sanitise(v, redactions=redactions) for k, v in value.items()
                 if k not in ("hostname_hash", "logs", "stdout_log", "stderr_log", "run_dir",
                              "python_executable") and not k.endswith("device_path")}
     if isinstance(value, list):
-        return [sanitise(v, secrets=secrets) for v in value]
+        return [sanitise(v, redactions=redactions) for v in value]
     if isinstance(value, str):
         value = _INSTANCE.sub(r"\1", value)
-        for secret, replacement in secrets:
-            value = re.sub(re.escape(secret), lambda _m, r=replacement: r, value, flags=re.I)
+        for identifying, placeholder in redactions:
+            value = re.sub(re.escape(identifying), lambda _m, p=placeholder: p, value, flags=re.I)
     return value
 
 
