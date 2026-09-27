@@ -10,6 +10,8 @@ each release can be traced back to the plan it implements.
 
 ## [Unreleased]
 
+## [2.6.2] - 2026-09-27
+
 ### Fixed — `rapidshot benchmark`
 
 - **Without CuPy it no longer promises paths that cannot run.** Every path,
