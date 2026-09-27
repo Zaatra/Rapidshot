@@ -107,10 +107,9 @@ def _capture_loop(library):
     which is the point of that workload, not a failure of it.
     """
     if library == "mss":
-        import mss
-        from .benchmark_contract import primary_monitor
+        from .benchmark_contract import open_mss, primary_monitor
 
-        session = mss.mss()
+        session = open_mss()
         monitor = primary_monitor(session.monitors)
 
         def grab():

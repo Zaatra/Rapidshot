@@ -111,6 +111,17 @@ The release notes come from the matching `## [x.y.z]` section of
 `CHANGELOG.md`. If there is no such section the workflow **fails** rather than
 publishing an empty release, so write the changelog before tagging.
 
+**Afterwards, move the next change onto a dev version** (`2.6.3.dev0` after
+`2.6.2`) in its first commit. A branch still carrying the released number
+cannot be tested by installing it over the release: pip sees the same version
+already installed, reports success and keeps the wheel. That happened with the
+first Intel test of the 2.6.3 fixes. Until a branch has a dev version, install
+it by commit instead:
+
+```bash
+pip install --force-reinstall --no-deps "rapidshot @ git+https://github.com/Zaatra/Rapidshot@<sha>"
+```
+
 ## Cutting a `rapidshot-native` release
 
 `rapidshot-native` is the prebuilt extension, published from `native/` by

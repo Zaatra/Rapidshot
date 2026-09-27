@@ -73,6 +73,29 @@ LABELS = {
 }
 
 
+def _distribution_version(name: str):
+    try:
+        from importlib.metadata import version
+        return version(name)
+    except Exception:  # noqa: BLE001 -- not installed, or no metadata
+        return None
+
+
+#: The DXcam the harness is verified against. Older ones are skipped, not
+#: compared: 0.0.5, all Python 3.9 can install, has no WinRT backend.
+DXCAM_FLOOR = (0, 3, 0)
+
+
+def _dxcam_too_old(pre: dict):
+    """Why the installed DXcam is not compared, or None."""
+    text = (pre.get("versions") or {}).get("dxcam")
+    match = re.match(r"(\d+)\.(\d+)(?:\.(\d+))?", text or "")
+    if not match or tuple(int(g or 0) for g in match.groups()) >= DXCAM_FLOOR:
+        return None
+    return (f"DXcam {text} is older than the {'.'.join(map(str, DXCAM_FLOOR))} this "
+            "harness is verified against: pip install -U dxcam (needs Python 3.10+)")
+
+
 def _installed(module: str) -> bool:
     try:
         return importlib.util.find_spec(module) is not None
@@ -118,6 +141,7 @@ def preflight() -> dict:
         "installed": {name: _installed(module) for name, module in
                       (("mss", "mss"), ("dxcam", "dxcam"), ("winrt", "winrt"),
                        ("cupy", "cupy"), ("cv2", "cv2"), ("psutil", "psutil"))},
+        "versions": {name: _distribution_version(name) for name in ("mss", "dxcam")},
     }
     try:
         info["display"] = section7.display_mode()
@@ -159,7 +183,9 @@ def choose_paths(pre: dict):
         cpu.append("mss")
     else:
         skipped["mss"] = "not installed: pip install mss"
-    if have["dxcam"]:
+    if have["dxcam"] and _dxcam_too_old(pre):
+        skipped.update({p: _dxcam_too_old(pre) for p in ("dxcam", "dxcam-wgc")})
+    elif have["dxcam"]:
         cpu.append("dxcam")
         if have["winrt"]:
             cpu.append("dxcam-wgc")
@@ -264,6 +290,8 @@ def memory_skipped(pre: dict) -> dict:
     if have["dxcam"] and not have.get("cv2"):
         # dxcam.create() converts colour with its default cv2 backend.
         out["dxcam"] = "DXcam's colour conversion needs OpenCV: pip install opencv-python"
+    if have["dxcam"] and _dxcam_too_old(pre):
+        out["dxcam"] = _dxcam_too_old(pre)
     return out
 
 
@@ -303,6 +331,59 @@ def _load(path: Path):
         return None
 
 
+#: Why a pass was contaminated, by what is to blame, each with its own mark. One
+#: footnote for all of them told a reader that mss at 33 fps against a 100 fps
+#: source was a floor, when what had happened was other programs using the CPU.
+CONTAMINATION = {
+    "source": ("*", "read as fast as the test source presented in at least one pass, so "
+                    "the frame rate is a floor."),
+    "background": ("†", "other programs used the CPU during at least one pass (median above "
+                        "15% outside the benchmark); timings may be inflated. The harness "
+                        "treats this as a warning, not proof, and keeps the pass."),
+    "other": ("‡", "flagged for another reason in at least one pass; see below."),
+}
+
+
+def contamination_kind(reason: str) -> str:
+    if "source-limited" in reason or "source never reported" in reason:
+        return "source"
+    if "outside this benchmark's process tree" in reason:
+        return "background"
+    return "other"
+
+
+def _marks(row) -> str:
+    """The marks for a summary row. A 2.6.2 report has no reasons, so its
+    contaminated rows keep the one mark that release printed."""
+    flags = row.get("flags")
+    if flags is None:
+        return " *" if "contaminated" in row.get("statuses", []) else ""
+    marks = "".join(CONTAMINATION[k][0] for k in CONTAMINATION if k in flags)
+    return f" {marks}" if marks else ""
+
+
+def _passes_cell(row) -> str:
+    flagged = row.get("flagged") or 0
+    return f"{row['passes']}" + (f" ({flagged} flagged)" if flagged else "")
+
+
+def _contamination_notes(summary: dict) -> list:
+    """Footnotes for the marks in use, and the reasons behind any the marks
+    cannot say on their own."""
+    used = {k for row in summary.values() for k in (row.get("flags") or [])}
+    if not used and any("contaminated" in r.get("statuses", []) for r in summary.values()):
+        used = {"source"}
+    others = [f"‡ {LABELS.get(path, path)}: {reason}"
+              for path, row in summary.items() for reason in row.get("reasons") or []
+              if contamination_kind(reason) == "other"]
+    # Escaped, or Markdown reads the leading asterisk as a list bullet.
+    lines = [f"{CONTAMINATION[k][0]} {CONTAMINATION[k][1]}".replace("*", "\\*", 1)
+             for k in CONTAMINATION if k in used and not (k == "other" and not others)]
+    if "other" in used and not others:
+        lines.append("‡ flagged in at least one pass by a harness that did not record why.")
+    return (["", *lines, *others]) if lines or others else []
+
+
 def summarise(payloads: list, metrics: dict) -> dict:
     """Median, min and max per path across passes, from usable cases only."""
     rows = {}
@@ -310,9 +391,18 @@ def summarise(payloads: list, metrics: dict) -> dict:
         for row in (payload or {}).get("results", []):
             if row.get("case_status") not in USABLE:
                 continue
-            entry = rows.setdefault(row["path"], {"passes": 0, "statuses": []})
+            entry = rows.setdefault(row["path"], {"passes": 0, "statuses": [], "flagged": 0,
+                                                  "flags": [], "reasons": []})
             entry["passes"] += 1
             entry["statuses"].append(row["case_status"])
+            if row["case_status"] == "contaminated":
+                entry["flagged"] += 1
+                for reason in row.get("case_reasons") or [""]:
+                    kind = contamination_kind(reason)
+                    if kind not in entry["flags"]:
+                        entry["flags"].append(kind)
+                    if reason and reason not in entry["reasons"]:
+                        entry["reasons"].append(reason[:300])
             for name, (get, _unit) in metrics.items():
                 try:
                     entry.setdefault(name, []).append(float(get(row)))
@@ -371,8 +461,9 @@ def statuses(payloads: list) -> dict:
     out = {}
     for payload in payloads:
         for row in (payload or {}).get("results", []):
+            reason = row.get("error") or "; ".join(row.get("case_reasons") or [])
             out.setdefault(row["path"], []).append(
-                {"status": row.get("case_status"), "reason": (row.get("error") or "")[:200] or None})
+                {"status": row.get("case_status"), "reason": reason[:300] or None})
     return out
 
 
@@ -549,13 +640,11 @@ def render_markdown(report: dict) -> str:
     else:
         lines.append("No path produced a tensor.")
     for path, row in report["pixel_age"]["summary"].items():
-        flag = " *" if "contaminated" in row["statuses"] else ""
         where = f" {FINISHED_IN.get(path, 'system memory')} |" if no_cuda else ""
-        lines.append(f"| {LABELS.get(path, path)} |{where} {_cell(row['unique_fps'])}{flag} | "
+        lines.append(f"| {LABELS.get(path, path)} |{where} {_cell(row['unique_fps'])}{_marks(row)} | "
                      f"{_cell(row['age_p50_ms'])} / {_cell(row['age_p95_ms'])} ms | "
-                     f"{_cell(row['cpu_ms_per_frame'])} ms | {row['passes']} |")
-    if any("contaminated" in r["statuses"] for r in report["pixel_age"]["summary"].values()):
-        lines += ["", "\\* read as fast as the test source presented, so the frame rate is a floor."]
+                     f"{_cell(row['cpu_ms_per_frame'])} ms | {_passes_cell(row)} |")
+    lines += _contamination_notes(report["pixel_age"]["summary"])
     missing = {p: s for p, s in report["pixel_age"]["statuses"].items()
                if p not in report["pixel_age"]["summary"]}
     if missing or report["skipped"]:

@@ -9,6 +9,7 @@ import io
 import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -265,9 +266,75 @@ def test_the_summary_is_median_min_max_of_usable_passes_only(tmp_path):
         "passed", "contaminated", "failed"]
 
 
+SOURCE_LIMITED = ("source presented as few as 100.0/s (during this case) while this path "
+                  "returned 100.0 unique fps; throughput is source-limited")
+BACKGROUND = ("CPU outside this benchmark's process tree ran at a median 17.8% (peak 41.0%) "
+              "during this case; absolute timings are inflated. This is a warning signal, not "
+              "proof of contamination -- the compositor and driver threads are counted here too")
+
+
+def test_background_load_is_not_reported_as_a_frame_rate_floor(tmp_path):
+    """The Intel desktop's first no-CUDA report starred mss at 33 fps and DXcam at
+    84 against a 100 fps source as floors; seven of its eight flagged passes were
+    other programs on the CPU, and only the two paths at 100 fps were source-limited."""
+    files = write_passes(tmp_path, [
+        [dict(row("mss", 33.3, 63.9, 16.2, "contaminated"), case_reasons=[BACKGROUND]),
+         dict(row("rapidshot-converter", 100.0, 43.6, 0.6, "contaminated"),
+              case_reasons=[SOURCE_LIMITED, BACKGROUND])],
+        [row("mss", 33.3, 63.1, 16.0), row("rapidshot-converter", 100.0, 39.4, 0.5)],
+        [row("mss", 33.3, 63.3, 16.4), row("rapidshot-converter", 100.0, 43.6, 0.6)]])
+    report = cli.build_report(preflight(), {}, files, target="no-cuda")
+    text = cli.render_markdown(report)
+    assert "| mss | system memory | 33.3 † |" in text
+    assert "| RapidShot GpuConverter | capture GPU (D3D12) | 100.0 *† |" in text
+    assert "| 3 (1 flagged) |" in text
+    assert "\\* read as fast as the test source" in text and "† other programs used the CPU" in text
+    assert "‡" not in text
+    assert report["pixel_age"]["statuses"]["mss"][0]["reason"].startswith("CPU outside")
+
+
+def test_a_reason_the_marks_cannot_name_is_spelled_out(tmp_path):
+    drift = "display configuration changed during the run"
+    files = write_passes(tmp_path, [[dict(row("dxcam", 84.0, 58.3, 11.9, "contaminated"),
+                                          case_reasons=[drift])]])
+    text = cli.render_markdown(cli.build_report(preflight(), {}, files))
+    assert "| DXcam (DXGI) | 84.0 ‡ |" in text and f"‡ DXcam (DXGI): {drift}" in text
+
+
+def test_a_flag_without_a_recorded_reason_does_not_promise_one(tmp_path):
+    files = write_passes(tmp_path, [[row("dxcam", 84.0, 58.3, 11.9, "contaminated")]])
+    text = cli.render_markdown(cli.build_report(preflight(), {}, files))
+    assert "| DXcam (DXGI) | 84.0 ‡ |" in text
+    assert "by a harness that did not record why" in text and "see below" not in text
+
+
+@pytest.mark.parametrize("version, too_old", [
+    ("0.0.5", True), ("0.2.0", True), ("0.3.0", False), ("0.4.0.dev2", False), (None, False)])
+def test_a_dxcam_older_than_the_verified_one_is_skipped_not_compared(version, too_old):
+    """Python 3.9 can only install DXcam 0.0.5 (2022), which has no WinRT backend."""
+    pre = preflight(versions={"mss": "10.2.0", "dxcam": version})
+    paths, skipped = cli.choose_paths(pre)
+    assert ("dxcam" in paths) is not too_old
+    assert ("dxcam" in cli.memory_libraries(pre)) is not too_old
+    if too_old:
+        assert f"DXcam {version} is older than the 0.3.0" in skipped["dxcam"]
+        assert "dxcam-wgc" in skipped and "dxcam" in cli.memory_skipped(pre)
+
+
+@pytest.mark.parametrize("attributes, expected", [
+    ({"MSS": lambda: "MSS", "mss": lambda: "factory"}, "MSS"),   # 10.2: mss.mss() deprecated
+    ({"mss": lambda: "factory"}, "factory"),                      # 9.x and 10.0-10.1
+])
+def test_mss_is_opened_through_whichever_api_it_has(monkeypatch, attributes, expected):
+    from rapidshot._bench.benchmark_contract import open_mss
+    monkeypatch.setitem(sys.modules, "mss", SimpleNamespace(**attributes))
+    assert open_mss() == expected
+
+
 def test_the_markdown_flags_a_source_limited_row_and_lists_what_was_not_measured(tmp_path):
     files = write_passes(tmp_path, [[row("dxcam", 95, 37, 11),
-                                     row("rapidshot-converter", 164, 26, 1, "contaminated"),
+                                     dict(row("rapidshot-converter", 164, 26, 1, "contaminated"),
+                                          case_reasons=[SOURCE_LIMITED]),
                                      {"path": "rapidshot-direct", "case_status": "unavailable",
                                       "error": "CrossAdapterRequired: capture is on the iGPU"}]])
     text = cli.render_markdown(cli.build_report(preflight(), {"mss": "not installed: pip install mss"},

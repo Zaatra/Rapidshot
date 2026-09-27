@@ -61,7 +61,10 @@ benchmark = [
     "rapidshot-native>=0.2.1; platform_system == 'Windows'",
     "psutil>=5.9",
     "mss>=9.0",
-    "dxcam>=0.0.5",
+    # 0.3.0 is what the harness is verified against. Every DXcam since 0.1.0
+    # needs Python 3.10, so on 3.9 a bare floor resolved to 0.0.5 (2022), which
+    # has no WinRT backend; there the DXcam rows are skipped, not measured stale.
+    "dxcam>=0.3.0; python_version >= '3.10'",
     "opencv-python>=4.5.0",
 ]
 cv2 = ["opencv-python>=4.5.0"]

@@ -181,10 +181,9 @@ def _close_camera(cam):
 
 
 def _adapter_mss(cp, np, verify=False):
-    import mss
-    from .benchmark_contract import primary_monitor
+    from .benchmark_contract import open_mss, primary_monitor
 
-    sct = mss.mss()
+    sct = open_mss()
     try:
         monitor = primary_monitor(sct.monitors)
     except BaseException:
@@ -1114,6 +1113,7 @@ def main(argv=None) -> int:
                                       + coverage_reasons(motion))
             if case.record is not None:
                 row = dict(row, case_status=case.record.status,
+                           case_reasons=list(case.record.reasons),
                            case={"run_id": store.run_id, "case_id": case.record.case_id,
                                  "attempt_id": case.record.attempt_id})
             rows.append(row)

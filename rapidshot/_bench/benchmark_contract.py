@@ -169,6 +169,14 @@ def sha256(path):
     return digest.hexdigest()
 
 
+def open_mss():
+    """An mss session on whichever API this mss has: ``mss.MSS`` from 10.2, which
+    deprecates the ``mss.mss()`` factory for removal after the 10.x series, and
+    that factory before it. The extra floors mss at 9, not at the newest."""
+    import mss
+    return (getattr(mss, "MSS", None) or mss.mss)()
+
+
 def primary_monitor(monitors):
     """mss's entry for the primary display, which is where the test source draws.
 

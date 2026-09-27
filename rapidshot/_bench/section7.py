@@ -887,7 +887,11 @@ def main(category="ingestion", argv=None):
             status = case.record.status if case.record is not None else (
                 "failed" if row.get("error") and not row.get("unavailable") else "passed")
             reasons = case.record.reasons if case.record is not None else [row.get("error") or ""]
-            row = dict(row, case_status=status)
+            # The reasons ride with the row: a contaminated case says whether
+            # the source or the rest of the machine is to blame, and only the
+            # run's history manifest had that before.
+            row = dict(row, case_status=status,
+                       case_reasons=[r for r in reasons if r] if case.record is not None else [])
             if case.record is not None:
                 row["case"] = {"run_id": store.run_id, "case_id": case.record.case_id,
                                "attempt_id": case.record.attempt_id}

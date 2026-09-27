@@ -5,7 +5,7 @@ import sys
 import time
 
 from .benchmark_contract import (canonical_rgb, normalized_tensor, decode_marker,
-                                pipeline_rgb, primary_monitor, CELL, MARKER_BITS,
+                                pipeline_rgb, open_mss, primary_monitor, CELL, MARKER_BITS,
                                 MARKER_HEIGHT, OUT)
 
 PATHS = ("mss", "dxcam", "dxcam-wgc", "rapidshot-cpu", "rapidshot-cupy",
@@ -42,8 +42,7 @@ class Adapter:
         if agent and path not in CPU_PATHS:
             raise ValueError("agent benchmark uses CPU capture paths")
         if path == "mss":
-            import mss
-            self.cam = mss.mss()
+            self.cam = open_mss()
             try:
                 self.monitor = primary_monitor(self.cam.monitors)
             except BaseException:

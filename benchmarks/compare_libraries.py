@@ -251,11 +251,10 @@ def _adapter_bettercam(scenario: str, colour: str):
 
 
 def _adapter_mss(scenario: str, colour: str):
-    import mss
     import numpy as np
-    from rapidshot._bench.benchmark_contract import primary_monitor
+    from rapidshot._bench.benchmark_contract import open_mss, primary_monitor
 
-    sct = mss.mss()
+    sct = open_mss()
     if scenario == "region":
         left, top, right, bottom = active_region()
         target = {"left": left, "top": top,

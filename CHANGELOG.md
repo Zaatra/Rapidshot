@@ -41,6 +41,22 @@ each release can be traced back to the plan it implements.
   memory harness rounded fps to one decimal, so one frame in eight seconds
   (0.125) became 0.1 and failed the 5% throughput check -- which is what
   flagged the stalled rows above, by accident. It now keeps three decimals.
+- **A flagged pass says what flagged it.** Every contaminated pass got the same
+  `*` and "read as fast as the test source presented, so the frame rate is a
+  floor" -- on the Intel desktop, mss at 33 fps and DXcam at 84 against a
+  100 fps source, where seven of the eight flagged passes were other programs
+  on the CPU. The pixel-age and call-duration rows now carry the harness's
+  reasons, and the report marks source-limited passes `*`, background CPU `†`
+  and anything else `‡` with the reason spelled out, and says how many of a
+  row's passes were flagged.
+- **DXcam is compared at 0.3.0 or later.** Every DXcam since 0.1.0 needs
+  Python 3.10, so on 3.9 the `dxcam>=0.0.5` floor resolved to 0.0.5, from 2022,
+  without the WinRT backend the WGC row uses. The extra now asks for 0.3.0 on
+  3.10 and later, and an older DXcam already installed is skipped with the
+  reason rather than measured as if it were current.
+- **mss is opened through `mss.MSS` where it exists.** mss 10.2 deprecates
+  `mss.mss()` for removal after the 10.x series; the harnesses fall back to it
+  only on older mss.
 - **mss captures the primary display.** Every harness took `monitors[1]`, which
   is the first display Windows enumerates, not the primary -- on an Intel
   desktop with two, it was the secondary. mss's pixel-age verification failed
