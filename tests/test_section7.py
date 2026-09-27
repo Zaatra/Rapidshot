@@ -496,6 +496,9 @@ def test_the_no_cuda_worker_never_imports_cupy(monkeypatch, tmp_path, capsys,
     """On the Intel desktop every worker died importing CuPy; this one must not
     try. With CuPy unimportable, the worker gets as far as building its adapter."""
     monkeypatch.setitem(sys.modules, "cupy", None)
+    # Imported before CuPy, and CI runners have no psutil; the worker stops at
+    # its adapter here, before it would use it.
+    monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace())
     handed = []
 
     def adapter(path, cp, np_, **kwargs):
