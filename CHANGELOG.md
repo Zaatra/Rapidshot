@@ -10,6 +10,8 @@ each release can be traced back to the plan it implements.
 
 ## [Unreleased]
 
+## [2.6.3] - 2026-09-27
+
 ### Added — `rapidshot benchmark`
 
 - **Pixel age without CUDA.** Every published row finishes the (1, 3, 640, 640)
@@ -21,7 +23,10 @@ each release can be traced back to the plan it implements.
   These rows get a table of their own, labelled by where each tensor ends, and
   are not comparable with the CUDA table. The call-duration harness still ends
   on CUDA and is skipped. Prototyped and verified on an Intel Core Ultra 5 235
-  desktop with no CUDA: every path within 1 RGB8 level of the reference.
+  desktop with no CUDA: every path within 1 RGB8 level of the reference. Its
+  five-pass run before release put `GpuConverter` at 43.5 ms p50 and 0.6 ms of
+  CPU per frame, against 53.0 ms and 9.6 ms for `grab()` and 58.1 ms and
+  12.2 ms for DXcam -- one machine, until its report is filed.
 
 ### Fixed — `rapidshot benchmark`
 
