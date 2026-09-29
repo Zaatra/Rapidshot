@@ -50,7 +50,11 @@ def captured_format(timeout_s: float = 3.0) -> dict:
                 frame.d3d11_texture.GetDesc(ctypes.byref(desc))
                 return {"dxgi_format": desc.Format,
                         "format": FORMATS.get(desc.Format, str(desc.Format)),
-                        "hdr": desc.Format == 10,
+                        # The display's HDR state, not the format: an HDR
+                        # desktop can duplicate as R10G10B10A2, not only FP16.
+                        "hdr": frame.hdr,
+                        "color_space": frame.color_space,
+                        "sdr_white_nits": frame.sdr_white_nits,
                         "width": desc.Width, "height": desc.Height}
         return {"error": f"no frame within {timeout_s:g} s"}
     finally:
