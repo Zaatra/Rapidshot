@@ -1033,6 +1033,7 @@ class ScreenCapture:
             return None
 
         duplicator = self._duplicator
+        dxgi_format = self._stagesurf.format_of(duplicator.texture)
         frame = Frame(
             texture=duplicator.texture,
             on_release=duplicator.release_frame,
@@ -1049,6 +1050,8 @@ class ScreenCapture:
             sequence=self._next_sequence(),
             generation=self._generation,
             cursor=self._cursor_info(),
+            dxgi_format=dxgi_format,
+            color=self._color_for(dxgi_format),
         )
         self._live_frame = frame
         return frame
@@ -1495,15 +1498,22 @@ class ScreenCapture:
                 f"the desktop duplicated as DXGI format {source_format}, which the "
                 "CPU capture paths cannot convert")
         self._stagesurf.ensure(self._output, self._device, dim, source_format)
+        color = self._color_for(source_format)
+        if color is not None:
+            self._stagesurf.color = color
+
+    def _color_for(self, source_format: int):
+        """The display's HDR state and SDR white, for a non-BGRA8 surface.
+
+        None for BGRA8: an ordinary desktop is never asked. Refreshed about
+        once a second otherwise, as the SDR white slider can move mid-capture.
+        """
         if source_format == hdr.DXGI_FORMAT_B8G8R8A8_UNORM:
-            return
+            return None
         now = time.monotonic()
-        # Refreshed about once a second, as the SDR white slider can move
-        # mid-capture; never queried at all on an ordinary BGRA8 desktop.
         if self._display_color is None or now - self._display_color_at > 1.0:
             self._display_color = hdr.display_color(self._output.devicename)
             self._display_color_at = now
-        self._stagesurf.color = self._display_color
         if (hdr.clipped_at_nominal_white(source_format, self._display_color)
                 and not self._warned_hdr_clip):
             self._warned_hdr_clip = True
@@ -1514,6 +1524,7 @@ class ScreenCapture:
                 "without full Windows HDR support (Intel Comet Lake, for one); "
                 "turn HDR off for exact colours.",
                 self._display_color.sdr_white_nits)
+        return self._display_color
 
     def _shot_rotated(self, image_ptr, mapped_rect, width: int, height: int) -> None:
         """shot() on a rotated display: turn the frame, then copy it across.

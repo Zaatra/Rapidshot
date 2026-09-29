@@ -582,6 +582,13 @@ class GpuConverter:
         batch: most regions one :meth:`process` call can convert (default 1).
             The output buffer is allocated for this many at construction.
             Not available with ``pixel_format``.
+        allow_linear: ``False`` (default) refuses a frame whose
+            :attr:`~rapidshot.Frame.color_space` is ``"scrgb"`` -- linear light
+            from an HDR desktop, 1.0 = 80 nits. This converter does not tone
+            map, so its sRGB-shaped tensors would carry numbers no model was
+            trained on. ``True`` passes scRGB through for float output, for a
+            caller that handles linear light itself. YUV output refuses it
+            regardless: a Y'CbCr matrix expects gamma-encoded values.
 
     **Multi-ROI.** ``process(frame, regions=[...])`` converts every region to
     the same output size in **one** GPU dispatch and returns an
@@ -643,8 +650,10 @@ class GpuConverter:
         matrix: str = "bt709",
         full_range: bool = False,
         batch: int = 1,
+        allow_linear: bool = False,
     ) -> None:
         gpu_converter = native.require_feature("GpuConverter12")
+        self._allow_linear = bool(allow_linear)
         width, height = int(size[0]), int(size[1])
         self._crop = None if crop is None else _validate_crop(frame, crop)
 
@@ -693,6 +702,7 @@ class GpuConverter:
         else:
             dtype, layout, native_dtype = self._tensor_format(dtype, layout)
             native_layout = layout
+        self._refuse_linear(frame, yuv=layout == "yuv420", dtype=dtype)
 
         self._impl = gpu_converter(
             native._texture_address(frame),
@@ -759,6 +769,32 @@ class GpuConverter:
     def __exit__(self, *exc) -> None:
         self.close()
 
+    def _refuse_linear(self, frame, *, yuv: bool, dtype: Optional[str]) -> None:
+        """Refuse linear scRGB input rather than convert it into wrong numbers.
+
+        On an HDR desktop the captured texture is FP16 or R10G10B10A2 holding
+        linear light. Tensors treated it as sRGB-encoded, and NV12/P010 put it
+        through a Y'CbCr matrix -- the 10-bit case with no error at all.
+        Frames that do not say (built elsewhere) are taken at their word.
+        """
+        if getattr(frame, "color_space", "srgb") != "scrgb":
+            return
+        if yuv:
+            raise ValueError(
+                f"this frame is linear scRGB from an HDR desktop "
+                f"({frame.pixel_format}), which NV12/P010 cannot encode: a Y'CbCr "
+                "matrix expects gamma-encoded values, and choosing between tone "
+                "mapping and HDR10 has not been done. Turn HDR off, or use grab(), "
+                "which converts HDR to sRGB.")
+        if self._allow_linear and dtype in ("float16", "float32"):
+            return
+        raise ValueError(
+            f"this frame is linear scRGB from an HDR desktop ({frame.pixel_format}, "
+            f"SDR white {frame.sdr_white_nits:.0f} nits), and GpuConverter does not "
+            "tone map: its tensor would hold linear light where a model expects "
+            "sRGB. Turn HDR off, use grab(), which converts HDR to sRGB, or pass "
+            "allow_linear=True with float output to receive scRGB as it is.")
+
     @staticmethod
     def _tensor_format(dtype: Optional[str], layout: Optional[str]):
         dtype = "float32" if dtype is None else dtype
@@ -814,6 +850,7 @@ class GpuConverter:
         """
         if self._impl is None:
             raise RuntimeError("this GpuConverter is closed")
+        self._refuse_linear(frame, yuv=self._layout == "yuv420", dtype=self.dtype)
         if regions is not None:
             if crop is not None:
                 raise ValueError("give crop or regions, not both")

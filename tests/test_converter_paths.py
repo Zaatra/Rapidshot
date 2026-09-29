@@ -616,3 +616,55 @@ def test_a_cupy_array_outliving_both_keeps_the_mapping_then_frees_in_order(cuda,
     del array
     assert nvcuda.freed == [0xD000] and nvcuda.destroyed == [0xE0]
     assert len(drops) == 1
+
+
+# --------------------------------------------------------------------------
+# HDR: linear scRGB input is refused, not converted into wrong numbers
+# --------------------------------------------------------------------------
+
+def hdr_frame(dxgi_format=10, hdr_on=True, nits=240.0):
+    from rapidshot.core.hdr import DisplayColor
+    return Frame(ctypes.c_void_p(0x1234), lambda: None, (0, 0, 100, 50), source_id=7,
+                 dxgi_format=dxgi_format, color=DisplayColor(hdr_on, nits))
+
+
+@pytest.mark.parametrize("fmt", [10, 24])
+def test_a_tensor_from_linear_hdr_input_is_refused(ext, fmt):
+    with pytest.raises(ValueError, match="linear scRGB .* does not tone map"):
+        GpuConverter(hdr_frame(fmt), (8, 4))
+    conv = GpuConverter(frame(), (8, 4))
+    with pytest.raises(ValueError, match="SDR white 240 nits"):
+        conv.process(hdr_frame(fmt))
+    assert conv._impl.calls == [], "nothing was dispatched"
+
+
+def test_float_output_can_opt_in_to_scrgb_and_uint8_cannot(ext):
+    conv = GpuConverter(hdr_frame(), (8, 4), dtype="float16", allow_linear=True)
+    conv.process(hdr_frame())
+    assert len(conv._impl.calls) == 1
+    with pytest.raises(ValueError, match="linear scRGB"):
+        GpuConverter(hdr_frame(), (8, 4), dtype="uint8", layout="nhwc", allow_linear=True)
+
+
+@pytest.mark.parametrize("fmt", [10, 24])
+def test_yuv_from_linear_hdr_input_is_refused_even_when_allowed(ext, fmt):
+    """The 10-bit case used to go through the Y'CbCr matrix with no error."""
+    with pytest.raises(ValueError, match="NV12/P010 cannot encode"):
+        GpuConverter(hdr_frame(fmt), (8, 4), pixel_format="nv12", allow_linear=True)
+
+
+def test_sdr_frames_and_10bit_sdr_desktops_convert_as_before(ext):
+    conv = GpuConverter(hdr_frame(24, hdr_on=False), (8, 4), pixel_format="nv12")
+    conv.process(hdr_frame(24, hdr_on=False))
+    conv.process(frame())
+    assert len(conv._impl.calls) == 2
+
+
+def test_a_frame_says_what_it_holds():
+    plain = frame()
+    assert (plain.pixel_format, plain.hdr, plain.sdr_white_nits, plain.color_space) == \
+        ("B8G8R8A8_UNORM", False, None, "srgb")
+    lit = hdr_frame(24)
+    assert (lit.pixel_format, lit.hdr, lit.sdr_white_nits, lit.color_space) == \
+        ("R10G10B10A2_UNORM", True, 240.0, "scrgb")
+    assert hdr_frame(10, hdr_on=False).color_space == "srgb"

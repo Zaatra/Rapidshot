@@ -167,7 +167,7 @@ class Frame:
         "_cursor_visible", "_width", "_height", "_dirty_rects",
         "_rects_coalesced", "_source_id", "_release_drains",
         "_release_quarantine", "_sequence", "_generation", "_cursor", "_lock",
-        "_move_rects",
+        "_move_rects", "_dxgi_format", "_color",
     )
 
     def __init__(
@@ -187,6 +187,8 @@ class Frame:
         sequence: int = 0,
         generation: int = 0,
         cursor: "Optional[CursorInfo]" = None,
+        dxgi_format: int = 87,
+        color=None,
     ) -> None:
         # First, so __del__ can rely on it even if a later assignment raises.
         # Reentrant: __del__ and __exit__ both route through release(), and a
@@ -214,6 +216,11 @@ class Frame:
         self._sequence = sequence
         self._generation = generation
         self._cursor = self._cursor_in_frame(cursor)
+        # What the texture holds: B8G8R8A8 on an SDR desktop; FP16 or
+        # R10G10B10A2 carrying linear scRGB on an HDR one. `color` is the
+        # display's rapidshot.core.hdr.DisplayColor, or None if not asked.
+        self._dxgi_format = dxgi_format
+        self._color = color
 
     def _clip_to_region(self, rects):
         """Translate desktop-coordinate rects into this frame's coordinates.
@@ -358,6 +365,39 @@ class Frame:
         intermediate frames were dropped by the OS.
         """
         return self._accumulated_frames
+
+    @property
+    def dxgi_format(self) -> int:
+        """The texture's DXGI format number: 87 is ``B8G8R8A8_UNORM``."""
+        return self._dxgi_format
+
+    @property
+    def pixel_format(self) -> str:
+        """The texture's format by name, e.g. ``"B8G8R8A8_UNORM"``."""
+        from rapidshot.core.hdr import FORMAT_NAMES
+        return FORMAT_NAMES.get(self._dxgi_format, str(self._dxgi_format))
+
+    @property
+    def hdr(self) -> bool:
+        """Whether Windows HDR was on for this frame's display."""
+        return bool(self._color is not None and self._color.hdr)
+
+    @property
+    def sdr_white_nits(self) -> Optional[float]:
+        """The display's SDR white level in nits while HDR is on, else ``None``.
+
+        Linear scRGB puts 1.0 at 80 nits, so SDR white is at
+        ``sdr_white_nits / 80``: about 3.0 at the common 240-nit setting.
+        """
+        return self._color.sdr_white_nits if self.hdr else None
+
+    @property
+    def color_space(self) -> str:
+        """``"srgb"``, or ``"scrgb"`` -- linear light, 1.0 = 80 nits -- for a
+        10-bit or FP16 texture from an HDR desktop. A model trained on sRGB
+        images must not be fed ``"scrgb"`` values as they are."""
+        linear = self.hdr and self._dxgi_format in (10, 24)   # FP16, R10G10B10A2
+        return "scrgb" if linear else "srgb"
 
     @property
     def source_id(self) -> int:

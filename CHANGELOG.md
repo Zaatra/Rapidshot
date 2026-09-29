@@ -41,6 +41,17 @@ each release can be traced back to the plan it implements.
   Microsoft lists as lacking full HDR support -- everything above 80 nits,
   SDR white included, is clipped before RapidShot sees it. The first such frame
   logs a warning naming the cause instead of passing flat whites off as exact.
+- **`GpuConverter` no longer turns HDR input into wrong numbers.** Its tensors
+  treated linear scRGB as sRGB-encoded, and NV12/P010 put a 10-bit HDR surface
+  through the Y'CbCr matrix with no error. A frame from an HDR desktop is now
+  refused with the reason; `allow_linear=True` passes scRGB through for float
+  output, and YUV refuses it regardless.
+
+### Added
+
+- **Frames say what they hold.** `Frame.pixel_format`, `dxgi_format`, `hdr`,
+  `sdr_white_nits` and `color_space` (`"srgb"`, or `"scrgb"` for linear light
+  from an HDR desktop) on every `grab_frame()` frame.
 
 ## [2.6.3] - 2026-09-29
 

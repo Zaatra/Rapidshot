@@ -569,29 +569,32 @@ which is a different claim:
 
 ## Known limitations
 
-**HDR desktops are not captured correctly yet. Treat HDR capture as
-unsupported until 2.6.4, and turn HDR off (Win+Alt+B) to capture.** With
-Windows HDR on, the desktop is duplicated as linear light in a 10-bit or FP16
-surface, not 8-bit sRGB, and RapidShot does not convert it yet:
+**HDR desktops: converted to SDR, not captured as HDR.** With Windows HDR on,
+the desktop is duplicated as linear light (scRGB, 1.0 = 80 nits) in a 10-bit or
+FP16 surface rather than 8-bit sRGB:
 
-- **`grab()` and the NumPy frames from `start()` are black**, with no error:
-  the copy they read through is 8-bit BGRA, and copying a 10-bit or FP16
-  surface into it fails.
-- **`GpuConverter` tensors carry linear light**, not the sRGB-encoded values a
-  model was trained on.
-- **NV12/P010 output from a 10-bit HDR surface has wrong colours**, again
-  without an error; FP16 input is already refused.
-- **On platforms without full Windows HDR support, the capture is also
-  clipped at 80 nits** before RapidShot sees it. On an Intel Core i5-10500
-  (Comet Lake, UHD 630) driving a 4K HDR TV, the desktop duplicated as
-  `R10G10B10A2`, clipped at 1.0 = 80 nits, so everything brighter than that,
-  including ordinary SDR white at the usual 200-240 nit setting, came back
-  clipped. [Microsoft lists Comet Lake](https://learn.microsoft.com/en-us/windows/win32/direct3darticles/high-dynamic-range#graphics-processor-gpu)
-  as not providing full HDR functionality; on supported GPUs the desktop
-  duplicates as FP16 scRGB without that clip.
+- **`grab()` and `start()` return sRGB**, converted the way OBS and RustDesk
+  convert HDR display capture: divide by the display's SDR white level, clip,
+  apply the sRGB curve. SDR content comes back as the bytes it was drawn with;
+  anything brighter than SDR white -- HDR video highlights, HDR games -- clips
+  to white. That is SDR normalisation, not tone mapping.
+- **`grab_frame()` says what it holds**: `frame.hdr`, `frame.sdr_white_nits`,
+  `frame.pixel_format` and `frame.color_space`, which is `"scrgb"` for linear
+  light. `GpuConverter` refuses such a frame rather than put linear light into
+  a tensor shaped for sRGB; `allow_linear=True` passes scRGB through for float
+  output. NV12/P010 refuse it regardless.
+- **On platforms without full Windows HDR support the capture is clipped at
+  80 nits** before RapidShot sees it, and a warning says so. On an Intel Core
+  i5-10500 (Comet Lake, UHD 630) driving a 4K HDR TV the desktop duplicated as
+  `R10G10B10A2` clipped at 1.0, so everything brighter than 80 nits --
+  including ordinary SDR white at the usual 200-240 nit setting -- came back
+  flat. [Microsoft lists Comet Lake](https://learn.microsoft.com/en-us/windows/win32/direct3darticles/high-dynamic-range#graphics-processor-gpu)
+  as not providing full HDR functionality. Turn HDR off (Win+Alt+B) there for
+  exact colours.
 
-SDR desktops are unaffected: with HDR off, the same machine captured every
-path byte-exact against an independent reference.
+The conversion is checked against an independent reference in the test suite;
+a live run on a GPU with full HDR support is still to come. SDR desktops are
+unaffected.
 
 ## Migrating from 2.5
 

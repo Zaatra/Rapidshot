@@ -2685,10 +2685,13 @@ NVIDIA Pascal, and says Comet Lake "don't provide full functionality". OBS and
 RustDesk request `[R16G16B16A16_FLOAT, B8G8R8A8_UNORM]` and get unclipped scRGB
 on supported GPUs. So the clip is most likely this platform, not DDA in general,
 and it is **unverified on a supported GPU**: the LG TV on the Arrow Lake desktop
-is the next test. The correctness fixes, not the design below, are 2.6.4's:
-`grab()` staging in the frame's format and mapping scRGB → sRGB through the SDR
-white level, a warning where the capture is clipped, and refusing YUV and
-linear-to-sRGB tensor output from linear input rather than converting it wrongly.
+is the next test. **The correctness fixes are done** (not the design below):
+`grab()` and `start()` stage in the frame's format and map scRGB → sRGB through
+the SDR white level (`rapidshot/core/hdr.py`); `grab_frame()` frames carry
+`hdr`, `sdr_white_nits`, `pixel_format` and `color_space`; a clipped capture is
+named in a warning; and `GpuConverter` refuses linear input for tensors (opt in
+with `allow_linear=True` for float scRGB) and always for NV12/P010. Checked
+against an independent reference in tests; not yet run live on an HDR display.
 
 Two separate pieces of work:
 
