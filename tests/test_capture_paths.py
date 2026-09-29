@@ -124,6 +124,18 @@ class FakeStageSurface:
     null_bits = False
     rebuild_error = None
     release_error = None
+    dxgi_format = 87           # B8G8R8A8_UNORM, as an SDR desktop duplicates
+    color = None
+
+    @staticmethod
+    def format_of(texture):
+        return getattr(texture, "dxgi_format", 87)
+
+    def ensure(self, output, device, dim, source_format):
+        if (self.width, self.height) != tuple(dim) or self.dxgi_format != source_format:
+            self.release()
+            self.dxgi_format = source_format
+            self.rebuild(output, device, dim)
 
     def __init__(self, output=None, device=None):
         self.log = getattr(device, "im_context", None)

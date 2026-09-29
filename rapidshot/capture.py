@@ -23,6 +23,7 @@ from rapidshot.util.errors import ( # Added for Phase 2
 from rapidshot.core.device import Device
 from rapidshot.core.output import Output
 from rapidshot.core.stagesurf import StageSurface
+from rapidshot.core import hdr
 from rapidshot.core.duplicator import Duplicator
 from rapidshot._libs.dxgi import (
     DXGI_ERROR_UNSUPPORTED,
@@ -180,6 +181,11 @@ class ScreenCapture:
         self._timeout_ms = timeout_ms
         self._duplicator = None
         self._stagesurf = None
+        # HDR state and SDR white for the CPU paths' conversion; queried only
+        # when the desktop duplicates as something other than BGRA8.
+        self._display_color = None
+        self._display_color_at = 0.0
+        self._warned_hdr_clip = False
         self._processor = None
         self._pool_output = pool_output
         self._output_pool = None
@@ -1418,9 +1424,7 @@ class ScreenCapture:
                 _width = _region[2] - _region[0]
                 _height = _region[3] - _region[1]
 
-                if self._stagesurf.width != _width or self._stagesurf.height != _height:
-                    self._stagesurf.release()
-                    self._stagesurf.rebuild(output=self._output, device=self._device, dim=(_width, _height))
+                self._prepare_stage((_width, _height))
 
                 source_region = D3D11_BOX(
                     left=_region[0],
@@ -1476,6 +1480,40 @@ class ScreenCapture:
         else:
             self._on_output_change()
             return False
+
+    def _prepare_stage(self, dim) -> None:
+        """Size the staging surface for this copy, in the captured format.
+
+        On an HDR desktop the duplicated texture is FP16 or R10G10B10A2, not
+        BGRA8. The staging surface follows it and converts to BGRA8 on map,
+        through the display's SDR white level (rapidshot.core.hdr); copying
+        into a BGRA8 surface instead failed silently and returned black.
+        """
+        source_format = self._stagesurf.format_of(self._duplicator.texture)
+        if not hdr.is_supported(source_format):
+            raise RapidShotError(
+                f"the desktop duplicated as DXGI format {source_format}, which the "
+                "CPU capture paths cannot convert")
+        self._stagesurf.ensure(self._output, self._device, dim, source_format)
+        if source_format == hdr.DXGI_FORMAT_B8G8R8A8_UNORM:
+            return
+        now = time.monotonic()
+        # Refreshed about once a second, as the SDR white slider can move
+        # mid-capture; never queried at all on an ordinary BGRA8 desktop.
+        if self._display_color is None or now - self._display_color_at > 1.0:
+            self._display_color = hdr.display_color(self._output.devicename)
+            self._display_color_at = now
+        self._stagesurf.color = self._display_color
+        if (hdr.clipped_at_nominal_white(source_format, self._display_color)
+                and not self._warned_hdr_clip):
+            self._warned_hdr_clip = True
+            logger.warning(
+                "HDR is on, but this display duplicates as R10G10B10A2 clipped at "
+                "80 nits: everything brighter -- SDR white at %.0f nits included -- "
+                "comes back clipped before RapidShot sees it. Seen on platforms "
+                "without full Windows HDR support (Intel Comet Lake, for one); "
+                "turn HDR off for exact colours.",
+                self._display_color.sdr_white_nits)
 
     def _shot_rotated(self, image_ptr, mapped_rect, width: int, height: int) -> None:
         """shot() on a rotated display: turn the frame, then copy it across.
@@ -1647,16 +1685,7 @@ class ScreenCapture:
                 region_width = memory_region[2] - memory_region[0]
                 region_height = memory_region[3] - memory_region[1]
 
-                if (
-                    self._stagesurf.width != region_width
-                    or self._stagesurf.height != region_height
-                ):
-                    self._stagesurf.release()
-                    self._stagesurf.rebuild(
-                        output=self._output,
-                        device=self._device,
-                        dim=(region_width, region_height),
-                    )
+                self._prepare_stage((region_width, region_height))
 
                 source_region = D3D11_BOX(
                     left=memory_region[0],
@@ -1798,6 +1827,9 @@ class ScreenCapture:
             # staging texture is still sized for the previous resolution, and
             # StageSurface.rebuild() keeps an existing texture as-is.
             self._stagesurf.release()
+        # Toggling HDR is itself a mode change: ask again rather than convert
+        # the new surface with the old SDR white.
+        self._display_color = None
 
         self._output.update_desc()
         self.width, self.height = self._output.resolution

@@ -26,6 +26,21 @@ each release can be traced back to the plan it implements.
   Torch array over it) frees everything at once on its own thread.
   `GpuConverter.close()`, or `with GpuConverter(...) as converter:`, releases it
   explicitly.
+- **On an HDR desktop, `grab()` and `start()` returned black frames.** With
+  Windows HDR on, the desktop duplicates as linear scRGB in FP16 or
+  R10G10B10A2, and the CPU paths copied it into an 8-bit BGRA staging texture:
+  a copy between those formats fails without an error and left zeros. The
+  staging surface now follows the captured format and converts to 8-bit sRGB
+  the way OBS and RustDesk do -- divide by the display's SDR white level, clip,
+  apply the sRGB curve -- through lookup tables, so SDR content on an HDR
+  desktop comes back as the bytes it was drawn with and anything brighter than
+  SDR white clips to white. The SDR white level is read from the display and
+  refreshed about once a second; an ordinary BGRA8 desktop never asks.
+- **A capture clipped at 80 nits says so.** Where the desktop duplicates as
+  R10G10B10A2 while HDR is on -- an Intel Comet Lake desktop did, a platform
+  Microsoft lists as lacking full HDR support -- everything above 80 nits,
+  SDR white included, is clipped before RapidShot sees it. The first such frame
+  logs a warning naming the cause instead of passing flat whites off as exact.
 
 ## [2.6.3] - 2026-09-29
 
