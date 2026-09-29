@@ -592,3 +592,17 @@ def test_advanced_colour_is_decoded_from_either_query(answers, expected):
     else:
         assert expected.items() <= entry["advanced_color"].items()
         assert entry["advanced_color"]["bits_per_channel"] == 10
+
+
+@pytest.mark.parametrize("version, noted", [("0.2.1", True), ("0.2.0", True),
+                                            ("0.2.2", False), ("0.3.0", False)])
+def test_pixel_ages_from_a_source_that_queues_frames_say_so(tmp_path, version, noted):
+    """0.2.1's source let up to three frames queue behind Present(): GpuConverter
+    read 42/13/10/27/17 ms over five passes on the Intel desktop, 22.2-22.3 ms
+    with 0.2.2's. Reports from the two must not be compared as absolutes."""
+    files = write_passes(tmp_path, [[row("dxcam", 95, 37, 11)]])
+    pre = preflight(native={"version": version, "source": "rapidshot-native wheel"})
+    text = cli.render_markdown(cli.build_report(pre, {}, files))
+    assert ("queues up to three frames" in text) is noted
+    if noted:
+        assert f"rapidshot-native {version} queues" in text

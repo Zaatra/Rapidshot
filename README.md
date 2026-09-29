@@ -541,6 +541,15 @@ run these. Live capture rates depend on what the screen is doing and are not
 comparable across recordings — see `docs/BENCHMARKS.md` for why a single live
 recording is not a measurement.
 
+**The pixel ages in section C carry a test-source offset.** They were recorded
+with the test source from rapidshot-native 0.2.1 and earlier, which let up to
+three frames queue behind `Present()` -- where the pixel-age clock starts -- so
+each launch added its own 0-3 frame offset to every path at once. The ranking
+and the within-run comparisons hold; the absolute milliseconds do not. On an
+Intel desktop, GpuConverter's p50 read 42, 13, 10, 27 and 17 ms over five
+passes with that source, and 22.2-22.3 ms with 0.2.2's, which queues one frame.
+These tables are to be re-recorded with 0.2.2.
+
 ## Tested hardware
 
 Nothing in RapidShot branches on GPU vendor. This is what has actually been run,

@@ -595,6 +595,24 @@ def _cell(stat, digits=1):
 FINISHED_IN = {"rapidshot-converter": "capture GPU (D3D12)"}
 
 
+#: The test source before rapidshot-native 0.2.2 let up to three frames queue
+#: behind Present(), and pixel age is timed from just before Present(): each
+#: launch added its own whole-frame offset to every path at once. Measured on
+#: the Intel desktop, GpuConverter's p50 read 42/13/10/27/17 ms over five
+#: passes with that source and 22.2-22.3 ms with 0.2.2's.
+_SOURCE_QUEUE_NOTE = (
+    "The test source in rapidshot-native {version} queues up to three frames, so "
+    "these pixel ages carry a 0-3 frame offset that changes between passes. "
+    "Compare paths within this report; do not compare its absolute ages with a "
+    "report made with rapidshot-native 0.2.2 or later.")
+
+
+def _source_queues_frames(pre: dict) -> bool:
+    version = (pre.get("native") or {}).get("version") or ""
+    match = re.match(r"(\d+)\.(\d+)\.(\d+)", version)
+    return bool(match) and tuple(map(int, match.groups())) < (0, 2, 2)
+
+
 def _pixel_age_heading(report: dict) -> str:
     passes = report.get("passes")
     tail = (f"; medians of {passes} pass{'' if passes == 1 else 'es'}. "
@@ -632,6 +650,8 @@ def render_markdown(report: dict) -> str:
         _pixel_age_heading(report),
         "",
     ]
+    if report["pixel_age"]["summary"] and _source_queues_frames(pre):
+        lines += [_SOURCE_QUEUE_NOTE.format(version=native.get("version")), ""]
     no_cuda = report["pixel_age"].get("target") == "no-cuda"
     if report["pixel_age"]["summary"]:
         lines += (["| path | tensor in | unique fps | pixel age p50 / p95 | CPU per frame | passes |",

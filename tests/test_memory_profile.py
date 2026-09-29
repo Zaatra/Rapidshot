@@ -528,3 +528,46 @@ def test_a_source_that_stalls_after_switching_is_replaced(logs, monkeypatch):
 def test_next_source_keeps_a_source_that_switched(logs, monkeypatch):
     src = switching_source(logs, monkeypatch)
     assert mp.next_source(src, logs, "motion", 900, 700, 60) is src
+
+
+class StoppableProc:
+    def __init__(self, exits_on_eof):
+        self.exits_on_eof, self.events, self.returncode = exits_on_eof, [], None
+        outer = self
+
+        class Stdin:
+            def close(self):
+                outer.events.append("eof")
+                if outer.exits_on_eof:
+                    outer.returncode = 0
+
+        self.stdin = Stdin()
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        self.events.append("wait")
+        if self.returncode is None and "terminate" not in self.events:
+            raise mp.subprocess.TimeoutExpired("latency_source", timeout)
+        return self.returncode
+
+    def terminate(self):
+        self.events.append("terminate")
+        self.returncode = 1
+
+    def kill(self):
+        self.events.append("kill")
+
+
+@pytest.mark.parametrize("exits_on_eof, expected", [
+    (True, ["eof", "wait"]),
+    (False, ["eof", "wait", "terminate", "wait"]),
+])
+def test_a_source_is_stopped_by_eof_before_it_is_forced(logs, exits_on_eof, expected):
+    """Terminated sources were the ones whose replacements stalled; ones that
+    exited on their own were not. EOF first, force only if it does not go."""
+    src = mp.WorkloadSource(logs, "static", 900, 700, 60)
+    src.proc = StoppableProc(exits_on_eof)
+    src.close()
+    assert src.proc.events == expected

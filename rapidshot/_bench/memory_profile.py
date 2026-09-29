@@ -341,12 +341,27 @@ class WorkloadSource:
         return count_presents(self.present_log)
 
     def close(self):
+        """Stop the source the way it asks to be stopped: EOF on stdin, then
+        wait for it to exit, and only then force it.
+
+        Terminated sources were the ones whose replacements stalled -- about
+        15% of them on the Intel desktop -- while 36 sources that exited on
+        their own before a relaunch were followed by 0 stalls. Not proven to
+        be the cause, but a clean exit costs nothing and the health check in
+        start() still guards every launch.
+        """
         if self.proc is not None and self.proc.poll() is None:
-            self.proc.terminate()
             try:
-                self.proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
+                stdin = getattr(self.proc, "stdin", None)
+                if stdin is not None:
+                    stdin.close()
+                self.proc.wait(timeout=3)
+            except (OSError, ValueError, subprocess.TimeoutExpired):
+                self.proc.terminate()
+                try:
+                    self.proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.proc.kill()
         for handle in (self.stdout, self.stderr):
             if handle is not None:
                 handle.close()

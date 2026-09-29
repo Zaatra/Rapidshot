@@ -47,23 +47,43 @@ each release can be traced back to the plan it implements.
   refused with the reason; `allow_linear=True` passes scRGB through for float
   output, and YUV refuses it regardless.
 
-### Fixed — `rapidshot benchmark` and its test source
+### Fixed — `rapidshot benchmark`
 
 - **The memory run keeps one test source and switches its workload.**
   Replacing the source between workloads was what stalled: on an Intel desktop
   about 15% of replacement launches presented three frames and then had every
-  flip held for 2 s. `latency_source` now switches pattern when a workload name
-  arrives on stdin and acknowledges it (EOF, or any other line, still stops
-  it), and the memory harness switches instead of relaunching -- 0 stalls in 30
-  switches on trial there. A source that does not acknowledge, as
-  rapidshot-native 0.2.1's does not, is replaced as before, and the 2.6.3
-  health check still guards every launch and switch.
-- **The test source queues one frame, not three.** Pixel age is timed from
-  just before `Present()`, so frames already queued behind it added whole
-  refreshes to every path at once, by a different number per launch: pass to
-  pass, GpuConverter read 42, 15, 8 and 42 ms. `SetMaximumFrameLatency(1)`
-  removes that offset. Both changes need a rapidshot-native release to reach
-  testers.
+  flip held for 2 s. With rapidshot-native 0.2.2 the memory harness switches
+  the running source instead of relaunching it: 48 of 48 switches acknowledged
+  in place and 0 case errors in 112 there. A source that does not acknowledge,
+  as 0.2.1's does not, is replaced as before -- 36 such relaunches, 0 stalls --
+  and the health check still guards every launch and switch: a first launch
+  stalled once too, and was caught.
+- **A source is stopped with EOF, not killed.** The memory harness terminated
+  its sources; it now closes their stdin and waits, forcing them only if they
+  do not exit. Sources that exited on their own were followed by 0 stalls in
+  36 relaunches, against about 15% after `terminate()` -- not proven to be the
+  cause, and free.
+- **Reports made with the older test source say their pixel ages carry an
+  offset.** See `rapidshot-native` 0.2.2 below: a report whose source queues up
+  to three frames now says its absolute ages cannot be compared with one made
+  with 0.2.2 or later.
+- **`rapidshot[benchmark]` installs `dxcam[winrt]`**, so a fresh install has the
+  DXcam (WGC) row.
+
+### Changed — `rapidshot-native` 0.2.2
+
+- **The test source queues one frame, not three.** Pixel age is timed from just
+  before `Present()`, and the source let up to three frames queue behind it, so
+  each launch added its own whole-frame offset to every path at once. Confirmed
+  on the Intel desktop over five passes: GpuConverter's p50 read 42, 13, 10, 27
+  and 17 ms with 0.2.1's source and 22.2-22.3 ms with this one; `grab()`,
+  DXcam and mss steadied the same way. Every pixel age recorded with the older
+  source, including the README's tables, carries a 0-3 frame offset: compare
+  within a run, and re-record with this one.
+- **The test source switches workload over stdin.** A line naming a workload
+  switches the pattern in place and is acknowledged on stdout; EOF, or any
+  other line, still stops it, so every existing harness behaves as before.
+- The extension itself is unchanged from 0.2.1.
 
 ### Added
 
