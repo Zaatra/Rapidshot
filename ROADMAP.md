@@ -3534,29 +3534,31 @@ through the § 7.6 ABI.
     `examples/gpu_tensor_to_cupy.py` is the ~60 lines of ctypes that turn that handle into a `cupy.ndarray`. It lives in `examples/` deliberately: § 11 says RapidShot produces frames and does not own its consumers' bindings, and the same argument that keeps ONNX Runtime out of the core (§ 8) applies here. Verified byte-identical to `read_back()` for the same dispatch, with a CUDA kernel reading the tensor in place — shape and dtype would have agreed even if the import had mapped unrelated memory, so the pixel comparison is the whole check.
 
     `tests/test_cuda_interop.py` imports **the shipped example file** rather than a copy, so what ships is what is tested. § 5's rule — anything not run before a release is not verified for that release — otherwise puts an example verified by hand in the same category as one nobody ran.
-- **Every native pyclass is `unsendable`, and Python decides which thread drops them. Not investigated.** Seen once, in a full suite run on 2026-08-21:
+- **Every native pyclass is `unsendable`, and Python decides which thread drops them. Reproduced 2026-09-29; fixed for `GpuConverter`.** First seen once, in a full suite run on 2026-08-21:
 
   ```
   RuntimeError: _rapidshot_native::TestTexture is unsendable, but is being
   dropped on another thread
   ```
 
-  `#[pyclass(unsendable)]` tells PyO3 the object may only be touched on the thread that created it, and PyO3 enforces that **on drop** by raising. The catch is that dropping is not something the caller schedules: a Python object dies when the garbage collector gets to it, and the collector runs on whichever thread happens to trigger it. So the rule is "created and destroyed on one thread", but only the first half is under anyone's control.
-
-  **This is not test scaffolding.** Four classes carry the annotation and three of them are shipping API:
+  `#[pyclass(unsendable)]` tells PyO3 the object may only be touched on the thread that created it, and PyO3 enforces that **on drop** by raising. Dropping is scheduled by reference counting, which is deterministic, *unless the object sits in a reference loop*: then only the cyclic garbage collector frees it, on whichever thread happens to trigger a collection.
 
   | Class | `native/src/lib.rs` | |
   | --- | --- | --- |
-  | `GpuPreprocessor` | 377 | public |
-  | `GpuPreprocessor12` | 561 | public — the Stage 6 tensor |
-  | `CrossAdapterTransfer` | 770 | public — § 6.1 |
-  | `TestTexture` | 1089 | test only |
+  | `GpuPreprocessor` | 379 | public |
+  | `TensorTransfer` | 587 | public — § 6.1 ordering B |
+  | `GpuConverter12` | 710 | public — behind `rapidshot.GpuConverter` |
+  | `GpuPreprocessor12` | 1016 | public — the Stage 6 tensor |
+  | `CrossAdapterTransfer` | 1243 | public — § 6.1 |
+  | `TestTexture` | 1814 | test only |
 
-  `ScreenCapture.start()` runs capture on its own thread, so a consumer that builds a preprocessor on the main thread and drops it while the capture thread is what triggers collection is an ordinary arrangement, not a contrived one.
+  **The failure mode is worse than the failure.** It raises during garbage collection, where there is no caller to receive it: Python reports it as an *unraisable* exception and carries on, and PyO3 skips the Rust destructor, so the D3D12 resources, shared NT handles and COM interfaces it owned are never released.
 
-  **The failure mode is worse than the failure.** It raises during garbage collection, where there is no caller to receive it: Python reports it as an *unraisable* exception, pytest turns it into a warning, and a plain application prints it to stderr and continues. So a real lifetime violation looks like log noise, and whatever the drop was supposed to release — a D3D12 resource, a shared NT handle, a COM interface — may not have been released. That is the same class of hazard as the shared-handle entry below: nothing looks wrong afterwards.
+  **Reproduced deterministically on the Intel Core Ultra 5 235 desktop:** build a `GpuConverter`, process a frame, `del` it (a weakref shows it still alive), then run `gc.collect()` on another thread: the unraisable error every time. It also happened unprompted in a multi-monitor test, surfacing inside `logging.debug` on a `start()` capture thread. The cause was three Python reference loops, not the annotation: `GpuConverter._tensor` held a `GpuTensor` that held the converter; the tensor cached a `_CudaView` that held the tensor; and the view stored the CuPy array whose memory named the view as its owner.
 
-  **Nothing here is diagnosed yet.** The mechanism above is read off the annotation and the source, not reproduced deliberately, and the warning has been observed exactly once. Open questions, in order: is `unsendable` actually required for each of these (D3D11 devices are free-threaded by default, so it may be inherited caution rather than a real constraint); if it is, should these objects carry an explicit `close()` so release is scheduled rather than left to the collector; and does the existing ownership chain in `examples/gpu_tensor_to_cupy.py` make this reachable for a real consumer today. **Reproduce it deliberately before changing anything** — § 5's rule about paths nobody can trigger applies here, and a warning seen once in one suite run is not yet a bug that has been understood.
+  **Fixed** by removing every loop. The tensor holds its converter (a tensor you still hold keeps its memory valid) and the converter holds the tensor only weakly; the CUDA import is cached on the converter; the view holds the *native* converter, not the Python one, and never the array. The last owner to let go -- converter, tensor or a CuPy/Torch array -- now frees the mapping and then the D3D12 resource immediately, on its own thread. `GpuConverter.close()` (and `with`) releases them explicitly. `tests/test_converter_paths.py` runs these drops with the cyclic collector disabled, so a new loop shows up as a converter that is never freed.
+
+  **Still open.** The rule is still "drop on the creating thread": a converter built on one thread and released on another is refused either way, now visibly. The other native classes have not been audited for loops; `TensorTransfer` holds its converter one way only. Whether `unsendable` is required at all (D3D11 devices are free-threaded by default) is unasked.
 
 - **A shared handle is an integer, and every lifetime mistake around it looks like a valid number.** `shared_output_handle` is borrowed: it is closed when the preprocessor is dropped, and the D3D12 resource it names goes with it. A consumer holding the integer, or a CuPy array pointing into that VRAM, has nothing that looks wrong afterwards.
 

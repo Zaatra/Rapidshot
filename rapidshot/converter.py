@@ -30,6 +30,7 @@ from __future__ import annotations
 import ctypes
 import logging
 from typing import Optional, Sequence, Tuple
+import weakref
 
 from . import native
 # Region and crop translation is shared with native.GpuPreprocessor12, which
@@ -131,8 +132,14 @@ class GpuTensor:
     """
 
     def __init__(self, converter: "GpuConverter") -> None:
+        # Strong, and the only strong edge between the two: a tensor keeps
+        # the memory it describes alive, and the converter holds its tensor
+        # weakly, so nothing loops (see _CudaView).
         self._converter = converter
-        self._cuda_view = None
+
+    @property
+    def _cuda_view(self):
+        return self._converter._cuda_view
 
     # -- description ------------------------------------------------------
 
@@ -188,11 +195,10 @@ class GpuTensor:
                 adapter — the ordinary Optimus case, where capture runs on the
                 iGPU and the only CUDA device is the discrete GPU.
         """
-        if self._cuda_view is None:
-            self._cuda_view = _CudaView(self, device)
-        # The import covers every batch slot and is cached; each call hands
-        # back a view of only the slots the last process() filled.
-        return self._cuda_view.array[: self.shape[0]]
+        # The import covers every batch slot and is cached on the converter;
+        # each call hands back a view of only the slots the last process()
+        # filled.
+        return self._converter._cuda_array(device)[: self.shape[0]]
 
     def to_dlpack(self):
         """DLPack capsule, for any framework implementing the protocol.
@@ -255,9 +261,36 @@ class _CudaView:
 
     Kept private: it is an implementation detail of ``to_cupy()``, not an API.
     ``examples/gpu_tensor_to_cupy.py`` remains the worked, commented version.
+
+    **Nothing here may point back at whatever points at it.** The converter
+    holds this view and the array; the array's memory holds this view (its
+    ``owner``); this view holds only the native converter. With no reference
+    loop, the last owner to let go frees the mapping and then the D3D12
+    resource at once, on its own thread. Every native class is ``unsendable``,
+    and a loop left the drop to the cyclic collector, which runs on whichever
+    thread triggers it: PyO3 then refused the drop and skipped the destructor,
+    leaking the resource. Use :meth:`map` to build one.
     """
 
-    def __init__(self, tensor: GpuTensor, device: Optional[int]) -> None:
+    @classmethod
+    def map(cls, converter: "GpuConverter", device: Optional[int]):
+        """``(view, array)``: the imported mapping and a CuPy array over it."""
+        view = cls(converter, device)
+        cp = view._cp
+        # UnownedMemory because the allocation belongs to D3D12: CuPy must
+        # not free it. `owner=view` keeps the mapping alive as long as any
+        # array over it is.
+        memory = cp.cuda.UnownedMemory(
+            view._device_ptr, converter.output_byte_size, owner=view, device_id=view._device
+        )
+        array = cp.ndarray(
+            converter._capacity_shape,
+            dtype=cp.dtype(converter.dtype),
+            memptr=cp.cuda.MemoryPointer(memory, 0),
+        )
+        return view, array
+
+    def __init__(self, converter: "GpuConverter", device: Optional[int]) -> None:
         import cupy as cp
 
         self._cp = cp
@@ -275,21 +308,23 @@ class _CudaView:
         self._cuda.cuDestroyExternalMemory.argtypes = [ctypes.c_void_p]
         self._ext = ctypes.c_void_p()
         self._device_ptr = None
-        # Hold the tensor so the D3D12 resource and its shared handle outlive
-        # the mapping that points into them.
-        self._tensor = tensor
+        # The native converter, not the Python one: it keeps the D3D12
+        # resource and its shared handle alive for as long as the mapping
+        # into them, without forming a loop through GpuConverter.
+        self._owner = converter._impl
 
         self._device = (
-            device if device is not None else _device_for_adapter(cp, tensor.adapter_luid)
+            device if device is not None
+            else _device_for_adapter(cp, bytes(converter._impl.adapter_luid()))
         )
 
         desc = _ExternalMemoryHandleDesc()
         ctypes.memset(ctypes.byref(desc), 0, ctypes.sizeof(desc))
         desc.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE
-        desc.handle.win32.handle = ctypes.c_void_p(tensor.shared_handle)
+        desc.handle.win32.handle = ctypes.c_void_p(converter._impl.shared_output_handle)
         # The whole buffer, not this call's slots: the import is cached across
         # calls whose region count differs.
-        nbytes = tensor._converter.output_byte_size
+        nbytes = converter.output_byte_size
         desc.size = nbytes
         # A committed D3D12 resource is a dedicated allocation; omitting this
         # flag makes the import fail on some drivers and succeed on others.
@@ -321,18 +356,6 @@ class _CudaView:
             )
             self._device_ptr = ptr.value
 
-            # UnownedMemory because the allocation belongs to D3D12: CuPy must
-            # not free it. `owner=self` keeps this view alive as long as the
-            # array is, which keeps the mapping alive with it.
-            memory = self._cp.cuda.UnownedMemory(
-                self._device_ptr, nbytes, owner=self, device_id=self._device
-            )
-            self.array = self._cp.ndarray(
-                tensor._converter._capacity_shape,
-                dtype=self._cp.dtype(tensor.dtype),
-                memptr=self._cp.cuda.MemoryPointer(memory, 0),
-            )
-
     def sync(self) -> None:
         with self._cp.cuda.Device(self._device):
             self._cp.cuda.runtime.deviceSynchronize()
@@ -351,6 +374,8 @@ class _CudaView:
             if code:
                 logger.warning(f"cuDestroyExternalMemory failed with CUDA error {code}")
             self._ext = ctypes.c_void_p()
+        # Unmapped first, then the resource may go.
+        self._owner = None
 
     def __del__(self) -> None:
         try:
@@ -688,7 +713,51 @@ class GpuConverter:
         self._layout = layout
         self._normalize = bool(normalize)
         self._bgr = bool(bgr)
-        self._tensor = GpuTensor(self)
+        # Held weakly: the tensor holds this converter, and a strong edge
+        # back made a loop only the cyclic collector could free -- on
+        # whichever thread ran it, where the unsendable native converter
+        # refused to drop and leaked its D3D12 resources.
+        self._tensor_ref = None
+        # The CUDA import, cached here rather than on a tensor that may come
+        # and go: see _CudaView for why neither points back at this object.
+        self._cuda_view = None
+        self._cuda_array_cache = None
+
+    @property
+    def _tensor(self) -> GpuTensor:
+        """The tensor handle: the same object for as long as anyone holds it."""
+        tensor = self._tensor_ref() if self._tensor_ref is not None else None
+        if tensor is None:
+            tensor = GpuTensor(self)
+            self._tensor_ref = weakref.ref(tensor)
+        return tensor
+
+    def _cuda_array(self, device: Optional[int]):
+        if self._impl is None:
+            raise RuntimeError("this GpuConverter is closed")
+        if self._cuda_array_cache is None:
+            self._cuda_view, self._cuda_array_cache = _CudaView.map(self, device)
+        return self._cuda_array_cache
+
+    def close(self) -> None:
+        """Release this converter's GPU memory now, on the calling thread.
+
+        Optional: dropping the last reference to the converter and its tensors
+        frees the same things on the thread that drops it. Either way do it on
+        the thread that created the converter -- the native object refuses to
+        be dropped anywhere else, and its memory then leaks. A CuPy or Torch
+        array you still hold keeps the memory valid until you drop it too.
+        Idempotent; ``process()`` raises afterwards.
+        """
+        self._cuda_array_cache = None
+        self._cuda_view = None
+        self._impl = None
+
+    def __enter__(self) -> "GpuConverter":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
 
     @staticmethod
     def _tensor_format(dtype: Optional[str], layout: Optional[str]):
@@ -739,10 +808,12 @@ class GpuConverter:
                 one dispatch into slots ``0..len(regions)``. At most ``batch``;
                 not combinable with ``crop``.
 
-        The returned :class:`GpuTensor` is the *same object* every call — it
-        describes a buffer that is reused, so holding two of them would imply
-        two results that do not exist.
+        The returned :class:`GpuTensor` is the *same object* every call while
+        you hold it — it describes a buffer that is reused, so holding two of
+        them would imply two results that do not exist.
         """
+        if self._impl is None:
+            raise RuntimeError("this GpuConverter is closed")
         if regions is not None:
             if crop is not None:
                 raise ValueError("give crop or regions, not both")

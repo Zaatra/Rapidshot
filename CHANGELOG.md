@@ -10,6 +10,23 @@ each release can be traced back to the plan it implements.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A dropped `GpuConverter` leaked its GPU memory.** The converter and its
+  `GpuTensor` referred to each other, as did the tensor and its cached CUDA
+  import, so dropping them left a loop only the cyclic garbage collector could
+  free -- on whichever thread ran it. The native converter may only be dropped
+  on the thread that created it, so from any other thread PyO3 refused the
+  drop, printed an unraisable `RuntimeError: ... is unsendable, but is being
+  dropped on another thread`, and skipped the destructor: the D3D12 resources
+  leaked. Reproduced every time on an Intel desktop, and unprompted on a
+  `start()` capture thread. The loops are gone -- the tensor keeps its
+  converter alive, the converter holds the tensor weakly and caches the CUDA
+  import itself -- so the last owner to let go (converter, tensor, or a CuPy or
+  Torch array over it) frees everything at once on its own thread.
+  `GpuConverter.close()`, or `with GpuConverter(...) as converter:`, releases it
+  explicitly.
+
 ## [2.6.3] - 2026-09-29
 
 ### Added — `rapidshot benchmark`

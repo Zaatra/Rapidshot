@@ -538,3 +538,81 @@ def test_dlpack_torch_sync_and_close(cuda, monkeypatch):
     view.close()                    # idempotent
     assert nvcuda.freed == [0xD000] and nvcuda.destroyed == [0xE0]
     view.__del__()
+
+
+# --------------------------------------------------------------------------
+# lifetime: no reference loops, so a drop is immediate and on its own thread
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def drops(ext, monkeypatch):
+    """Records the thread each native converter is dropped on, with the cyclic
+    collector off: a reference loop then shows up as a converter never freed.
+    The real native class is unsendable, so a drop on another thread -- which
+    is where the collector used to free it -- was refused and leaked."""
+    import gc
+    import threading
+    dropped = []
+
+    class Recording(FakeImpl):
+        def __del__(self):
+            dropped.append(threading.get_ident())
+
+    ext.GpuConverter12 = Recording
+    gc.collect()
+    gc.disable()
+    try:
+        yield dropped
+    finally:
+        gc.enable()
+
+
+def test_a_dropped_converter_is_freed_at_once_on_the_dropping_thread(drops):
+    import threading
+    conv = GpuConverter(frame(), (8, 4))
+    tensor = conv.process(frame())
+    del conv, tensor
+    assert drops == [threading.get_ident()]
+
+
+def test_a_tensor_keeps_its_converter_and_memory_alive(drops):
+    conv = GpuConverter(frame(), (8, 4))
+    tensor = conv.process(frame())
+    del conv
+    assert drops == [] and tensor.shape == (1, 3, 4, 8)
+    del tensor
+    assert len(drops) == 1
+
+
+def test_the_same_tensor_comes_back_while_it_is_held(ext):
+    conv = GpuConverter(frame(), (8, 4))
+    first = conv.process(frame())
+    assert conv.process(frame()) is first
+
+
+def test_close_frees_now_and_refuses_further_work(drops):
+    with GpuConverter(frame(), (8, 4)) as conv:
+        tensor = conv.process(frame())
+    assert len(drops) == 1
+    conv.close()                    # idempotent
+    with pytest.raises(RuntimeError, match="closed"):
+        conv.process(frame())
+    with pytest.raises(RuntimeError, match="closed"):
+        tensor.to_cupy()
+
+
+def test_a_cupy_array_outliving_both_keeps_the_mapping_then_frees_in_order(cuda, drops):
+    """The array's memory owns the view, the view owns the native converter:
+    dropping the array last unmaps CUDA, then releases the D3D12 resource."""
+    nvcuda, cp = cuda()
+
+    class Memory:
+        def __init__(self, ptr, size, owner, device_id):
+            self.owner = owner
+
+    cp.cuda.UnownedMemory = Memory
+    array = GpuConverter(frame(), (8, 4)).process(frame()).to_cupy()
+    assert drops == [] and nvcuda.freed == []
+    del array
+    assert nvcuda.freed == [0xD000] and nvcuda.destroyed == [0xE0]
+    assert len(drops) == 1
