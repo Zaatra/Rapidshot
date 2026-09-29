@@ -567,6 +567,32 @@ which is a different claim:
 | Hybrid with an AMD adapter | Cross-adapter capability flags are unknown; the buffer path was chosen so nothing depends on them |
 | Headless / virtual display (IDD) | Diagnostics exist; capture on one has not been run |
 
+## Known limitations
+
+**HDR desktops are not captured correctly yet. Treat HDR capture as
+unsupported until 2.6.4, and turn HDR off (Win+Alt+B) to capture.** With
+Windows HDR on, the desktop is duplicated as linear light in a 10-bit or FP16
+surface, not 8-bit sRGB, and RapidShot does not convert it yet:
+
+- **`grab()` and the NumPy frames from `start()` are black**, with no error:
+  the copy they read through is 8-bit BGRA, and copying a 10-bit or FP16
+  surface into it fails.
+- **`GpuConverter` tensors carry linear light**, not the sRGB-encoded values a
+  model was trained on.
+- **NV12/P010 output from a 10-bit HDR surface has wrong colours**, again
+  without an error; FP16 input is already refused.
+- **On platforms without full Windows HDR support, the capture is also
+  clipped at 80 nits** before RapidShot sees it. On an Intel Core i5-10500
+  (Comet Lake, UHD 630) driving a 4K HDR TV, the desktop duplicated as
+  `R10G10B10A2`, clipped at 1.0 = 80 nits, so everything brighter than that,
+  including ordinary SDR white at the usual 200-240 nit setting, came back
+  clipped. [Microsoft lists Comet Lake](https://learn.microsoft.com/en-us/windows/win32/direct3darticles/high-dynamic-range#graphics-processor-gpu)
+  as not providing full HDR functionality; on supported GPUs the desktop
+  duplicates as FP16 scRGB without that clip.
+
+SDR desktops are unaffected: with HDR off, the same machine captured every
+path byte-exact against an independent reference.
+
 ## Migrating from 2.5
 
 - **`rapidshot-native >= 0.2.0` is now required** for the GPU tensor features.

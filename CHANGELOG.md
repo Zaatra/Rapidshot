@@ -10,7 +10,7 @@ each release can be traced back to the plan it implements.
 
 ## [Unreleased]
 
-## [2.6.3] - 2026-09-27
+## [2.6.3] - 2026-09-29
 
 ### Added — `rapidshot benchmark`
 
@@ -83,6 +83,16 @@ each release can be traced back to the plan it implements.
   drawing on. The harnesses now use the display mss marks as primary (10.2 and
   later), or the one at the desktop origin. Published mss rows are unaffected:
   they were recorded on single-display machines and passed verification.
+
+### Documentation
+
+- **HDR desktops are a known limitation.** The first run on an HDR display
+  (Intel Core i5-10500, UHD 630, LG 4K TV) found `grab()` and `start()`
+  returning black frames, `GpuConverter` passing linear light into tensors, and
+  NV12 mis-converting 10-bit input; on that platform the duplicated surface was
+  also clipped at 80 nits. The README says so, ROADMAP § 7.3's claim that an
+  HDR desktop duplicates as FP16 is corrected with the measurements, and the
+  fixes are planned for 2.6.4. SDR capture is unaffected.
 
 ## [2.6.2] - 2026-09-27
 

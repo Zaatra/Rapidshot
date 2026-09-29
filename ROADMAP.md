@@ -2654,9 +2654,43 @@ wants less than OBS does.
 #### HDR: get the metadata out, and decide what a model should receive
 
 DDA's `DuplicateOutput1` and WGC both allow `R16G16B16A16_FLOAT` for an HDR
-output and `B8G8R8A8_UNORM` for SDR. § 7.2 already accepts those input formats
-and **only BGRA8 has ever been exercised**, because the development machines are
-SDR. Two separate pieces of work:
+output and `B8G8R8A8_UNORM` for SDR. § 7.2 already accepts those input formats.
+Until 2026-09-29 **only BGRA8 had ever been exercised**, because the development
+machines are SDR.
+
+**Correction, measured 2026-09-29: an HDR desktop does not always duplicate as
+FP16.** On an Intel Core i5-10500 (Comet Lake, UHD 630) driving an LG 4K TV
+with HDR on and SDR white at 240 nits, against an independent reference
+(patches drawn as exact sRGB bytes, expected scRGB = EOTF_sRGB(v) × SDR white / 80):
+
+- `DuplicateOutput1` returns the desktop's own format when it is in the
+  requested list, and otherwise the *first* listed format, converted. Here the
+  desktop's own format was **`R10G10B10A2_UNORM` holding linear scRGB clipped
+  at 1.0 (80 nits)** -- within 0.5/1023 of `clip(linear × 3)`. Every HDR
+  highlight read exactly 1.0, and SDR content above about level 156 clipped.
+- Asking for FP16 first got FP16, but DXGI's conversion of the same clipped
+  data: white read 1.000 where 3.000 was drawn. A converted surface is also not
+  `SHARED_NTHANDLE`, so the D3D12 paths refused it; only the desktop's own
+  surface could be shared. **Any fix that requests FP16 must copy into a
+  RapidShot-owned shareable texture before the GPU paths can use it.**
+- DXGI's own conversion to BGRA8 (legacy `DuplicateOutput`, or BGRA8 listed
+  first) maps 80 nits to white: about 3× too bright in linear terms and clipped.
+  That is the washed-out look remote-desktop tools show on HDR hosts.
+- 2.6.3's `grab()` was black (its staging copy is BGRA8), `GpuConverter`
+  passed linear light into tensors, and NV12 accepted the linear 10-bit input
+  and produced wrong colours. HDR→SDR during capture recovered cleanly.
+
+Microsoft lists full Advanced Color support from Intel Ice Lake, AMD Polaris and
+NVIDIA Pascal, and says Comet Lake "don't provide full functionality". OBS and
+RustDesk request `[R16G16B16A16_FLOAT, B8G8R8A8_UNORM]` and get unclipped scRGB
+on supported GPUs. So the clip is most likely this platform, not DDA in general,
+and it is **unverified on a supported GPU**: the LG TV on the Arrow Lake desktop
+is the next test. The correctness fixes, not the design below, are 2.6.4's:
+`grab()` staging in the frame's format and mapping scRGB → sRGB through the SDR
+white level, a warning where the capture is clipped, and refusing YUV and
+linear-to-sRGB tensor output from linear input rather than converting it wrongly.
+
+Two separate pieces of work:
 
 Surface the truth on the frame —
 
