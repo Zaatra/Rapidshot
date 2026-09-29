@@ -212,7 +212,7 @@ def source(logs, monkeypatch, *, lines=b"", exits=None, binary=True, steady=None
     by default every launch presents steadily."""
     verdicts = list(steady or [])
     monkeypatch.setattr(mp, "presenting_steadily",
-                        lambda path, fps: (verdicts.pop(0) if verdicts else True, 7))
+                        lambda path, fps, since=0: (verdicts.pop(0) if verdicts else True, 7))
     monkeypatch.setattr(mp, "SOURCE", SimpleNamespace(
         is_file=lambda: binary, __str__=lambda self: "latency_source.exe"))
 
@@ -458,3 +458,73 @@ def test_a_row_without_a_slope_does_not_break_the_table(capsys):
                      "working_set_peak_mb": 1.0,
                      "working_set_growth_mb_per_s": None}])
     assert "n/a" in capsys.readouterr().out
+
+
+# -- one source for the run, switched over stdin --------------------------------
+
+class SwitchingProc:
+    """A running source whose stdin either acknowledges a workload switch, as
+    rapidshot-native 0.2.2's does, or ends the process, as 0.2.1's did."""
+
+    def __init__(self, stdout_path, acknowledges=True):
+        self.stdout_path, self.acknowledges, self.exited = stdout_path, acknowledges, None
+        self.written = []
+        outer = self
+
+        class Stdin:
+            def write(self, data):
+                outer.written.append(data)
+                if outer.acknowledges:
+                    name = data.decode().strip()
+                    with outer.stdout_path.open("ab") as out:
+                        out.write(b'{"event":"workload","name":"' + name.encode() + b'"}\n')
+                else:
+                    outer.exited = 0
+
+            def flush(self):
+                pass
+
+        self.stdin = Stdin()
+
+    def poll(self):
+        return self.exited
+
+
+def switching_source(logs, monkeypatch, acknowledges=True, steady=True):
+    monkeypatch.setattr(mp.time, "monotonic", Clock(step=0.25))
+    monkeypatch.setattr(mp.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(mp, "presenting_steadily", lambda path, fps, since=0: (steady, 30))
+    src = mp.WorkloadSource(logs, "static", 900, 700, 60)
+    src.stdout_path.write_bytes(b'{"event":"ready"}\n')
+    src.proc = SwitchingProc(src.stdout_path, acknowledges)
+    return src
+
+
+def test_a_source_switches_workload_in_place(logs, monkeypatch):
+    src = switching_source(logs, monkeypatch)
+    assert src.switch("scroll") and src.workload == "scroll"
+    assert src.proc.written == [b"scroll\n"]
+    assert '"event": "source-switched"' in (logs.directory / "parent.log").read_text()
+
+
+def test_an_older_source_that_cannot_switch_is_replaced(logs, monkeypatch):
+    """0.2.1's source stops on any stdin line; the run then relaunches, as
+    every run did before."""
+    src = switching_source(logs, monkeypatch, acknowledges=False)
+    assert not src.switch("scroll") and src.workload == "static"
+    launched = []
+    monkeypatch.setattr(mp.WorkloadSource, "start", lambda self: launched.append(self.workload))
+    monkeypatch.setattr(mp.WorkloadSource, "close", lambda self: None)
+    fresh = mp.next_source(src, logs, "motion", 900, 700, 60)
+    assert fresh is not src and launched == ["motion"]
+
+
+def test_a_source_that_stalls_after_switching_is_replaced(logs, monkeypatch):
+    src = switching_source(logs, monkeypatch, steady=False)
+    assert not src.switch("scroll")
+    assert '"after": "switch"' in (logs.directory / "parent.log").read_text()
+
+
+def test_next_source_keeps_a_source_that_switched(logs, monkeypatch):
+    src = switching_source(logs, monkeypatch)
+    assert mp.next_source(src, logs, "motion", 900, 700, 60) is src

@@ -1,6 +1,14 @@
 //! Controlled desktop input. No Tk, GDI drawing, or exclusive display mode.
 //! argv: width height fps workload present-log [scene canvas-w canvas-h dx dy].
-//! EOF on stdin ends ownership.
+//! stdin: a line naming a workload (`static`, `scroll`, `motion`) switches to it
+//! in place and prints `{"event":"workload","name":...}`; EOF, or any other
+//! line, ends ownership -- which is all an older harness ever sends.
+//!
+//! Switching exists because replacing the process was the failure: on an Intel
+//! desktop about 15% of sources launched after an earlier one presented three
+//! frames and then had every flip held for 2 s, visible and uncloaked, never
+//! recovering. First launches never did. One source for the whole run, switched
+//! over stdin, stalled 0 times in 30 switches.
 //!
 //! Without the optional scene arguments this behaves exactly as it always has:
 //! a procedural pattern under the frame-ID marker, which is what the pixel-age
@@ -14,11 +22,11 @@
 //! mode for nothing.
 use std::io::{BufRead, Write};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU32, Ordering},
     Arc,
 };
 use std::time::{Duration, Instant};
-use windows::core::{w, BOOL, PCSTR};
+use windows::core::{w, Interface, BOOL, PCSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct3D::Fxc::*;
 use windows::Win32::Graphics::Direct3D::*;
@@ -138,12 +146,9 @@ unsafe fn run() -> Result<(), Box<dyn std::error::Error>> {
     let width: u32 = args[1].parse()?;
     let height: u32 = args[2].parse()?;
     let fps: f64 = args[3].parse()?;
-    let mode = match args[4].as_str() {
-        "static" => 0,
-        "scroll" => 1,
-        "motion" => 2,
-        _ => return Err("invalid workload".into()),
-    };
+    let mode = Arc::new(AtomicU32::new(
+        workload_mode(args[4].as_str()).ok_or("invalid workload")?,
+    ));
     if width < 384 || height < 16 || !fps.is_finite() || !(1.0..=240.0).contains(&fps) {
         return Err("invalid dimensions or fps outside 1..240".into());
     }
@@ -180,9 +185,23 @@ unsafe fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let stopped = Arc::new(AtomicBool::new(false));
     let parent_stopped = stopped.clone();
+    let parent_mode = mode.clone();
     std::thread::spawn(move || {
+        let stdin = std::io::stdin();
         let mut line = String::new();
-        let _ = std::io::stdin().lock().read_line(&mut line);
+        loop {
+            line.clear();
+            let read = stdin.lock().read_line(&mut line);
+            let name = line.trim();
+            match (read, workload_mode(name)) {
+                (Ok(n), Some(next)) if n > 0 => {
+                    parent_mode.store(next, Ordering::SeqCst);
+                    println!("{{\"event\":\"workload\",\"name\":\"{name}\"}}");
+                    let _ = std::io::stdout().flush();
+                }
+                _ => break,
+            }
+        }
         parent_stopped.store(true, Ordering::SeqCst);
     });
     let class = WNDCLASSW {
@@ -257,6 +276,11 @@ unsafe fn run() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     eprintln!("step: device created");
     let (swap, device, context) = (swap.unwrap(), device.unwrap(), context.unwrap());
+    // One frame queued ahead, not the default three. Pixel age is timed from
+    // just before Present(), so frames already queued behind it add whole
+    // refreshes to every path at once -- and how many are queued varied by
+    // launch: pass-to-pass steps of ~10-30 ms on all paths together.
+    device.cast::<IDXGIDevice1>()?.SetMaximumFrameLatency(1)?;
     let back: ID3D11Texture2D = swap.GetBuffer(0)?;
     let mut rtv = None;
     device.CreateRenderTargetView(&back, None, Some(&mut rtv))?;
@@ -362,9 +386,18 @@ unsafe fn run() -> Result<(), Box<dyn std::error::Error>> {
             &buffer,
             0,
             None,
-            [id, mode, width, height, canvas_w, canvas_h, step_x, step_y]
-                .as_ptr()
-                .cast(),
+            [
+                id,
+                mode.load(Ordering::SeqCst),
+                width,
+                height,
+                canvas_w,
+                canvas_h,
+                step_x,
+                step_y,
+            ]
+            .as_ptr()
+            .cast(),
             0,
             0,
         );
@@ -403,6 +436,16 @@ unsafe fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     log.sync_data()?;
     Ok(())
+}
+
+/// The shader's mode number for a workload name.
+fn workload_mode(name: &str) -> Option<u32> {
+    match name {
+        "static" => Some(0),
+        "scroll" => Some(1),
+        "motion" => Some(2),
+        _ => None,
+    }
 }
 
 fn main() {

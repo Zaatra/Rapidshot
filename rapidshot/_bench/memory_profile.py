@@ -230,6 +230,7 @@ class WorkloadSource:
         self.width, self.height, self.fps = width, height, fps
         self.proc = self.stdout = self.stderr = None
         self.present_log = logs.directory / f"presents-{workload}.jsonl"
+        self.stdout_path = logs.directory / f"source-{workload}.stdout.log"
 
     def start(self):
         """Launch, and relaunch a source that stops presenting after its first
@@ -254,7 +255,7 @@ class WorkloadSource:
 
     def _launch(self):
         directory = self.logs.directory
-        stdout_path = directory / f"source-{self.workload}.stdout.log"
+        stdout_path = self.stdout_path
         # Appended, not truncated: a source restarted after it exited must not
         # erase the stderr that says why it did.
         offset = stdout_path.stat().st_size if stdout_path.exists() else 0
@@ -280,6 +281,54 @@ class WorkloadSource:
         finally:
             reader.close()
         raise RuntimeError(f"source readiness timeout for workload {self.workload}")
+
+    def switch(self, workload) -> bool:
+        """Point the running source at another workload, in place.
+
+        Replacing the process was what stalled: about 15% of sources launched
+        after an earlier one presented three frames and then had every flip
+        held (benchmark_contract.HEALTHY_PRESENTS). One source switched over
+        stdin did not. False when it cannot switch -- it has exited, it did
+        not acknowledge within 2 s, or it stopped presenting afterwards -- and
+        the caller launches a fresh one instead. A source from
+        rapidshot-native 0.2.1 or earlier stops on any stdin line, so it never
+        acknowledges and always ends up relaunched, as every run was before.
+        """
+        if self.proc is None or self.exit_code() is not None or self.proc.stdin is None:
+            return False
+        offset = self.stdout_path.stat().st_size if self.stdout_path.exists() else 0
+        before = self.presents()
+        try:
+            self.proc.stdin.write(workload.encode("ascii") + b"\n")
+            self.proc.stdin.flush()
+        except (OSError, ValueError):
+            return False
+        if not self._acknowledged(workload, offset):
+            self.logs.event("source-switch-unacknowledged", workload=workload)
+            return False
+        steady, seen = presenting_steadily(self.present_log, self.fps, since=before)
+        if not steady:
+            self.logs.event("source-unhealthy", workload=workload, after="switch",
+                            presents=seen)
+            return False
+        self.workload = workload
+        self.logs.event("source-switched", workload=workload)
+        return True
+
+    def _acknowledged(self, workload, offset, timeout=2.0) -> bool:
+        wanted = f'"name":"{workload}"'.encode("ascii")
+        deadline = time.monotonic() + timeout
+        with self.stdout_path.open("rb") as reader:
+            reader.seek(offset)
+            seen = b""
+            while time.monotonic() < deadline:
+                seen += reader.read()
+                if b'"event":"workload"' in seen and wanted in seen:
+                    return True
+                if self.exit_code() is not None:
+                    return False
+                time.sleep(0.02)
+        return False
 
     def exit_code(self):
         """None while the source runs. It exits on any Present() that is not S_OK --
@@ -324,6 +373,18 @@ def source_stall(presented, wall_seconds, source_fps, exit_code=None):
                 f"against about {expected:.0f}, so the screen stopped changing. "
                 "Rerun the benchmark")
     return None
+
+
+def next_source(source, logs, workload, width, height, fps):
+    """The source for ``workload``: the current one switched in place when it
+    can be, otherwise a fresh launch (see WorkloadSource.switch)."""
+    if source is not None and source.switch(workload):
+        return source
+    if source is not None:
+        source.close()
+    fresh = WorkloadSource(logs, workload, width, height, fps)
+    fresh.start()
+    return fresh
 
 
 def running_source(source):
@@ -475,58 +536,59 @@ def main(argv=None) -> int:
                "environment": machine, "cpu_policy": policy.as_dict(),
                "animated_rect": list(animated), "captured_rect": list(captured),
                "coverage_warnings": list(coverage)}
+    source = None
     try:
         for workload in args.workloads:
-            source = WorkloadSource(logs, workload, args.width, args.height,
-                                    args.source_fps)
-            source.start()
-            try:
-                for library in args.libraries:
-                    identity = CaseIdentity(benchmark="memory_profile", path=library,
-                                            configuration=configuration, workload=workload,
-                                            repeat=args.repeat)
-                    action, done = result_store.resume_decision(
-                        store, identity, retry_failed=args.retry_failed)
-                    if action == "skip":
-                        hint = ("" if done in result_store.RESUME_SETTLED
-                                else "; pass --retry-failed to measure it again")
-                        print(f"  [{workload}/{library}] already {done}{hint}", flush=True)
-                        continue
-                    guard.check(force=True)
-                    source = running_source(source)
-                    print(f"  [{workload}/{library}] ...", flush=True)
-                    with result_store.case_context(
-                            store, identity, retry=action == "retry",
-                            required=MEMORY_REQUIRED) as case:
-                        row = measure_case(source, library, workload, args.seconds, logs,
-                                           rate=min(args.source_fps, mode["refresh_hz"]))
-                        row["workload"] = workload
-                        row["animated_rect"] = list(animated)
-                        row["captured_rect"] = list(captured)
-                        case.result = row
-                        case.contamination = list(coverage)
-                    if case.record is not None:
-                        row = dict(row, case_status=case.record.status,
-                                   case_reasons=list(case.record.reasons),
-                                   case={"run_id": store.run_id,
-                                         "case_id": case.record.case_id,
-                                         "attempt_id": case.record.attempt_id})
-                    rows.append(row)
-                    if "error" in row:
-                        print(f"    ERROR: {row['error']}", flush=True)
-                    else:
-                        print(f"    {row['fps']:.1f} fps; working set "
-                              f"{row['working_set_mb']:.1f} MB "
-                              f"({row['working_set_over_baseline_mb']:+.1f} over "
-                              f"baseline)", flush=True)
-                    if args.out:
-                        args.out.write_text(json.dumps(payload, indent=2) + "\n",
-                                            encoding="utf-8")
-            finally:
-                source.close()
+            # One source for the whole run where it can switch workload in
+            # place; a fresh one only when it cannot (see next_source).
+            source = next_source(source, logs, workload, args.width, args.height,
+                                 args.source_fps)
+            for library in args.libraries:
+                identity = CaseIdentity(benchmark="memory_profile", path=library,
+                                        configuration=configuration, workload=workload,
+                                        repeat=args.repeat)
+                action, done = result_store.resume_decision(
+                    store, identity, retry_failed=args.retry_failed)
+                if action == "skip":
+                    hint = ("" if done in result_store.RESUME_SETTLED
+                            else "; pass --retry-failed to measure it again")
+                    print(f"  [{workload}/{library}] already {done}{hint}", flush=True)
+                    continue
+                guard.check(force=True)
+                source = running_source(source)
+                print(f"  [{workload}/{library}] ...", flush=True)
+                with result_store.case_context(
+                        store, identity, retry=action == "retry",
+                        required=MEMORY_REQUIRED) as case:
+                    row = measure_case(source, library, workload, args.seconds, logs,
+                                       rate=min(args.source_fps, mode["refresh_hz"]))
+                    row["workload"] = workload
+                    row["animated_rect"] = list(animated)
+                    row["captured_rect"] = list(captured)
+                    case.result = row
+                    case.contamination = list(coverage)
+                if case.record is not None:
+                    row = dict(row, case_status=case.record.status,
+                               case_reasons=list(case.record.reasons),
+                               case={"run_id": store.run_id,
+                                     "case_id": case.record.case_id,
+                                     "attempt_id": case.record.attempt_id})
+                rows.append(row)
+                if "error" in row:
+                    print(f"    ERROR: {row['error']}", flush=True)
+                else:
+                    print(f"    {row['fps']:.1f} fps; working set "
+                          f"{row['working_set_mb']:.1f} MB "
+                          f"({row['working_set_over_baseline_mb']:+.1f} over "
+                          f"baseline)", flush=True)
+                if args.out:
+                    args.out.write_text(json.dumps(payload, indent=2) + "\n",
+                                        encoding="utf-8")
     except KeyboardInterrupt:
         payload["error"] = "interrupted"
     finally:
+        if source is not None:
+            source.close()
         if args.out:
             args.out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     print()

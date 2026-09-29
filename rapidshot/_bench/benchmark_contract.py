@@ -190,8 +190,9 @@ def count_presents(path) -> int:
         return 0
 
 
-def presenting_steadily(path, fps=0.0, *, clock=time.monotonic, sleep=time.sleep):
-    """(steady, presents seen) for a source that has just reported ready.
+def presenting_steadily(path, fps=0.0, *, since=0, clock=time.monotonic, sleep=time.sleep):
+    """(steady, presents seen) for a source that has just reported ready, or
+    just switched workload: ``since`` is the count to measure from.
 
     Steady means HEALTHY_PRESENTS within HEALTHY_WINDOW_S, or half the source's
     rate over that window when it presents slower than that.
@@ -201,7 +202,7 @@ def presenting_steadily(path, fps=0.0, *, clock=time.monotonic, sleep=time.sleep
         required = max(2, min(HEALTHY_PRESENTS, int(fps * HEALTHY_WINDOW_S / 2)))
     deadline = clock() + HEALTHY_WINDOW_S
     while True:
-        seen = count_presents(path)
+        seen = count_presents(path) - since
         if seen >= required:
             return True, seen
         if clock() >= deadline:

@@ -47,6 +47,24 @@ each release can be traced back to the plan it implements.
   refused with the reason; `allow_linear=True` passes scRGB through for float
   output, and YUV refuses it regardless.
 
+### Fixed — `rapidshot benchmark` and its test source
+
+- **The memory run keeps one test source and switches its workload.**
+  Replacing the source between workloads was what stalled: on an Intel desktop
+  about 15% of replacement launches presented three frames and then had every
+  flip held for 2 s. `latency_source` now switches pattern when a workload name
+  arrives on stdin and acknowledges it (EOF, or any other line, still stops
+  it), and the memory harness switches instead of relaunching -- 0 stalls in 30
+  switches on trial there. A source that does not acknowledge, as
+  rapidshot-native 0.2.1's does not, is replaced as before, and the 2.6.3
+  health check still guards every launch and switch.
+- **The test source queues one frame, not three.** Pixel age is timed from
+  just before `Present()`, so frames already queued behind it added whole
+  refreshes to every path at once, by a different number per launch: pass to
+  pass, GpuConverter read 42, 15, 8 and 42 ms. `SetMaximumFrameLatency(1)`
+  removes that offset. Both changes need a rapidshot-native release to reach
+  testers.
+
 ### Added
 
 - **Frames say what they hold.** `Frame.pixel_format`, `dxgi_format`, `hdr`,
