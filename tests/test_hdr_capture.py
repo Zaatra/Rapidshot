@@ -203,11 +203,32 @@ def test_an_sdr_desktop_never_asks_about_hdr(monkeypatch):
 def test_a_clipped_hdr_desktop_is_named_once(monkeypatch, caplog):
     color = hdr.DisplayColor(True, 240.0)
     capture, asked = capture_with(hdr.DXGI_FORMAT_R10G10B10A2_UNORM, color, monkeypatch)
-    with caplog.at_level(logging.WARNING, logger="rapidshot.capture"):
+    with caplog.at_level(logging.WARNING, logger="rapidshot.capture"), \
+            pytest.warns(hdr.HdrClippedWarning, match="clipped at 80 nits") as raised:
         capture._prepare_stage((64, 48))
         capture._prepare_stage((64, 48))
     assert capture._stagesurf.color is color and asked == [r"\\.\DISPLAY1"]
     assert caplog.text.count("clipped at 80 nits") == 1
+    assert len(raised) == 1 and "240 nits" in str(raised[0].message)
+
+
+def test_the_clip_reaches_a_user_who_never_configured_logging(monkeypatch):
+    """The HDR test desktop saw nothing: the "rapidshot" logger has only a
+    NullHandler, so the log record alone went nowhere. A warning does not
+    depend on logging, and Python's default filters show it."""
+    import warnings
+    import rapidshot
+    handlers = logging.getLogger("rapidshot").handlers
+    assert handlers and all(isinstance(h, logging.NullHandler) for h in handlers)
+    capture, _ = capture_with(hdr.DXGI_FORMAT_R10G10B10A2_UNORM,
+                              hdr.DisplayColor(True, 240.0), monkeypatch)
+    with warnings.catch_warnings(record=True) as seen:
+        warnings.resetwarnings()
+        warnings.simplefilter("default")
+        capture._color_for(hdr.DXGI_FORMAT_R10G10B10A2_UNORM)
+        capture._color_for(hdr.DXGI_FORMAT_R10G10B10A2_UNORM)
+    assert [w.category for w in seen] == [hdr.HdrClippedWarning]
+    assert rapidshot.HdrClippedWarning is hdr.HdrClippedWarning
 
 
 def test_a_format_the_cpu_paths_cannot_convert_is_an_error(monkeypatch):

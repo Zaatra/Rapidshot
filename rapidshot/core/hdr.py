@@ -45,6 +45,16 @@ FORMAT_NAMES = {
 NOMINAL_WHITE_NITS = 80.0
 
 
+class HdrClippedWarning(RuntimeWarning):
+    """HDR is on, but this display's capture is clipped at 80 nits.
+
+    Issued once per camera, through :mod:`warnings` as well as logging: the
+    library's logger has only a NullHandler, so a log record alone never
+    reached a user who had not configured logging. Filter it like any other
+    warning, e.g. ``warnings.simplefilter("ignore", rapidshot.HdrClippedWarning)``.
+    """
+
+
 def is_supported(dxgi_format: int) -> bool:
     return dxgi_format in FORMAT_NAMES
 

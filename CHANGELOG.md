@@ -10,6 +10,8 @@ each release can be traced back to the plan it implements.
 
 ## [Unreleased]
 
+## [2.6.3] - 2026-09-30
+
 ### Fixed
 
 - **A dropped `GpuConverter` leaked its GPU memory.** The converter and its
@@ -36,62 +38,27 @@ each release can be traced back to the plan it implements.
   desktop comes back as the bytes it was drawn with and anything brighter than
   SDR white clips to white. The SDR white level is read from the display and
   refreshed about once a second; an ordinary BGRA8 desktop never asks.
+  Checked on the HDR test desktop: `grab()` no longer black, and capture
+  recovers across HDR switched off and back on mid-stream.
 - **A capture clipped at 80 nits says so.** Where the desktop duplicates as
   R10G10B10A2 while HDR is on -- an Intel Comet Lake desktop did, a platform
   Microsoft lists as lacking full HDR support -- everything above 80 nits,
   SDR white included, is clipped before RapidShot sees it. The first such frame
-  logs a warning naming the cause instead of passing flat whites off as exact.
+  raises `rapidshot.HdrClippedWarning`, once per camera, naming the cause
+  instead of passing flat whites off as exact -- a warning rather than only a
+  log record, since the library's logger has only a `NullHandler` and the
+  HDR test desktop, with logging unconfigured, never saw the record.
 - **`GpuConverter` no longer turns HDR input into wrong numbers.** Its tensors
   treated linear scRGB as sRGB-encoded, and NV12/P010 put a 10-bit HDR surface
   through the Y'CbCr matrix with no error. A frame from an HDR desktop is now
   refused with the reason; `allow_linear=True` passes scRGB through for float
   output, and YUV refuses it regardless.
 
-### Fixed — `rapidshot benchmark`
-
-- **The memory run keeps one test source and switches its workload.**
-  Replacing the source between workloads was what stalled: on an Intel desktop
-  about 15% of replacement launches presented three frames and then had every
-  flip held for 2 s. With rapidshot-native 0.2.2 the memory harness switches
-  the running source instead of relaunching it: 48 of 48 switches acknowledged
-  in place and 0 case errors in 112 there. A source that does not acknowledge,
-  as 0.2.1's does not, is replaced as before -- 36 such relaunches, 0 stalls --
-  and the health check still guards every launch and switch: a first launch
-  stalled once too, and was caught.
-- **A source is stopped with EOF, not killed.** The memory harness terminated
-  its sources; it now closes their stdin and waits, forcing them only if they
-  do not exit. Sources that exited on their own were followed by 0 stalls in
-  36 relaunches, against about 15% after `terminate()` -- not proven to be the
-  cause, and free.
-- **Reports made with the older test source say their pixel ages carry an
-  offset.** See `rapidshot-native` 0.2.2 below: a report whose source queues up
-  to three frames now says its absolute ages cannot be compared with one made
-  with 0.2.2 or later.
-- **`rapidshot[benchmark]` installs `dxcam[winrt]`**, so a fresh install has the
-  DXcam (WGC) row.
-
-### Changed — `rapidshot-native` 0.2.2
-
-- **The test source queues one frame, not three.** Pixel age is timed from just
-  before `Present()`, and the source let up to three frames queue behind it, so
-  each launch added its own whole-frame offset to every path at once. Confirmed
-  on the Intel desktop over five passes: GpuConverter's p50 read 42, 13, 10, 27
-  and 17 ms with 0.2.1's source and 22.2-22.3 ms with this one; `grab()`,
-  DXcam and mss steadied the same way. Every pixel age recorded with the older
-  source, including the README's tables, carries a 0-3 frame offset: compare
-  within a run, and re-record with this one.
-- **The test source switches workload over stdin.** A line naming a workload
-  switches the pattern in place and is acknowledged on stdout; EOF, or any
-  other line, still stops it, so every existing harness behaves as before.
-- The extension itself is unchanged from 0.2.1.
-
 ### Added
 
 - **Frames say what they hold.** `Frame.pixel_format`, `dxgi_format`, `hdr`,
   `sdr_white_nits` and `color_space` (`"srgb"`, or `"scrgb"` for linear light
   from an HDR desktop) on every `grab_frame()` frame.
-
-## [2.6.3] - 2026-09-29
 
 ### Added — `rapidshot benchmark`
 
@@ -164,16 +131,53 @@ each release can be traced back to the plan it implements.
   drawing on. The harnesses now use the display mss marks as primary (10.2 and
   later), or the one at the desktop origin. Published mss rows are unaffected:
   they were recorded on single-display machines and passed verification.
+- **The memory run keeps one test source and switches its workload.**
+  Replacing the source between workloads was what stalled: on an Intel desktop
+  about 15% of replacement launches presented three frames and then had every
+  flip held for 2 s. With rapidshot-native 0.2.2 the memory harness switches
+  the running source instead of relaunching it: 48 of 48 switches acknowledged
+  in place and 0 case errors in 112 there. A source that does not acknowledge,
+  as 0.2.1's does not, is replaced as before -- 36 such relaunches, 0 stalls --
+  and the health check still guards every launch and switch: a first launch
+  stalled once too, and was caught.
+- **A source is stopped with EOF, not killed.** The memory harness terminated
+  its sources; it now closes their stdin and waits, forcing them only if they
+  do not exit. Sources that exited on their own were followed by 0 stalls in
+  36 relaunches, against about 15% after `terminate()` -- not proven to be the
+  cause, and free.
+- **Reports made with the older test source say their pixel ages carry an
+  offset.** See `rapidshot-native` 0.2.2 below: a report whose source queues up
+  to three frames now says its absolute ages cannot be compared with one made
+  with 0.2.2 or later.
+- **`rapidshot[benchmark]` installs `dxcam[winrt]`**, so a fresh install has the
+  DXcam (WGC) row.
+
+### Changed — `rapidshot-native` 0.2.2 (released 2026-09-29)
+
+- **The test source queues one frame, not three.** Pixel age is timed from just
+  before `Present()`, and the source let up to three frames queue behind it, so
+  each launch added its own whole-frame offset to every path at once. Confirmed
+  on the Intel desktop over five passes: GpuConverter's p50 read 42, 13, 10, 27
+  and 17 ms with 0.2.1's source and 22.2-22.3 ms with this one; `grab()`,
+  DXcam and mss steadied the same way. Every pixel age recorded with the older
+  source, including the README's tables, carries a 0-3 frame offset: compare
+  within a run, and re-record with this one.
+- **The test source switches workload over stdin.** A line naming a workload
+  switches the pattern in place and is acknowledged on stdout; EOF, or any
+  other line, still stops it, so every existing harness behaves as before.
+- The extension itself is unchanged from 0.2.1.
 
 ### Documentation
 
-- **HDR desktops are a known limitation.** The first run on an HDR display
-  (Intel Core i5-10500, UHD 630, LG 4K TV) found `grab()` and `start()`
-  returning black frames, `GpuConverter` passing linear light into tensors, and
-  NV12 mis-converting 10-bit input; on that platform the duplicated surface was
-  also clipped at 80 nits. The README says so, ROADMAP § 7.3's claim that an
-  HDR desktop duplicates as FP16 is corrected with the measurements, and the
-  fixes are planned for 2.6.4. SDR capture is unaffected.
+- **HDR capture is described as it now works.** The README's known limitation
+  says HDR desktops are converted to SDR rather than captured as HDR, that
+  `GpuConverter` refuses linear input, and that platforms without full Windows
+  HDR support clip at 80 nits. ROADMAP § 7.3's claim that an HDR desktop
+  always duplicates as FP16 is corrected with the measurements from the first
+  HDR display, an Intel Core i5-10500 (UHD 630) on an LG 4K TV.
+- **The README's pixel ages carry a test-source offset**, which it now says:
+  they were recorded with rapidshot-native 0.2.1's source and are to be
+  re-recorded with 0.2.2's.
 
 ## [2.6.2] - 2026-09-27
 

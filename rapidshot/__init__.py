@@ -57,6 +57,12 @@ except Exception:  # pragma: no cover - only when the extension is absent
     CrossAdapterRequired = None
     TensorStream = None
 
+try:
+    from rapidshot.core.hdr import HdrClippedWarning
+except Exception:  # pragma: no cover - capture itself is unavailable then
+    class HdrClippedWarning(RuntimeWarning):
+        """HDR is on, but this display's capture is clipped at 80 nits."""
+
 # Initialize logging
 logger = get_logger("init")
 
@@ -70,7 +76,7 @@ __all__ = [
     "probe_topology", "GpuTopology", "AdapterInfo",
     "to_nchw",
     "GpuConverter", "GpuTensor", "TensorTransfer", "CrossAdapterRequired",
-    "TensorStream",
+    "TensorStream", "HdrClippedWarning",
 ]
 
 class RapidshotError(Exception):

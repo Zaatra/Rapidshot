@@ -1,5 +1,6 @@
 import time
 import ctypes
+import warnings
 from typing import Tuple, Optional, Union, List, Any
 from threading import Thread, Event, Lock, RLock, current_thread
 import comtypes  # type: ignore[import-untyped]
@@ -1517,13 +1518,18 @@ class ScreenCapture:
         if (hdr.clipped_at_nominal_white(source_format, self._display_color)
                 and not self._warned_hdr_clip):
             self._warned_hdr_clip = True
-            logger.warning(
+            message = (
                 "HDR is on, but this display duplicates as R10G10B10A2 clipped at "
-                "80 nits: everything brighter -- SDR white at %.0f nits included -- "
-                "comes back clipped before RapidShot sees it. Seen on platforms "
-                "without full Windows HDR support (Intel Comet Lake, for one); "
-                "turn HDR off for exact colours.",
-                self._display_color.sdr_white_nits)
+                f"80 nits: everything brighter -- SDR white at "
+                f"{self._display_color.sdr_white_nits:.0f} nits included -- comes back "
+                "clipped before RapidShot sees it. Seen on platforms without full "
+                "Windows HDR support (Intel Comet Lake, for one); turn HDR off for "
+                "exact colours.")
+            logger.warning(message)
+            # Also a warning proper: the "rapidshot" logger has only a
+            # NullHandler, so without logging configured the record above is
+            # never seen -- which is how the HDR test desktop ran.
+            warnings.warn(message, hdr.HdrClippedWarning, stacklevel=2)
         return self._display_color
 
     def _shot_rotated(self, image_ptr, mapped_rect, width: int, height: int) -> None:
