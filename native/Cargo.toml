@@ -26,6 +26,10 @@ crate-type = ["cdylib"]
 # matching the project's requires-python = ">=3.9", instead of one wheel per
 # minor version. Python 3.8 is end-of-life and PyO3 has dropped it.
 pyo3 = { version = "0.29", features = ["abi3-py39", "extension-module"] }
+# Everything that is not Python: capture, conversion, transfer. The Rust
+# remote-support helper links this same crate, so the binding holds no logic
+# a second consumer would have to repeat.
+rapidshot-core = { path = "core" }
 
 [dependencies.windows]
 version = "0.62"
@@ -56,6 +60,13 @@ features = [
     "Win32_UI_HiDpi",
     "Win32_Graphics_Gdi",
 ]
+
+[workspace]
+members = [".", "core"]
+# Plain `cargo clippy` / `cargo test` in native/ (what release-native.yml runs)
+# must cover the core crate too, or its lints and tests would silently stop
+# running when the code moved there.
+default-members = [".", "core"]
 
 [profile.release]
 opt-level = 3

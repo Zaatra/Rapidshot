@@ -30,8 +30,11 @@
 //! NumPy reference pixel for pixel, and can be swapped in without changing what
 //! any consumer sees.
 
-use pyo3::exceptions::PyValueError;
-use pyo3::prelude::*;
+/// An argument error, worded for the caller; the binding raises it as
+/// `ValueError`.
+fn err(message: impl Into<String>) -> String {
+    message.into()
+}
 
 /// Rec. 601 luma coefficients in Q8, matching `numpy_processor._LUMA_*`.
 const LUMA_R: u32 = 77;
@@ -198,12 +201,8 @@ fn luma_image(
 /// `dst_ptr` to at least `width * height` writable bytes. This is why
 /// `src_len`/`dst_len` are required rather than inferred: they are what the
 /// validation below has to work with.
-#[pyfunction]
-#[pyo3(signature = (src_ptr, src_len, dst_ptr, dst_len, width, height, pitch=None,
-                    dst_pitch=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn bgra_to_gray_into(
-    py: Python<'_>,
     src_ptr: usize,
     src_len: usize,
     dst_ptr: usize,
@@ -212,30 +211,26 @@ pub fn bgra_to_gray_into(
     height: usize,
     pitch: Option<usize>,
     dst_pitch: Option<usize>,
-) -> PyResult<()> {
+) -> Result<(), String> {
     if width == 0 || height == 0 {
-        return Err(PyValueError::new_err(
-            "width and height must both be non-zero",
-        ));
+        return Err(err("width and height must both be non-zero"));
     }
     if src_ptr == 0 || dst_ptr == 0 {
-        return Err(PyValueError::new_err(
-            "source and destination must not be null",
-        ));
+        return Err(err("source and destination must not be null"));
     }
 
     let pitch = pitch.unwrap_or(width * 4);
     let dst_pitch = dst_pitch.unwrap_or(width);
     let row_bytes = width
         .checked_mul(4)
-        .ok_or_else(|| PyValueError::new_err("width * 4 overflows"))?;
+        .ok_or_else(|| err("width * 4 overflows"))?;
     if pitch < row_bytes {
-        return Err(PyValueError::new_err(format!(
+        return Err(err(format!(
             "pitch {pitch} is smaller than a {width}px BGRA row ({row_bytes} bytes)"
         )));
     }
     if dst_pitch < width {
-        return Err(PyValueError::new_err(format!(
+        return Err(err(format!(
             "dst_pitch {dst_pitch} is smaller than a {width}px luma row"
         )));
     }
@@ -247,34 +242,31 @@ pub fn bgra_to_gray_into(
     let need_src = pitch
         .checked_mul(height - 1)
         .and_then(|v| v.checked_add(row_bytes))
-        .ok_or_else(|| PyValueError::new_err("source extent overflows"))?;
+        .ok_or_else(|| err("source extent overflows"))?;
     let need_dst = dst_pitch
         .checked_mul(height - 1)
         .and_then(|v| v.checked_add(width))
-        .ok_or_else(|| PyValueError::new_err("destination extent overflows"))?;
+        .ok_or_else(|| err("destination extent overflows"))?;
 
     if src_len < need_src {
-        return Err(PyValueError::new_err(format!(
+        return Err(err(format!(
             "source buffer is {src_len} bytes; {width}x{height} at pitch {pitch} needs {need_src}"
         )));
     }
     if dst_len < need_dst {
-        return Err(PyValueError::new_err(format!(
+        return Err(err(format!(
             "destination buffer is {dst_len} bytes; {width}x{height} luma needs {need_dst}"
         )));
     }
 
-    // Releasing the GIL is half the point of doing this here: a 1080p
-    // conversion is hundreds of microseconds of pure memory traffic that touches
-    // no Python objects, so a capture thread should not hold the interpreter for
-    // it. `detach` is PyO3 0.29's name for what was `allow_threads` -- the GIL
-    // API was renamed in 0.25, and this is the first place in the crate to
-    // release it, so there was no local precedent to copy.
-    py.detach(|| {
+    // The Python binding calls this with the GIL released (`py.detach`): a
+    // 1080p conversion is hundreds of microseconds of memory traffic touching
+    // no Python objects, so a capture thread should not hold the interpreter.
+    {
         let src = unsafe { std::slice::from_raw_parts(src_ptr as *const u8, need_src) };
         let dst = unsafe { std::slice::from_raw_parts_mut(dst_ptr as *mut u8, need_dst) };
         luma_image(src, dst, width, height, pitch, dst_pitch);
-    });
+    }
 
     Ok(())
 }

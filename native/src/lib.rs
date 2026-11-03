@@ -18,14 +18,10 @@
 //! The diagnostics here (`probe_*`) exist because each answered a question that
 //! changed the design, and would otherwise have to be rediscovered.
 
-mod capture_order;
-mod converter12;
-mod cross_adapter;
-mod luma;
-mod preprocess;
-mod preprocess12;
-mod swizzle;
-mod wgc;
+mod py_kernels;
+
+// The implementation lives in `rapidshot-core`; this crate is the binding.
+use rapidshot_core::{converter12, cross_adapter, preprocess, preprocess12, wgc};
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -2142,14 +2138,11 @@ fn _rapidshot_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(get_device_pointer, m)?)?;
     m.add_function(wrap_pyfunction!(probe_d3d12_sharing, m)?)?;
     m.add_function(wrap_pyfunction!(probe_shareable_buffers, m)?)?;
-    m.add_function(wrap_pyfunction!(cross_adapter::probe_cross_adapter, m)?)?;
-    m.add_function(wrap_pyfunction!(
-        cross_adapter::probe_cross_adapter_buffer,
-        m
-    )?)?;
+    m.add_function(wrap_pyfunction!(py_kernels::probe_cross_adapter, m)?)?;
+    m.add_function(wrap_pyfunction!(py_kernels::probe_cross_adapter_buffer, m)?)?;
     m.add_function(wrap_pyfunction!(probe_onnxruntime, m)?)?;
-    m.add_function(wrap_pyfunction!(luma::bgra_to_gray_into, m)?)?;
-    m.add_function(wrap_pyfunction!(swizzle::bgra_swizzle_into, m)?)?;
+    m.add_function(wrap_pyfunction!(py_kernels::bgra_to_gray_into, m)?)?;
+    m.add_function(wrap_pyfunction!(py_kernels::bgra_swizzle_into, m)?)?;
     m.add_function(wrap_pyfunction!(build_info, m)?)?;
     m.add_function(wrap_pyfunction!(wgc_is_supported, m)?)?;
     m.add_function(wrap_pyfunction!(wgc_item_size, m)?)?;
