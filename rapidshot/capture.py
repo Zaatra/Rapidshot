@@ -27,6 +27,23 @@ from rapidshot.core.output import Output
 from rapidshot.core.stagesurf import StageSurface
 from rapidshot.core import hdr
 from rapidshot.core.duplicator import Duplicator
+from rapidshot.core import native_duplicator
+
+
+_PYTHON_DUPLICATOR = Duplicator
+
+
+def _duplicator_class():
+    """``Duplicator``, or the native port when ``RAPIDSHOT_DUPLICATOR=native``.
+
+    Read per build rather than at import, so a test (or a rebuild after the
+    variable changes) gets what the environment says now. The switch replaces
+    the real Python class only: a stand-in put in its place (the tests' fakes)
+    is used as it is.
+    """
+    if Duplicator is not _PYTHON_DUPLICATOR:
+        return Duplicator
+    return native_duplicator.NativeDuplicator if native_duplicator.selected() else Duplicator
 from rapidshot._libs.dxgi import (
     DXGI_ERROR_UNSUPPORTED,
     DXGI_ERROR_INVALID_CALL,
@@ -377,7 +394,7 @@ class ScreenCapture:
         refusals = []
         for device in candidates:
             try:
-                duplicator = Duplicator(
+                duplicator = _duplicator_class()(
                     output=self._output, device=device,
                     timeout_ms=self._timeout_ms,
                 )

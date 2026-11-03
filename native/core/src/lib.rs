@@ -8,6 +8,8 @@
 pub mod capture_order;
 pub mod converter12;
 pub mod cross_adapter;
+pub mod desktop;
+pub mod duplicator;
 pub mod luma;
 pub mod preprocess;
 pub mod preprocess12;

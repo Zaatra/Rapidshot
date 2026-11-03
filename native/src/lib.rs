@@ -1,8 +1,12 @@
-//! Native GPU interop shim for Rapidshot (Stage 6).
+//! Native GPU interop shim for Rapidshot (Stage 6), and since 0.4.0 the Python
+//! binding over `rapidshot-core`, where the implementation lives.
 //!
 //! Scope discipline matters here. Profiling showed the DXGI capture loop costs
-//! ~0.003 ms/frame in Python binding overhead, so it stays in Python. What
-//! Python *cannot* do is hand a D3D11 texture to DirectML: ONNX Runtime's
+//! ~0.003 ms/frame in Python binding overhead, so speed was never a reason to
+//! move it, and the Python `Duplicator` is still the default. 0.4.0 adds a
+//! native one (`DesktopDuplicator`, opt-in) for a different reason: the Rust
+//! remote-support helper captures through `rapidshot-core`, and one
+//! implementation is better than two that drift. What Python *cannot* do is hand a D3D11 texture to DirectML: ONNX Runtime's
 //! `OrtDmlApi::CreateGPUAllocationFromD3DResource` has no Python binding, and
 //! the `data_ptr()` of a DML `OrtValue` is a host-side opaque handle that cannot
 //! be synthesised from a texture. That single gap is what this crate exists to
@@ -18,6 +22,7 @@
 //! The diagnostics here (`probe_*`) exist because each answered a question that
 //! changed the design, and would otherwise have to be rediscovered.
 
+mod py_duplicator;
 mod py_kernels;
 
 // The implementation lives in `rapidshot-core`; this crate is the binding.
@@ -2154,6 +2159,7 @@ fn _rapidshot_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<TestTexture>()?;
     m.add_class::<CrossAdapterTransfer>()?;
     m.add_class::<WgcSession>()?;
+    py_duplicator::register(m)?;
     Ok(())
 }
 #[cfg(test)]
