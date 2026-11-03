@@ -8,6 +8,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Entries are grouped by the [ROADMAP.md](ROADMAP.md) stage that motivated them, so
 each release can be traced back to the plan it implements.
 
+## [Unreleased]
+
+Native extension 0.4.0 (unpublished). Nothing here changes what a 2.7.1 call
+does unless it asks for it.
+
+### Changed — the native crate is two crates
+
+- **`rapidshot-core` holds the implementation, `rapidshot-native` is the Python
+  binding over it.** Capture, conversion and transfer have no pyo3 in them now,
+  so a Rust program -- the remote-support helper -- links the same code the
+  package wraps. The kernels and probes that mixed Python in return plain
+  results; their Python signatures, messages and dict keys are unchanged.
+
+### Added — Desktop Duplication in Rust (opt-in)
+
+- **`native/core/src/duplicator.rs` is a behaviour-for-behaviour port of
+  `core/duplicator.py`**, with the desktop-access diagnosis (`desktop.rs`) that
+  tells a locked screen or UAC prompt from protected content. Its header lists
+  the nine behaviours it keeps. `RAPIDSHOT_DUPLICATOR=native` makes
+  `ScreenCapture` duplicate through it (`core/native_duplicator.py`); the
+  Python class stays the default, and whether the native one replaces it is
+  undecided -- doing so would make the native wheel necessary for a plain
+  screenshot. With the switch on, the whole suite passes (2318 passed, 46
+  skipped, against 2319 and 45 without it on the same machine; the difference
+  is a screen-dependent skip). COM errors read the way windows-rs renders them
+  rather than comtypes' tuple; classes and HRESULTs are the same.
+
+### Added — NV12 as a texture, by two routes
+
+- **`OutputFormat::Nv12Texture`**: the converter's left-sited NV12, written into
+  a real `DXGI_FORMAT_NV12` texture that D3D11 owns on the source texture's
+  device -- where a hardware encoder reads -- instead of a buffer. Same bytes as
+  `Nv12` (pinned by a test). Refused clearly on a GPU without typed UAV writes
+  to NV12. Not exposed to Python yet.
+- **`video_processor.rs`**: the same conversion through the GPU's fixed-function
+  video processor, one blit from the desktop surface, crop and scale included.
+- **`nv12_routes`** (a binary in the core crate) measures the two on one held
+  frame. On an Intel Core Ultra 5 235's integrated GPU at 1920x1080, median /
+  p95 submit-to-done: converter 1.08 / 1.29 ms including the copy into the
+  shareable texture its input needs (0.62 / 0.80 without it), video processor
+  2.08 / 2.20 ms; cropped and scaled to 1280x720, 0.90 / 1.10 (0.40 / 0.57)
+  against 0.64 / 1.81 ms with one 22 ms outlier. Against an exact reference the
+  converter is 100% exact; the video processor's luma is exact and 97.8% of its
+  chroma, up to 37 codes off at coloured edges, though the driver reports
+  support for the BT.709 limited left-sited conversion asked for. One machine,
+  wall time not GPU-engine time, no power measurement.
+
+### Driver behaviour found on the way (Intel, 2026-11-03)
+
+- Recording a copy of a planar NV12 texture on a D3D12 **compute** command list
+  crashed the process, so the texture readback uses a copy queue of its own.
+- Opening a **D3D12-made** NV12 texture on D3D11 (`OpenSharedResource1`)
+  crashed the process; D3D11 makes the texture and D3D12 opens it instead,
+  which is also the direction the converter already used for its input.
+
 ## [2.7.1] - 2026-11-03
 
 ### Changed

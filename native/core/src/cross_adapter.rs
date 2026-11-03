@@ -2291,6 +2291,14 @@ pub struct TensorTransfer {
 
 impl TensorTransfer {
     pub fn new(converter: &crate::converter12::Converter12) -> windows::core::Result<Self> {
+        // The transfer copies a buffer byte for byte; a texture's planes are
+        // laid out by the driver, so there is no such copy to make.
+        if converter.format.is_texture() {
+            return Err(windows::core::Error::new(
+                windows::Win32::Foundation::E_INVALIDARG,
+                "a converter writing an NV12 texture cannot be transferred across                  adapters; transfer an Nv12 buffer converter instead",
+            ));
+        }
         let size_bytes = converter.output_byte_size();
         let src_device = converter.device().clone();
         let src_luid = unsafe { src_device.GetAdapterLuid() };

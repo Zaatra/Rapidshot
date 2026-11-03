@@ -15,4 +15,5 @@ pub mod preprocess;
 pub mod preprocess12;
 pub mod report;
 pub mod swizzle;
+pub mod video_processor;
 pub mod wgc;

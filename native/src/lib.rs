@@ -903,7 +903,9 @@ impl GpuConverter12 {
             }
             // The conventional array form of a 4:2:0 frame (OpenCV, FFmpeg):
             // the Y plane's H rows, then H/2 rows of interleaved chroma.
-            converter12::OutputFormat::Nv12 | converter12::OutputFormat::P010 => {
+            converter12::OutputFormat::Nv12
+            | converter12::OutputFormat::P010
+            | converter12::OutputFormat::Nv12Texture => {
                 vec![h * 3 / 2, w]
             }
             _ => vec![n, 3, h, w],
@@ -930,7 +932,7 @@ impl GpuConverter12 {
             converter12::OutputFormat::Fp32Nchw | converter12::OutputFormat::Fp32Nhwc => "float32",
             converter12::OutputFormat::Fp16Nchw | converter12::OutputFormat::Fp16Nhwc => "float16",
             converter12::OutputFormat::Bgra8Nhwc => "uint8",
-            converter12::OutputFormat::Nv12 => "uint8",
+            converter12::OutputFormat::Nv12 | converter12::OutputFormat::Nv12Texture => "uint8",
             converter12::OutputFormat::P010 => "uint16",
         })
     }
@@ -960,6 +962,7 @@ impl GpuConverter12 {
             .map_err(|_| PyRuntimeError::new_err("converter lock poisoned"))?;
         Ok(match inner.format {
             converter12::OutputFormat::Nv12 => Some("nv12"),
+            converter12::OutputFormat::Nv12Texture => Some("nv12_texture"),
             converter12::OutputFormat::P010 => Some("p010"),
             _ => None,
         })
