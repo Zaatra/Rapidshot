@@ -283,6 +283,18 @@ def test_an_unchanged_log_lets_the_run_continue(monkeypatch):
     g.check(force=True)
 
 
+def test_a_log_that_wrapped_is_not_a_hardware_error(monkeypatch):
+    """The System log dropping its oldest WHEA record lowers the count with the
+    newest record unchanged. That stopped a pass on Machine B with no fault."""
+    g, logs = guard(monkeypatch, [{"latest": 101309, "count": 132},
+                                  {"latest": 101309, "count": 131},
+                                  {"latest": 101310, "count": 131}])
+    g.check(force=True)
+    assert logs.events[-1][0] == "health-log-rolled-over"
+    with pytest.raises(section7.MotionError, match="WHEA"):
+        g.check(force=True)
+
+
 def test_checks_are_throttled_unless_forced(monkeypatch):
     """The query shells out to PowerShell, which costs far more than a frame.
     Polling it per frame would change what is being measured."""
@@ -518,7 +530,8 @@ def test_the_no_cuda_worker_never_imports_cupy(monkeypatch, tmp_path, capsys,
 
 def test_no_cuda_measures_the_cpu_paths_and_the_converter_by_default():
     assert section7.default_paths("no-cuda") == [
-        "mss", "dxcam", "dxcam-wgc", "rapidshot-cpu", "rapidshot-converter"]
+        "mss", "dxcam", "dxcam-wgc", "rapidshot-cpu", "rapidshot-wgc",
+        "rapidshot-wgc-window", "rapidshot-converter"]
     assert section7.default_paths("agent") == list(section7_adapters.CPU_PATHS)
     assert section7.default_paths("ingestion") == list(section7_adapters.PATHS)
 

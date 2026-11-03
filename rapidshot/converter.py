@@ -28,6 +28,7 @@ verified for that release.
 from __future__ import annotations
 
 import ctypes
+import inspect
 import logging
 from typing import Optional, Sequence, Tuple
 import weakref
@@ -51,6 +52,34 @@ _DTYPE_BYTES = {"float32": 4, "float16": 2, "uint8": 1}
 _ITEMSIZE = dict(_DTYPE_BYTES, uint16=2)
 _PIXEL_FORMATS = ("nv12", "p010")
 _MATRICES = ("bt709", "bt601")
+# Each tone map's native name. "auto" names the policy, the native side the
+# curve, so "auto" can change curve without changing what callers pass.
+_TONE_MAPS = {"none": None, "clip": "clip", "auto": "max_rgb"}
+_OUTPUT_COLOR_SPACES = ("srgb",)
+#: The native release whose GpuConverter12.process takes a tone map.
+_TONE_MAP_SINCE = "0.3.0"
+
+
+def _takes_tone_map(gpu_converter) -> bool:
+    """Whether this native build's converter accepts ``tone_map``.
+
+    ``require_feature`` gates on symbol names, and ``GpuConverter12`` exists
+    in every 0.2 build too -- one too old would accept the converter and then
+    fail on the first HDR frame with an unexpected-keyword ``TypeError``.
+    """
+    try:
+        parameters = inspect.signature(gpu_converter.process).parameters.values()
+    except (TypeError, ValueError):
+        return True     # no signature to read; the call itself will say
+    return any(p.name == "tone_map" or p.kind is p.VAR_KEYWORD for p in parameters)
+
+
+def _sdr_white_scale(nits: float) -> float:
+    """SDR white in scRGB units, quantised to thousandths as
+    :func:`rapidshot.core.hdr.to_bgra8` quantises it, so the GPU divides by
+    exactly the number ``grab()`` divides by. Windows reports the level in
+    thousandths of 80 nits, so a real setting loses nothing here."""
+    return max(1, int(round(nits / 80.0 * 1000))) / 1000.0
 
 
 class CrossAdapterRequired(RuntimeError):
@@ -584,11 +613,24 @@ class GpuConverter:
             Not available with ``pixel_format``.
         allow_linear: ``False`` (default) refuses a frame whose
             :attr:`~rapidshot.Frame.color_space` is ``"scrgb"`` -- linear light
-            from an HDR desktop, 1.0 = 80 nits. This converter does not tone
-            map, so its sRGB-shaped tensors would carry numbers no model was
+            from an HDR desktop, 1.0 = 80 nits -- unless ``tone_map`` converts
+            it, because an sRGB-shaped tensor would carry numbers no model was
             trained on. ``True`` passes scRGB through for float output, for a
             caller that handles linear light itself. YUV output refuses it
             regardless: a Y'CbCr matrix expects gamma-encoded values.
+        tone_map: what to do with an ``"scrgb"`` frame. ``"none"`` (default)
+            refuses it, as above. ``"clip"`` converts it to sRGB exactly as
+            :meth:`~rapidshot.ScreenCapture.grab` does: divide by the
+            display's SDR white, clip each channel, sRGB transfer function.
+            ``"auto"`` is the same for every pixel at or below SDR white, and
+            above it scales the pixel by its brightest channel instead of
+            clipping each one, so a highlight keeps its hue. Either way it
+            happens inside the same dispatch, before resizing, so bilinear
+            filtering averages linear light. SDR frames are untouched, so one
+            converter serves a display whose HDR state changes. Not available
+            with ``pixel_format`` or ``allow_linear``.
+        output_color_space: what the tone map produces. ``"srgb"`` is the
+            only value: HDR10 output (PQ, BT.2020) is not implemented.
 
     **Multi-ROI.** ``process(frame, regions=[...])`` converts every region to
     the same output size in **one** GPU dispatch and returns an
@@ -612,7 +654,7 @@ class GpuConverter:
     of each 2×2 block (centre-sited). The source is taken as gamma-encoded
     BT.709 RGB, which a UNORM desktop surface is; an HDR ``R16G16B16A16_FLOAT``
     surface is refused, because it holds linear light and no tone-mapping or
-    PQ decision has been made for it.
+    PQ decision has been made for this output.
 
     **Crop is applied before resizing, and the frame's region is honoured.** A
     camera created with ``region=`` hands back frames whose texture is still
@@ -651,9 +693,38 @@ class GpuConverter:
         full_range: bool = False,
         batch: int = 1,
         allow_linear: bool = False,
+        tone_map: str = "none",
+        output_color_space: str = "srgb",
     ) -> None:
         gpu_converter = native.require_feature("GpuConverter12")
         self._allow_linear = bool(allow_linear)
+        if tone_map not in _TONE_MAPS:
+            raise ValueError(f"tone_map must be one of {tuple(_TONE_MAPS)}, got {tone_map!r}")
+        if output_color_space not in _OUTPUT_COLOR_SPACES:
+            raise ValueError(
+                f"output_color_space must be one of {_OUTPUT_COLOR_SPACES}, got "
+                f"{output_color_space!r}: HDR10 output (PQ, BT.2020) is not implemented"
+            )
+        if tone_map != "none":
+            # Refused rather than resolved: each pair asks for two different
+            # things to happen to the same linear light.
+            if allow_linear:
+                raise ValueError(
+                    f"tone_map={tone_map!r} converts scRGB to sRGB and allow_linear=True "
+                    "passes it through unchanged; choose one")
+            if pixel_format is not None:
+                raise ValueError(
+                    f"tone_map={tone_map!r} is not available with pixel_format="
+                    f"{pixel_format!r}: encoding HDR for an encoder (SDR, or PQ + BT.2020 "
+                    "for HDR10) is a decision NV12/P010 output has not made")
+            if not _takes_tone_map(gpu_converter):
+                installed = native.extension_version() or "an unknown version"
+                raise RuntimeError(
+                    f"tone_map={tone_map!r} requires rapidshot-native >= {_TONE_MAP_SINCE}; "
+                    f"the installed extension is {installed}. Upgrade it, or rebuild it "
+                    "if you build it yourself.")
+        self._tone_map = tone_map
+        self._output_color_space = output_color_space
         width, height = int(size[0]), int(size[1])
         self._crop = None if crop is None else _validate_crop(frame, crop)
 
@@ -779,6 +850,8 @@ class GpuConverter:
         """
         if getattr(frame, "color_space", "srgb") != "scrgb":
             return
+        if self._tone_map != "none" and not yuv:
+            return
         if yuv:
             raise ValueError(
                 f"this frame is linear scRGB from an HDR desktop "
@@ -790,10 +863,32 @@ class GpuConverter:
             return
         raise ValueError(
             f"this frame is linear scRGB from an HDR desktop ({frame.pixel_format}, "
-            f"SDR white {frame.sdr_white_nits:.0f} nits), and GpuConverter does not "
-            "tone map: its tensor would hold linear light where a model expects "
-            "sRGB. Turn HDR off, use grab(), which converts HDR to sRGB, or pass "
-            "allow_linear=True with float output to receive scRGB as it is.")
+            f"SDR white {frame.sdr_white_nits:.0f} nits), and this GpuConverter does "
+            "not tone map: its tensor would hold linear light where a model expects "
+            "sRGB. Pass tone_map='auto' (or 'clip', which matches grab() exactly) to "
+            "convert it to sRGB, or allow_linear=True with float output to receive "
+            "scRGB as it is.")
+
+    def _tone_map_args(self, frame) -> dict:
+        """The native tone-map arguments for this frame: none unless it is
+        linear scRGB and a tone map was asked for. Decided per frame, because
+        the display's HDR state can change between two frames."""
+        if self._tone_map == "none" or getattr(frame, "color_space", "srgb") != "scrgb":
+            return {}
+        return dict(
+            tone_map=_TONE_MAPS[self._tone_map],
+            sdr_white=_sdr_white_scale(frame.sdr_white_nits),
+        )
+
+    @property
+    def tone_map(self) -> str:
+        """``"none"``, ``"clip"`` or ``"auto"``, as constructed."""
+        return self._tone_map
+
+    @property
+    def output_color_space(self) -> str:
+        """What a tone-mapped frame is converted to; always ``"srgb"``."""
+        return self._output_color_space
 
     @staticmethod
     def _tensor_format(dtype: Optional[str], layout: Optional[str]):
@@ -894,6 +989,7 @@ class GpuConverter:
             self._bgr,
             source_id=getattr(frame, "source_id", 0),
             **native_args,
+            **self._tone_map_args(frame),
         )
         # Only after the dispatch succeeded: a refused call must not shrink
         # the shape describing the result that is still in the buffer.
@@ -968,7 +1064,8 @@ class GpuConverter:
         1.0: a highlight legitimately reads above it, and float outputs pass
         that through rather than clamping, since clamping would discard what
         the format exists to carry. ``dtype="uint8"`` saturates, having no
-        choice.
+        choice. With ``tone_map`` set, an HDR frame is converted to sRGB
+        instead, and every output then has an SDR frame's range.
         """
         return self._impl.source_format
 

@@ -8,10 +8,18 @@ from .benchmark_contract import (canonical_rgb, normalized_tensor, decode_marker
                                 pipeline_rgb, open_mss, primary_monitor, CELL, MARKER_BITS,
                                 MARKER_HEIGHT, OUT)
 
-PATHS = ("mss", "dxcam", "dxcam-wgc", "rapidshot-cpu", "rapidshot-cupy",
+PATHS = ("mss", "dxcam", "dxcam-wgc", "rapidshot-cpu", "rapidshot-wgc",
+         "rapidshot-wgc-window", "rapidshot-cupy",
          "rapidshot-xadapter", "rapidshot-xadapter-async", "rapidshot-xadapter-semaphore",
          "rapidshot-direct", "rapidshot-converter-xadapter", "rapidshot-converter")
-CPU_PATHS = PATHS[:4]
+#: CPU capture, resized on the CPU. Spelled out rather than sliced from PATHS:
+#: a slice silently changes meaning when a path is inserted ahead of its end.
+#: The two WGC rows are RapidShot's grab() through Windows.Graphics.Capture --
+#: the display, and the test source's own window, which covers it.
+CPU_PATHS = ("mss", "dxcam", "dxcam-wgc", "rapidshot-cpu", "rapidshot-wgc",
+             "rapidshot-wgc-window")
+#: The test source's window title (native/src/bin/latency_source.rs).
+SOURCE_WINDOW_TITLE = "Rapidshot latency source - Esc stops"
 #: What `--category no-cuda` measures: CPU capture to a NumPy tensor, and
 #: GpuConverter to its tensor on the capture adapter. Every other path ends on CUDA.
 NO_CUDA_PATHS = (*CPU_PATHS, "rapidshot-converter")
@@ -57,6 +65,18 @@ class Adapter:
             # ValueError and the worker dies with no adapter.
             self.cam = dxcam.create(output_color="BGRA",
                                     **({"backend": "winrt"} if path.endswith("wgc") else {}))
+        elif path == "rapidshot-wgc":
+            import rapidshot
+            self.cam = rapidshot.create(source=rapidshot.Monitor(), backend="wgc",
+                                        output_color="BGRA")
+        elif path == "rapidshot-wgc-window":
+            import rapidshot
+            # The source is a topmost popup covering the display from (0, 0),
+            # so the window's capture is the same image as the display's: the
+            # same marker, the same tensor contract, a per-window capture.
+            self.cam = rapidshot.create(
+                source=rapidshot.Window.find(SOURCE_WINDOW_TITLE, exact=True),
+                output_color="BGRA")
         else:
             import rapidshot
             self.cam = rapidshot.create(output_color="BGRA", nvidia_gpu=path == "rapidshot-cupy")

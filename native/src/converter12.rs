@@ -46,7 +46,26 @@ use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject, INFIN
 
 const GENERIC_ALL: u32 = 0x1000_0000;
 /// Size of the shader's `Params` cbuffer, in 32-bit values.
-const CONSTANT_COUNT: usize = 8;
+const CONSTANT_COUNT: usize = 10;
+/// The shader's `Params` cbuffer, field by field, in register order. The
+/// tests pin it against the HLSL, so a field added to one and not the other
+/// fails there rather than shifting every later constant by one slot.
+/// `root_constants` is what builds them in this order.
+#[cfg(test)]
+const CBUFFER_FIELDS: [&str; CONSTANT_COUNT] = [
+    "OutWidth",
+    "OutHeight",
+    "SrcWidth",
+    "SrcHeight",
+    "Scale",
+    "Bias",
+    "ChannelOrder",
+    "Plane",
+    "ToneMap",
+    "SdrWhite",
+];
+/// Index of `Plane`, the one constant rewritten between the two YUV passes.
+const PLANE_CONSTANT: usize = 7;
 /// `sizeof(Rect)` in the shader: four `uint`s.
 const RECT_BYTES: u64 = 16;
 
@@ -80,7 +99,8 @@ const DXGI_SHARED_RESOURCE_READ: u32 = 0x8000_0000;
 /// *not* bounded by 1.0 — an HDR highlight legitimately reads above it. That
 /// is passed through for float outputs rather than clamped, because clamping
 /// would discard the very thing the format exists to carry; the `uint8`
-/// output has no choice and saturates.
+/// output has no choice and saturates. A [`ToneMap`] other than `None` turns
+/// that linear light into sRGB instead, before anything else sees it.
 const SUPPORTED_SOURCE_FORMATS: [DXGI_FORMAT; 4] = [
     DXGI_FORMAT_B8G8R8A8_UNORM,
     DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -202,6 +222,75 @@ impl Default for YuvOptions {
     }
 }
 
+/// What happens to the source values before crop, resize, normalisation and
+/// layout see them. Chosen **per frame**, not per converter: whether a frame
+/// is linear scRGB depends on the display's HDR state when it was captured,
+/// and that can change between two frames from the same camera.
+///
+/// The reference for both tone maps is `rapidshot/core/hdr.py`, the CPU
+/// conversion `grab()` uses: divide by the SDR white level, bound to 0..1,
+/// apply the sRGB transfer function. They differ only for a pixel whose
+/// brightest channel is above SDR white -- which no SDR content drawn on an
+/// HDR desktop ever is -- so for everything else both reproduce `grab()`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ToneMap {
+    /// The source is used as it is: gamma-encoded SDR, or scRGB passed
+    /// through for a caller that handles linear light itself.
+    None,
+    /// `hdr.py` exactly: each channel clipped at SDR white on its own. A
+    /// highlight loses its hue as well as its brightness -- bright orange
+    /// clips towards yellow, bright sky towards cyan or white.
+    Clip { sdr_white: f32 },
+    /// Clip below SDR white; above it, the whole pixel is scaled down by its
+    /// brightest channel, so a highlight keeps its hue and saturation.
+    MaxRgb { sdr_white: f32 },
+}
+
+impl ToneMap {
+    /// The shader's `ToneMap` constant.
+    fn code(self) -> u32 {
+        match self {
+            ToneMap::None => 0,
+            ToneMap::Clip { .. } => 1,
+            ToneMap::MaxRgb { .. } => 2,
+        }
+    }
+
+    /// SDR white in scRGB units (`nits / 80`); 1.0 when nothing is mapped, so
+    /// the constant is never a zero the shader could divide by.
+    fn sdr_white(self) -> f32 {
+        match self {
+            ToneMap::None => 1.0,
+            ToneMap::Clip { sdr_white } | ToneMap::MaxRgb { sdr_white } => sdr_white,
+        }
+    }
+}
+
+/// The root constants for one dispatch, in [`CBUFFER_FIELDS`] order. A
+/// function of its own so the tests can check where each value lands without
+/// a GPU.
+fn root_constants(
+    out_size: (u32, u32),
+    src_size: (u32, u32),
+    scale: f32,
+    bias: f32,
+    channel_order: u32,
+    tone_map: ToneMap,
+) -> [u32; CONSTANT_COUNT] {
+    [
+        out_size.0,
+        out_size.1,
+        src_size.0,
+        src_size.1,
+        scale.to_bits(),
+        bias.to_bits(),
+        channel_order,
+        0,
+        tone_map.code(),
+        tone_map.sdr_white().to_bits(),
+    ]
+}
+
 /// One source, three output variants, two sampling modes, selected by
 /// `#define` at compile time so no branch survives into the inner loop.
 ///
@@ -223,6 +312,8 @@ cbuffer Params : register(b0)
     float Bias;
     uint  ChannelOrder;   // 0 = RGB, 1 = BGR
     uint  Plane;           // YUV outputs only: 0 = luma plane, 1 = chroma plane
+    uint  ToneMap;         // 0 = none, 1 = clip, 2 = max-RGB; linear scRGB input only
+    float SdrWhite;        // SDR white in scRGB units (nits / 80); tone map only
 };
 
 // Source rectangles in texel coordinates, one per batch slot. A single crop is
@@ -262,12 +353,40 @@ float4 fetch(uint x, uint y)
 #endif
 }
 
-// Channel order applied, scale/bias applied. RGB when ChannelOrder == 0.
+// Linear scRGB (1.0 = 80 nits) to sRGB-encoded 0..1, or the texel as it is
+// when ToneMap == 0. rapidshot/core/hdr.py is the reference, and this follows
+// it step for step: divide by SDR white, bound to 0..1, sRGB transfer function.
+//
+// It runs on the *sampled* value, so bilinear filtering averages linear light
+// and only the result is encoded -- the physically right order, and the reason
+// a resized tensor differs slightly from resizing grab()'s sRGB bytes.
+float3 to_display(float4 texel)
+{
+    if (ToneMap == 0)
+        return texel.xyz;
+    // hdr.py turns NaN into 0 and +inf into the largest half. clamp() does
+    // both: min and max return the operand that is not NaN.
+    float3 c = clamp(texel.xyz, 0.0f, 65504.0f) / SdrWhite;
+    if (ToneMap == 2)
+    {
+        // Above SDR white, scale the pixel rather than clip each channel, so a
+        // highlight keeps its hue. Never taken at or below white, which is what
+        // keeps every SDR pixel identical to the clip.
+        float peak = max(c.x, max(c.y, c.z));
+        if (peak > 1.0f)
+            c /= peak;
+    }
+    c = saturate(c);
+    return (c <= 0.0031308f) ? c * 12.92f : 1.055f * pow(c, 1.0f / 2.4f) - 0.055f;
+}
+
+// Tone map, channel order and scale/bias applied. RGB when ChannelOrder == 0.
 float3 shade(float4 texel)
 {
-    float c0 = (ChannelOrder == 0) ? texel.x : texel.z;
-    float c1 = texel.y;
-    float c2 = (ChannelOrder == 0) ? texel.z : texel.x;
+    float3 rgb = to_display(texel);
+    float c0 = (ChannelOrder == 0) ? rgb.x : rgb.z;
+    float c1 = rgb.y;
+    float c2 = (ChannelOrder == 0) ? rgb.z : rgb.x;
     return float3(c0, c1, c2) * Scale + Bias;
 }
 
@@ -340,6 +459,7 @@ void CSMain(uint3 tid : SV_DispatchThreadID)
 // BGRA8 NHWC -- a resized frame. Deliberately ignores Scale, Bias and
 // ChannelOrder: this output is meant to be indistinguishable from what grab()
 // hands back, only smaller, so a consumer can treat it as an ordinary frame.
+// That includes the tone map, and grab()'s opaque alpha when one is applied.
 [numthreads(8, 8, 1)]
 void CSMain(uint3 tid : SV_DispatchThreadID)
 {
@@ -348,11 +468,13 @@ void CSMain(uint3 tid : SV_DispatchThreadID)
     g_crop = Regions[tid.z];
 
     float4 t = fetch(tid.x, tid.y);
+    float3 rgb = to_display(t);
+    float alpha = (ToneMap == 0) ? saturate(t.w) : 1.0f;
 
-    uint r = (uint)(saturate(t.x) * 255.0f + 0.5f);
-    uint g = (uint)(saturate(t.y) * 255.0f + 0.5f);
-    uint bl = (uint)(saturate(t.z) * 255.0f + 0.5f);
-    uint a = (uint)(saturate(t.w) * 255.0f + 0.5f);
+    uint r = (uint)(saturate(rgb.x) * 255.0f + 0.5f);
+    uint g = (uint)(saturate(rgb.y) * 255.0f + 0.5f);
+    uint bl = (uint)(saturate(rgb.z) * 255.0f + 0.5f);
+    uint a = (uint)(alpha * 255.0f + 0.5f);
 
     uint idx = (tid.z * OutHeight + tid.y) * OutWidth + tid.x;
     Output.Store(idx * 4, bl | (g << 8) | (r << 16) | (a << 24));
@@ -371,8 +493,9 @@ void CSMain(uint3 tid : SV_DispatchThreadID)
 //
 // The source is taken as gamma-encoded RGB with BT.709 primaries -- true of a
 // UNORM desktop surface. Linear scRGB (R16G16B16A16_FLOAT) is refused on the
-// Rust side: putting linear light through a Y'CbCr matrix is wrong, and the
-// right fix (tone-map to SDR, or PQ + BT.2020 for HDR10) is a decision.
+// Rust side, and so is a tone map: putting linear light through a Y'CbCr
+// matrix is wrong, and the right fix (tone-map to SDR, or PQ + BT.2020 for
+// HDR10) is a decision this output has not made.
 
 #if MATRIX == 1
 static const float KR = 0.299f;
@@ -815,7 +938,9 @@ impl Converter12 {
         let bytecode = compile_variant(sampling, format, yuv)?;
         let pso: ID3D12PipelineState = unsafe {
             let desc = D3D12_COMPUTE_PIPELINE_STATE_DESC {
-                pRootSignature: std::mem::ManuallyDrop::new(Some(root_signature.clone())),
+                // Borrowed, as in `transition`: a clone into this ManuallyDrop was
+                // never released.
+                pRootSignature: std::mem::transmute_copy(&root_signature),
                 CS: D3D12_SHADER_BYTECODE {
                     pShaderBytecode: bytecode.GetBufferPointer(),
                     BytecodeLength: bytecode.GetBufferSize(),
@@ -971,6 +1096,11 @@ impl Converter12 {
     /// whole surface. A rectangle reaching outside the surface is refused
     /// rather than clamped — a clamped crop is a plausible image of the wrong
     /// region.
+    ///
+    /// `tone_map` says whether this frame is linear scRGB to be brought into
+    /// sRGB first. Refused for YUV output, for an SDR white that is not a
+    /// positive number, and for an 8-bit surface, which is never linear.
+    #[allow(clippy::too_many_arguments)]
     pub fn process(
         &self,
         d3d11_texture: &ID3D11Texture2D,
@@ -978,8 +1108,25 @@ impl Converter12 {
         scale: f32,
         bias: f32,
         channel_order: u32,
+        tone_map: ToneMap,
         regions: &[Crop],
     ) -> windows::core::Result<()> {
+        if tone_map != ToneMap::None {
+            if self.format.is_yuv() {
+                return Err(windows::core::Error::new(
+                    windows::Win32::Foundation::E_INVALIDARG,
+                    "NV12/P010 output does not tone map: encoding HDR for an encoder \
+                     (SDR, or PQ + BT.2020 for HDR10) is a decision this path has not made",
+                ));
+            }
+            let white = tone_map.sdr_white();
+            if !(white.is_finite() && white > 0.0) {
+                return Err(windows::core::Error::new(
+                    windows::Win32::Foundation::E_INVALIDARG,
+                    format!("SDR white must be a positive scRGB level (nits / 80), got {white}"),
+                ));
+            }
+        }
         if regions.len() > self.batch as usize {
             return Err(windows::core::Error::new(
                 windows::Win32::Foundation::E_INVALIDARG,
@@ -999,6 +1146,23 @@ impl Converter12 {
             .as_ref()
             .expect("open_texture populates the cache or returns Err");
         let (src_width, src_height) = self.cached_src_size.get();
+        let src_format = self.cached_src_format.get();
+        if tone_map != ToneMap::None
+            && src_format != DXGI_FORMAT_R16G16B16A16_FLOAT
+            && src_format != DXGI_FORMAT_R10G10B10A2_UNORM
+        {
+            // Mapping 8-bit sRGB as though it were linear light would darken
+            // it and encode it twice: a plausible image, wrong everywhere.
+            return Err(windows::core::Error::new(
+                windows::Win32::Foundation::E_INVALIDARG,
+                format!(
+                    "a tone map was requested for a {} surface, which is never linear \
+                     scRGB; only R16G16B16A16_FLOAT and R10G10B10A2_UNORM from an HDR \
+                     desktop are",
+                    format_name(src_format)
+                ),
+            ));
+        }
 
         let whole = [Crop {
             x: 0,
@@ -1049,16 +1213,14 @@ impl Converter12 {
 
         self.capture_order.order(&self.queue, d3d11_texture)?;
 
-        let mut constants: [u32; CONSTANT_COUNT] = [
-            self.out_width,
-            self.out_height,
-            src_width,
-            src_height,
-            scale.to_bits(),
-            bias.to_bits(),
+        let mut constants = root_constants(
+            (self.out_width, self.out_height),
+            (src_width, src_height),
+            scale,
+            bias,
             channel_order,
-            0,
-        ];
+            tone_map,
+        );
 
         unsafe {
             self.allocator.Reset()?;
@@ -1091,7 +1253,7 @@ impl Converter12 {
                     _ => (pixels / 2, pixels / 4),
                 };
                 for (pass, dwords) in [(0u32, luma_dwords), (1u32, chroma_dwords)] {
-                    constants[7] = pass;
+                    constants[PLANE_CONSTANT] = pass;
                     self.list.SetComputeRoot32BitConstants(
                         0,
                         CONSTANT_COUNT as u32,
@@ -1316,12 +1478,19 @@ fn transition(
     before: D3D12_RESOURCE_STATES,
     after: D3D12_RESOURCE_STATES,
 ) {
+    // Borrowed, not cloned: the barrier's `pResource` is a ManuallyDrop, so a
+    // `clone()` here added a reference nothing ever released, so every
+    // transition kept its resource object alive past the code that recorded it.
+    // It is not the 15.6 MiB per GpuConverter the 2026-09-30 soak reported:
+    // that is Windows charging the process for each open of a shared surface
+    // and never uncharging it (CHANGELOG, Unreleased). The command list only
+    // reads the pointer during the call.
     let barrier = D3D12_RESOURCE_BARRIER {
         Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
         Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
         Anonymous: D3D12_RESOURCE_BARRIER_0 {
             Transition: std::mem::ManuallyDrop::new(D3D12_RESOURCE_TRANSITION_BARRIER {
-                pResource: std::mem::ManuallyDrop::new(Some(resource.clone())),
+                pResource: unsafe { std::mem::transmute_copy(resource) },
                 Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
                 StateBefore: before,
                 StateAfter: after,
@@ -1433,6 +1602,107 @@ mod tests {
     #[test]
     fn the_root_constants_match_the_shader_cbuffer() {
         assert_eq!(cbuffer_fields(SHADER_BODY).len(), CONSTANT_COUNT);
+        // By name and in order, not only by count: a field inserted in the
+        // middle of the HLSL shifts every later one, and the count alone would
+        // still agree.
+        let names: Vec<&str> = cbuffer_fields(SHADER_BODY)
+            .iter()
+            .map(|field| {
+                field
+                    .trim_end_matches(';')
+                    .split_whitespace()
+                    .last()
+                    .expect("a field name")
+            })
+            .collect();
+        assert_eq!(names, CBUFFER_FIELDS);
+        assert_eq!(CBUFFER_FIELDS[PLANE_CONSTANT], "Plane");
+    }
+
+    #[test]
+    fn every_root_constant_lands_in_its_named_field() {
+        let constants = root_constants(
+            (640, 480),
+            (2560, 1600),
+            255.0,
+            -0.5,
+            1,
+            ToneMap::MaxRgb { sdr_white: 3.0 },
+        );
+        let at = |name: &str| {
+            constants[CBUFFER_FIELDS
+                .iter()
+                .position(|field| *field == name)
+                .expect(name)]
+        };
+        assert_eq!(
+            (
+                at("OutWidth"),
+                at("OutHeight"),
+                at("SrcWidth"),
+                at("SrcHeight")
+            ),
+            (640, 480, 2560, 1600)
+        );
+        assert_eq!(f32::from_bits(at("Scale")), 255.0);
+        assert_eq!(f32::from_bits(at("Bias")), -0.5);
+        assert_eq!(at("ChannelOrder"), 1);
+        assert_eq!(
+            at("Plane"),
+            0,
+            "the luma pass, until process() says otherwise"
+        );
+        assert_eq!(at("ToneMap"), 2);
+        assert_eq!(f32::from_bits(at("SdrWhite")), 3.0);
+    }
+
+    #[test]
+    fn no_tone_map_is_code_zero_with_a_white_the_shader_can_divide_by() {
+        let constants = root_constants((8, 8), (8, 8), 1.0, 0.0, 0, ToneMap::None);
+        assert_eq!(constants[8], 0);
+        assert_eq!(f32::from_bits(constants[9]), 1.0);
+        assert_eq!(ToneMap::Clip { sdr_white: 2.5 }.code(), 1);
+        assert_eq!(ToneMap::Clip { sdr_white: 2.5 }.sdr_white(), 2.5);
+    }
+
+    #[test]
+    fn the_shader_branches_only_on_tone_maps_that_exist() {
+        let codes = [
+            ToneMap::None.code(),
+            ToneMap::Clip { sdr_white: 1.0 }.code(),
+            ToneMap::MaxRgb { sdr_white: 1.0 }.code(),
+        ];
+        let mut rest = SHADER_BODY;
+        let mut seen = Vec::new();
+        while let Some(at) = rest.find("ToneMap == ") {
+            rest = &rest[at + "ToneMap == ".len()..];
+            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            let value: u32 = digits.parse().expect("a number after ToneMap ==");
+            assert!(codes.contains(&value), "shader tests ToneMap == {value}");
+            seen.push(value);
+        }
+        // 0 is the passthrough; 2 is the only map with code of its own. 1 is
+        // the shared path both maps finish on, so it need not be named.
+        assert!(seen.contains(&0) && seen.contains(&2), "{seen:?}");
+    }
+
+    /// Every variant `Converter12::new` can ask for, through the real
+    /// compiler. Needs no GPU -- `D3DCompile` is a CPU library -- so a typo in
+    /// the HLSL fails here rather than on the first machine with a capture.
+    #[test]
+    fn every_shader_variant_compiles() {
+        for sampling in [Sampling::Nearest, Sampling::Bilinear] {
+            for format in ALL_FORMATS {
+                for matrix in [Matrix::Bt709, Matrix::Bt601] {
+                    for full_range in [false, true] {
+                        let yuv = YuvOptions { matrix, full_range };
+                        if let Err(error) = compile_variant(sampling, format, yuv) {
+                            panic!("{sampling:?} {format:?} {yuv:?}: {error}");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -1454,5 +1724,422 @@ mod tests {
         let options = YuvOptions::default();
         assert_eq!(options.matrix, Matrix::Bt709);
         assert!(!options.full_range);
+    }
+}
+
+/// The tone map through the real shader, on WARP, from a texture these tests
+/// fill themselves -- so the numbers are checked without a capture, an HDR
+/// panel or a hardware GPU.
+#[cfg(test)]
+mod warp_tests {
+    use super::*;
+    use windows::Win32::Foundation::HMODULE;
+    use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_WARP;
+    use windows::Win32::Graphics::Direct3D11::{
+        D3D11CreateDevice, ID3D11Device, D3D11_BIND_SHADER_RESOURCE, D3D11_RESOURCE_MISC_SHARED,
+        D3D11_RESOURCE_MISC_SHARED_NTHANDLE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
+        D3D11_USAGE_DEFAULT,
+    };
+    use windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC;
+
+    const NAN: u16 = 0x7E00;
+    const INF: u16 = 0x7C00;
+    const NEG_INF: u16 = 0xFC00;
+    /// 240 nits, the common setting: SDR white at 3.0 in scRGB.
+    const WHITE: f32 = 3.0;
+
+    /// IEEE half bits for a value a half holds exactly. Enough for test
+    /// inputs, and it refuses the ones it would round.
+    fn half(value: f32) -> u16 {
+        if value == 0.0 {
+            return 0;
+        }
+        let bits = value.to_bits();
+        let sign = ((bits >> 16) & 0x8000) as u16;
+        let exponent = ((bits >> 23) & 0xFF) as i32 - 127 + 15;
+        assert!((1..31).contains(&exponent), "{value} is not a normal half");
+        assert_eq!(bits & 0x1FFF, 0, "{value} is not exact in a half");
+        sign | ((exponent as u16) << 10) | ((bits >> 13) & 0x3FF) as u16
+    }
+
+    fn decode_half(bits: u16) -> f64 {
+        let sign = if bits & 0x8000 != 0 { -1.0 } else { 1.0 };
+        let exponent = ((bits >> 10) & 0x1F) as i32;
+        let mantissa = (bits & 0x3FF) as f64;
+        sign * match exponent {
+            0 => mantissa * 2f64.powi(-24),
+            31 if mantissa == 0.0 => f64::INFINITY,
+            31 => f64::NAN,
+            _ => (1.0 + mantissa / 1024.0) * 2f64.powi(exponent - 15),
+        }
+    }
+
+    fn srgb(linear: f64) -> f64 {
+        if linear <= 0.0031308 {
+            linear * 12.92
+        } else {
+            1.055 * linear.powf(1.0 / 2.4) - 0.055
+        }
+    }
+
+    /// `rapidshot/core/hdr.py` in f64, with the max-RGB step for the other
+    /// map: NaN and -inf to 0, +inf to the largest half, divide by white,
+    /// bound, encode.
+    fn reference(pixel: [u16; 4], max_rgb: bool) -> [f64; 3] {
+        let mut c = [0.0f64; 3];
+        for (out, bits) in c.iter_mut().zip(pixel) {
+            let v = decode_half(bits);
+            let v = if v.is_nan() {
+                0.0
+            } else {
+                v.clamp(0.0, 65504.0)
+            };
+            *out = v / WHITE as f64;
+        }
+        let peak = c[0].max(c[1]).max(c[2]);
+        if max_rgb && peak > 1.0 {
+            c.iter_mut().for_each(|v| *v /= peak);
+        }
+        c.map(|v| srgb(v.clamp(0.0, 1.0)))
+    }
+
+    /// Eight pixels: NaN and infinities, SDR white, SDR content below it,
+    /// highlights above it, and a value on the transfer function's linear
+    /// segment. Alpha 1.0.
+    fn pixels() -> Vec<[u16; 4]> {
+        let one = half(1.0);
+        [
+            [half(0.0), NAN, NEG_INF],
+            [half(3.0), half(3.0), half(3.0)],
+            [half(0.75), half(1.5), half(0.375)],
+            [half(6.0), half(3.0), half(0.75)],
+            [INF, half(0.0078125), half(-0.5)],
+            [half(0.25), half(0.5), half(1.0)],
+            [half(1.0), half(6.0), half(0.0)],
+            [half(0.0078125), half(0.0078125), half(0.0078125)],
+        ]
+        .iter()
+        .map(|&[r, g, b]| [r, g, b, one])
+        .collect()
+    }
+
+    /// A WARP texture holding `pixels`, shareable the way a converter needs:
+    /// `SHARED | SHARED_NTHANDLE`, no keyed mutex. `None` when this machine
+    /// cannot make one, which the caller reports rather than fails on.
+    fn warp_texture(pixels: &[[u16; 4]]) -> Option<ID3D11Texture2D> {
+        let bytes: Vec<u8> = pixels
+            .iter()
+            .flatten()
+            .flat_map(|half| half.to_le_bytes())
+            .collect();
+        warp_surface(DXGI_FORMAT_R16G16B16A16_FLOAT, pixels.len() as u32, &bytes)
+    }
+
+    fn warp_surface(format: DXGI_FORMAT, width: u32, bytes: &[u8]) -> Option<ID3D11Texture2D> {
+        warp_surface_sized(format, width, 1, bytes)
+    }
+
+    fn warp_surface_sized(
+        format: DXGI_FORMAT,
+        width: u32,
+        height: u32,
+        bytes: &[u8],
+    ) -> Option<ID3D11Texture2D> {
+        let mut device: Option<ID3D11Device> = None;
+        unsafe {
+            D3D11CreateDevice(
+                None,
+                D3D_DRIVER_TYPE_WARP,
+                HMODULE::default(),
+                Default::default(),
+                None,
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                None,
+            )
+            .ok()?;
+        }
+        let device = device?;
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: width,
+            Height: height,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: format,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: (D3D11_RESOURCE_MISC_SHARED.0 | D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0)
+                as u32,
+        };
+        unsafe {
+            let mut texture = None;
+            device
+                .CreateTexture2D(&desc, None, Some(&mut texture))
+                .ok()?;
+            let texture: ID3D11Texture2D = texture?;
+            // Shared resources ignore initial data, so upload separately, and
+            // flush so the D3D12 side never opens a surface still zero.
+            let context = device.GetImmediateContext().ok()?;
+            context.UpdateSubresource(
+                &texture,
+                0,
+                None,
+                bytes.as_ptr() as *const _,
+                bytes.len() as u32 / height,
+                0,
+            );
+            context.Flush();
+            Some(texture)
+        }
+    }
+
+    fn convert(format: OutputFormat, tone_map: ToneMap) -> Option<Vec<u8>> {
+        let pixels = pixels();
+        let texture = warp_texture(&pixels)?;
+        let converter = Converter12::new(
+            &texture,
+            pixels.len() as u32,
+            1,
+            Sampling::Nearest,
+            format,
+            YuvOptions::default(),
+            1,
+        )
+        .expect("converter on WARP");
+        converter
+            .process(&texture, 1, 1.0, 0.0, 0, tone_map, &[])
+            .expect("dispatch");
+        Some(converter.read_back().expect("readback"))
+    }
+
+    #[test]
+    fn float_output_follows_the_reference_for_both_maps() {
+        for (tone_map, max_rgb) in [
+            (ToneMap::Clip { sdr_white: WHITE }, false),
+            (ToneMap::MaxRgb { sdr_white: WHITE }, true),
+        ] {
+            let Some(bytes) = convert(OutputFormat::Fp32Nchw, tone_map) else {
+                eprintln!("no shareable WARP texture on this machine; skipped");
+                return;
+            };
+            let values: Vec<f32> = bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|b| f32::from_le_bytes(*b))
+                .collect();
+            let n = pixels().len();
+            for (x, pixel) in pixels().into_iter().enumerate() {
+                let expected = reference(pixel, max_rgb);
+                for c in 0..3 {
+                    let got = values[c * n + x] as f64;
+                    assert!(
+                        (got - expected[c]).abs() < 5e-4,
+                        "{tone_map:?} pixel {x} channel {c}: {got} != {}",
+                        expected[c]
+                    );
+                }
+            }
+        }
+    }
+
+    /// Bytes `hdr._lut_fp16(True, 3000)` gives for the same inputs -- what
+    /// `grab()` returns on a 240-nit HDR desktop. Max-RGB rows are hdr.py's
+    /// bytes for the pixel already scaled by its peak, e.g. (6, 3, 0.75) is
+    /// (3, 1.5, 0.375).
+    #[test]
+    fn bgra8_output_matches_grab_on_an_hdr_desktop() {
+        let clip: [[u8; 3]; 8] = [
+            [0, 0, 0],
+            [255, 255, 255],
+            [137, 188, 99],
+            [255, 255, 137],
+            [255, 9, 0],
+            [82, 113, 156],
+            [156, 255, 0],
+            [9, 9, 9],
+        ];
+        let max_rgb: [[u8; 3]; 8] = [
+            [0, 0, 0],
+            [255, 255, 255],
+            [137, 188, 99],
+            [255, 188, 99],
+            [255, 0, 0],
+            [82, 113, 156],
+            [113, 255, 0],
+            [9, 9, 9],
+        ];
+        for (tone_map, expected) in [
+            (ToneMap::Clip { sdr_white: WHITE }, clip),
+            (ToneMap::MaxRgb { sdr_white: WHITE }, max_rgb),
+        ] {
+            let Some(bytes) = convert(OutputFormat::Bgra8Nhwc, tone_map) else {
+                eprintln!("no shareable WARP texture on this machine; skipped");
+                return;
+            };
+            for (x, rgb) in expected.iter().enumerate() {
+                let bgra = &bytes[x * 4..x * 4 + 4];
+                assert_eq!(
+                    [bgra[2], bgra[1], bgra[0], bgra[3]],
+                    [rgb[0], rgb[1], rgb[2], 255],
+                    "{tone_map:?} pixel {x}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_tone_map_passes_scrgb_through_unchanged() {
+        let Some(bytes) = convert(OutputFormat::Fp32Nchw, ToneMap::None) else {
+            eprintln!("no shareable WARP texture on this machine; skipped");
+            return;
+        };
+        let values: Vec<f32> = bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
+            .collect();
+        // Pixel 3 is (6, 3, 0.75): above 1.0, as allow_linear promises.
+        let n = pixels().len();
+        assert_eq!(
+            [values[3], values[n + 3], values[2 * n + 3]],
+            [6.0, 3.0, 0.75]
+        );
+    }
+
+    /// Every value a source channel can hold, through the clip map to BGRA8,
+    /// against `hdr.py`'s arithmetic: f64, rounded half to even as `np.rint`
+    /// rounds. `side * side` pixels, pixel `i` grey at `value(i)`.
+    fn every_code_matches_hdr_py(
+        format: DXGI_FORMAT,
+        side: u32,
+        texel: impl Fn(u32) -> Vec<u8>,
+        value: impl Fn(u32) -> f64,
+    ) {
+        let bytes: Vec<u8> = (0..side * side).flat_map(&texel).collect();
+        let Some(texture) = warp_surface_sized(format, side, side, &bytes) else {
+            eprintln!("no shareable WARP texture on this machine; skipped");
+            return;
+        };
+        let converter = Converter12::new(
+            &texture,
+            side,
+            side,
+            Sampling::Nearest,
+            OutputFormat::Bgra8Nhwc,
+            YuvOptions::default(),
+            1,
+        )
+        .expect("converter on WARP");
+        converter
+            .process(
+                &texture,
+                1,
+                1.0,
+                0.0,
+                0,
+                ToneMap::Clip { sdr_white: WHITE },
+                &[],
+            )
+            .expect("dispatch");
+        let out = converter.read_back().expect("readback");
+        let mismatches: Vec<(u32, u8, u8)> = (0..side * side)
+            .filter_map(|i| {
+                let v = value(i);
+                let v = if v.is_nan() {
+                    0.0
+                } else {
+                    v.clamp(0.0, 65504.0)
+                };
+                let expected =
+                    (srgb((v / WHITE as f64).clamp(0.0, 1.0)) * 255.0).round_ties_even() as u8;
+                let got = out[i as usize * 4 + 2];
+                (got != expected).then_some((i, got, expected))
+            })
+            .collect();
+        assert!(
+            mismatches.is_empty(),
+            "{} of {} codes differ, first (code, got, expected): {:?}",
+            mismatches.len(),
+            side * side,
+            &mismatches[..mismatches.len().min(8)]
+        );
+    }
+
+    #[test]
+    fn every_fp16_value_converts_to_the_byte_grab_returns() {
+        every_code_matches_hdr_py(
+            DXGI_FORMAT_R16G16B16A16_FLOAT,
+            256,
+            |i| {
+                let h = (i as u16).to_le_bytes();
+                [h, h, h, half(1.0).to_le_bytes()].concat()
+            },
+            |i| decode_half(i as u16),
+        );
+    }
+
+    #[test]
+    fn every_10_bit_code_converts_to_the_byte_grab_returns() {
+        every_code_matches_hdr_py(
+            DXGI_FORMAT_R10G10B10A2_UNORM,
+            32,
+            |i| {
+                (i | (i << 10) | (i << 20) | (3 << 30))
+                    .to_le_bytes()
+                    .to_vec()
+            },
+            |i| i as f64 / 1023.0,
+        );
+    }
+
+    fn refusal(texture: &ID3D11Texture2D, format: OutputFormat, tone_map: ToneMap) -> String {
+        let converter = Converter12::new(
+            texture,
+            8,
+            2,
+            Sampling::Nearest,
+            format,
+            YuvOptions::default(),
+            1,
+        )
+        .expect("converter on WARP");
+        converter
+            .process(texture, 1, 1.0, 0.0, 0, tone_map, &[])
+            .expect_err("refused")
+            .message()
+    }
+
+    #[test]
+    fn a_tone_map_is_refused_where_it_cannot_be_right() {
+        let Some(sdr) = warp_surface(DXGI_FORMAT_B8G8R8A8_UNORM, 8, &[128u8; 32]) else {
+            eprintln!("no shareable WARP texture on this machine; skipped");
+            return;
+        };
+        let hdr = warp_texture(&pixels()).expect("FP16 WARP texture");
+        let clip = ToneMap::Clip { sdr_white: WHITE };
+        // 8-bit sRGB is never linear light.
+        assert!(refusal(&sdr, OutputFormat::Fp32Nchw, clip).contains("never linear"));
+        // YUV makes no HDR decision, tone map or not.
+        assert!(refusal(&hdr, OutputFormat::Nv12, clip).contains("does not tone map"));
+        // A white the shader would divide by.
+        for white in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            let message = refusal(
+                &hdr,
+                OutputFormat::Fp32Nchw,
+                ToneMap::Clip { sdr_white: white },
+            );
+            assert!(
+                message.contains("positive scRGB level"),
+                "{white}: {message}"
+            );
+        }
     }
 }

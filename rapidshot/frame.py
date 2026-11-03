@@ -167,7 +167,7 @@ class Frame:
         "_cursor_visible", "_width", "_height", "_dirty_rects",
         "_rects_coalesced", "_source_id", "_release_drains",
         "_release_quarantine", "_sequence", "_generation", "_cursor", "_lock",
-        "_move_rects", "_dxgi_format", "_color",
+        "_move_rects", "_dxgi_format", "_color", "_backend", "_source",
     )
 
     def __init__(
@@ -189,6 +189,8 @@ class Frame:
         cursor: "Optional[CursorInfo]" = None,
         dxgi_format: int = 87,
         color=None,
+        backend: str = "dxgi",
+        source=None,
     ) -> None:
         # First, so __del__ can rely on it even if a later assignment raises.
         # Reentrant: __del__ and __exit__ both route through release(), and a
@@ -221,6 +223,8 @@ class Frame:
         # display's rapidshot.core.hdr.DisplayColor, or None if not asked.
         self._dxgi_format = dxgi_format
         self._color = color
+        self._backend = backend
+        self._source = source
 
     def _clip_to_region(self, rects):
         """Translate desktop-coordinate rects into this frame's coordinates.
@@ -348,6 +352,10 @@ class Frame:
 
         This is when the compositor presented the frame, not when it was
         captured, so it is the right clock for measuring capture latency.
+        For a Windows.Graphics.Capture frame it is when WGC signalled the
+        frame's arrival -- the nearest equivalent, measured within a frame
+        interval -- since WGC's own ``SystemRelativeTime`` falls after the
+        frame is acquired and is not a capture time.
         """
         return self._present_time_qpc
 
@@ -409,6 +417,25 @@ class Frame:
         alone is not.
         """
         return self._source_id
+
+    @property
+    def backend(self) -> str:
+        """The capture backend that produced this frame: ``"dxgi"`` (Desktop
+        Duplication) or ``"wgc"`` (Windows.Graphics.Capture).
+
+        Some metadata depends on it. Desktop Duplication reports
+        ``dirty_rects``, ``move_rects``, ``accumulated_frames`` and the cursor
+        shape; a backend that cannot report one leaves it ``None`` (or 0)
+        rather than guessing.
+        """
+        return self._backend
+
+    @property
+    def source(self):
+        """The :mod:`rapidshot.sources` value the camera was created for --
+        ``Monitor``, ``Window`` or ``Region`` -- or None for a camera built
+        directly from an output."""
+        return self._source
 
     @property
     def protected_content(self) -> bool:

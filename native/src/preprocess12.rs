@@ -288,7 +288,9 @@ impl Preprocessor12 {
         let bytecode = compile_shader()?;
         let pso: ID3D12PipelineState = unsafe {
             let desc = D3D12_COMPUTE_PIPELINE_STATE_DESC {
-                pRootSignature: std::mem::ManuallyDrop::new(Some(root_signature.clone())),
+                // Borrowed, as in `transition`: a clone into this ManuallyDrop was
+                // never released.
+                pRootSignature: std::mem::transmute_copy(&root_signature),
                 CS: D3D12_SHADER_BYTECODE {
                     pShaderBytecode: bytecode.GetBufferPointer(),
                     BytecodeLength: bytecode.GetBufferSize(),
@@ -936,12 +938,19 @@ fn transition(
     before: D3D12_RESOURCE_STATES,
     after: D3D12_RESOURCE_STATES,
 ) {
+    // Borrowed, not cloned: the barrier's `pResource` is a ManuallyDrop, so a
+    // `clone()` here added a reference nothing ever released, so every
+    // transition kept its resource object alive past the code that recorded it.
+    // It is not the 15.6 MiB per GpuConverter the 2026-09-30 soak reported:
+    // that is Windows charging the process for each open of a shared surface
+    // and never uncharging it (CHANGELOG, Unreleased). The command list only
+    // reads the pointer during the call.
     let barrier = D3D12_RESOURCE_BARRIER {
         Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
         Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
         Anonymous: D3D12_RESOURCE_BARRIER_0 {
             Transition: std::mem::ManuallyDrop::new(D3D12_RESOURCE_TRANSITION_BARRIER {
-                pResource: std::mem::ManuallyDrop::new(Some(resource.clone())),
+                pResource: unsafe { std::mem::transmute_copy(resource) },
                 Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
                 StateBefore: before,
                 StateAfter: after,

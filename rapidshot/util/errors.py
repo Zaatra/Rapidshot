@@ -47,6 +47,16 @@ class RapidShotProtectedContentError(RapidShotDXGIError):
     """
     pass
 
+class RapidShotSourceClosedError(RapidShotError):
+    """
+    The captured source is gone for good -- a window that was closed.
+
+    Like protected content, this is not something a rebuild can fix, so the
+    camera stops instead of entering its re-init loop: there is nothing left
+    to capture.
+    """
+    pass
+
 class RapidShotConfigError(RapidShotError):
     """
     Indicates a configuration error or invalid API call.

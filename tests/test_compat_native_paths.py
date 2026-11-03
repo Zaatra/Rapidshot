@@ -137,11 +137,28 @@ def test_shim_module_functions_delegate(monkeypatch):
 
     assert isinstance(camera, dxcam.DXCamera)
     assert captured == {"device_idx": 0, "output_color": "RGB", "max_buffer_len": 64,
-                        "output_idx": 1, "region": (0, 0, 5, 5), "nvidia_gpu": True}
+                        "backend": "dxgi", "output_idx": 1, "region": (0, 0, 5, 5),
+                        "nvidia_gpu": True}
     assert [dxcam.device_info(), dxcam.output_info()] == ["device_info", "output_info"]
     dxcam.reset()
     dxcam.clean_up()
     assert calls == ["device_info", "output_info", "reset", "clean_up"]
+
+
+@pytest.mark.parametrize("dxcam_backend, rapidshot_backend",
+                         [("dxgi", "dxgi"), ("winrt", "wgc")])
+def test_shim_maps_dxcam_backend_names(monkeypatch, dxcam_backend, rapidshot_backend):
+    """DXcam's "winrt" is RapidShot's "wgc"; and a DXcam caller who names no
+    backend gets DXcam's default, "dxgi", not RapidShot's "auto"."""
+    captured = {}
+    monkeypatch.setattr(rapidshot, "create", lambda **kw: captured.update(kw) or object())
+
+    dxcam.create(backend=dxcam_backend)
+    assert captured["backend"] == rapidshot_backend
+
+    captured.clear()
+    dxcam.create()
+    assert captured["backend"] == "dxgi"
 
 
 def test_shim_module_functions_reach_the_real_factory():

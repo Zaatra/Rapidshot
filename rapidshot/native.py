@@ -150,6 +150,7 @@ def require() -> Any:
 _FEATURE_SINCE: Dict[str, str] = {
     "GpuConverter12": "0.2.0",
     "TensorTransfer": "0.2.0",
+    "WgcSession": "0.3.0",
 }
 
 
