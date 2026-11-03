@@ -216,6 +216,10 @@ class DXCamera:
         return f"<DXCamera (rapidshot compat) {self.rapidshot_camera!r}>"
 
 
+#: DXcam's backend names, as RapidShot spells them.
+_DXCAM_BACKENDS = {"dxgi": "dxgi", "winrt": "wgc"}
+
+
 def create(device_idx: int = 0, output_idx: Optional[int] = None,
            region: Optional[Tuple[int, int, int, int]] = None,
            output_color: str = "RGB", max_buffer_len: int = 64,
@@ -227,8 +231,13 @@ def create(device_idx: int = 0, output_idx: Optional[int] = None,
     also accepts (``nvidia_gpu``) keep working, and ones it does not fail with
     RapidShot's own error naming the argument.
     """
+    # DXcam calls Windows.Graphics.Capture "winrt" and defaults to "dxgi". Keep
+    # that default rather than RapidShot's "auto": a DXcam caller asked for
+    # DXcam's behaviour.
+    backend = kwargs.pop("backend", "dxgi")
     options: dict = {"device_idx": device_idx, "output_color": output_color,
-                     "max_buffer_len": max_buffer_len}
+                     "max_buffer_len": max_buffer_len,
+                     "backend": _DXCAM_BACKENDS.get(backend, backend)}
     if output_idx is not None:
         options["output_idx"] = output_idx
     if region is not None:

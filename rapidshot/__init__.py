@@ -41,6 +41,9 @@ from rapidshot.util.topology import (
 # Pure NumPy, so it imports on any platform even though capture does not.
 from rapidshot.preprocess import to_nchw
 
+# Plain values with no OS dependency, so they import everywhere (§ 9).
+from rapidshot.sources import Monitor, Window, Region
+
 # The GPU transform path is optional in exactly the way the native extension
 # is: importing it must not make `import rapidshot` fail on a no-toolchain
 # install (§ 11, "optional means optional"). The names are bound to None and
@@ -77,6 +80,7 @@ __all__ = [
     "to_nchw",
     "GpuConverter", "GpuTensor", "TensorTransfer", "CrossAdapterRequired",
     "TensorStream", "HdrClippedWarning",
+    "Monitor", "Window", "Region", "plan",
 ]
 
 class RapidshotError(Exception):
@@ -258,6 +262,125 @@ class RapidshotFactory(metaclass=Singleton):
             candidates.sort(key=lambda d: not self._is_integrated(d))
         return candidates
 
+    def _displays(self):
+        """Every display as ``(device_idx, output_idx, output)``, in the order
+        ``Monitor(index)`` counts them: adapter by adapter, as enumerated."""
+        return [(d, o, output)
+                for d, outputs in enumerate(self.outputs)
+                for o, output in enumerate(outputs)]
+
+    def _resolve_source(self, source, device_idx, output_idx, region):
+        """Map a ``rapidshot.sources`` value onto ``(device_idx, output_idx, region)``.
+
+        The source replaces the index arguments, so passing both is refused
+        rather than letting one silently win.
+        """
+        from rapidshot.sources import Monitor, Region, Window
+
+        if device_idx != 0 or output_idx is not None:
+            raise ConfigurationError(
+                f"source={source} names the display; leave device_idx and "
+                f"output_idx at their defaults (got device_idx={device_idx}, "
+                f"output_idx={output_idx}).")
+        displays = self._displays()
+
+        if isinstance(source, Monitor):
+            if source.index is None:
+                for d, o, output in displays:
+                    metadata = self.output_metadata.get(output.devicename)
+                    if metadata and metadata[1]:
+                        return d, o, region
+                logger.info("No primary monitor found, using the first display.")
+                return displays[0][0], displays[0][1], region
+            if source.index >= len(displays):
+                raise OutputError(
+                    f"{source} does not exist: {len(displays)} display(s) found "
+                    "(rapidshot.output_info() lists them).")
+            d, o, _ = displays[source.index]
+            return d, o, region
+
+        if isinstance(source, Region):
+            if region is not None:
+                raise ConfigurationError(
+                    f"source={source} is already a region; do not pass region= too.")
+            touching = []
+            for d, o, output in displays:
+                bounds = output.desc.DesktopCoordinates
+                left, top, right, bottom = (bounds.left, bounds.top,
+                                            bounds.right, bounds.bottom)
+                if (source.left < right and source.right > left
+                        and source.top < bottom and source.bottom > top):
+                    touching.append((d, o, output, (left, top, right, bottom)))
+            if not touching:
+                raise OutputError(f"{source} is not on any display.")
+            if len(touching) > 1:
+                names = ", ".join(t[2].devicename for t in touching)
+                raise ConfigurationError(
+                    f"{source} spans more than one display ({names}); one "
+                    "capture delivers one display's pixels.")
+            d, o, output, (left, top, right, bottom) = touching[0]
+            if (source.left < left or source.top < top
+                    or source.right > right or source.bottom > bottom):
+                raise ConfigurationError(
+                    f"{source} extends past the edge of {output.devicename} "
+                    f"({left}, {top}, {right}, {bottom}).")
+            return d, o, (source.left - left, source.top - top,
+                          source.right - left, source.bottom - top)
+
+        if isinstance(source, Window):
+            # The window's display picks the adapter its capture runs on, and
+            # whose HDR state applies. Which window is in the camera key.
+            name = _window_display_name(source.handle)
+            for d, o, output in displays:
+                if output.devicename == name:
+                    return d, o, region
+            logger.info(f"{source} is on no enumerated display; using the first.")
+            return displays[0][0], displays[0][1], region
+
+        raise ConfigurationError(
+            f"source must be rapidshot.Monitor, Window or Region, got {source!r}")
+
+    def _resolve_backend(self, backend, source) -> str:
+        """The concrete backend for ``backend`` and ``source``.
+
+        A window can only be captured through Windows.Graphics.Capture, so
+        ``"auto"`` means WGC for one. For a display named by ``source``,
+        ``"auto"`` follows the planner's cached measurement
+        (``rapidshot.plan(calibrate=True)``); otherwise it is Desktop
+        Duplication, and WGC only if every adapter refuses duplication.
+        """
+        from rapidshot.core.backend import BACKENDS
+        from rapidshot.sources import Window
+
+        if backend not in BACKENDS:
+            raise ConfigurationError(
+                f"backend must be one of {', '.join(map(repr, BACKENDS))}, "
+                f"got {backend!r}")
+        if isinstance(source, Window):
+            if backend == "dxgi":
+                raise ConfigurationError(
+                    f"source={source}: Desktop Duplication captures displays, "
+                    "not windows. Use backend='wgc' or 'auto'.")
+            backend = "wgc"
+        if backend == "auto" and source is not None and not isinstance(source, Window):
+            # The planner's measured choice, if this machine has one cached.
+            # Only for an explicit source: a call without one keeps its 2.6
+            # behaviour exactly, whatever has been measured since.
+            from rapidshot import planner
+
+            backend = planner.cached_backend(self, source) or "auto"
+        if backend == "wgc":
+            from rapidshot.core import wgc
+
+            if not wgc.is_available():
+                raise ConfigurationError(
+                    "Windows.Graphics.Capture (backend='wgc') needs "
+                    "rapidshot-native >= 0.3.0 on a Windows build that supports "
+                    "it; this process has neither or not both. "
+                    'pip install --upgrade "rapidshot[native]"')
+            return "wgc"
+        return "dxgi"
+
     def create(
         self,
         device_idx: int = 0,
@@ -270,11 +393,21 @@ class RapidshotFactory(metaclass=Singleton):
         pool_output: bool = True,
         timeout_ms: int = 10,
         pool_size_frames: int = 2,
+        *,
+        source=None,
+        backend: str = "auto",
     ) -> "ScreenCapture":
         """
         Create a ScreenCapture instance.
 
         Args:
+            source: What to capture -- ``rapidshot.Monitor``, ``Window`` or
+                ``Region``. When given, it replaces ``device_idx`` and
+                ``output_idx`` (leave those at their defaults); ``region``
+                still crops within a ``Monitor`` and must not be combined with
+                a ``Region``. None keeps the 2.6 behaviour exactly.
+            backend: ``"auto"``, ``"dxgi"`` (Desktop Duplication) or ``"wgc"``
+                (Windows.Graphics.Capture).
             device_idx: Device index
             output_idx: Output index (None for primary)
             region: Region to capture (left, top, right, bottom)
@@ -303,10 +436,19 @@ class RapidshotFactory(metaclass=Singleton):
             raise RapidshotError(
                 "ScreenCapture is not available on this platform."
             ) from _capture_import_error
-        logger.debug(f"Creating ScreenCapture with device_idx={device_idx}, output_idx={output_idx}, nvidia_gpu={nvidia_gpu}, prefer_integrated={prefer_integrated}")
-        
+        logger.debug(f"Creating ScreenCapture with device_idx={device_idx}, output_idx={output_idx}, nvidia_gpu={nvidia_gpu}, prefer_integrated={prefer_integrated}, source={source}, backend={backend}")
+
+        if source is not None:
+            device_idx, output_idx, region = self._resolve_source(
+                source, device_idx, output_idx, region)
+        auto = backend == "auto"
+        backend = self._resolve_backend(backend, source)
+
         # If the user prefers an integrated GPU, try to find one automatically.
-        if prefer_integrated:
+        # Not for an explicit source: that names the display, and switching
+        # device_idx here would capture a different one. The preference still
+        # orders the adapters tried for duplication below.
+        if prefer_integrated and source is None:
             for idx, device in enumerate(self.devices):
                 desc = device.desc.Description if device.desc and hasattr(device.desc, "Description") else ""
                 if "intel" in desc.lower():
@@ -367,7 +509,12 @@ class RapidshotFactory(metaclass=Singleton):
         # output indices but deliberately reverse the adapter candidate order.
         # Reusing the first instance would silently make the second call's
         # preference inert.
-        instance_key = (device_idx, output_idx, bool(prefer_integrated))
+        # The backend is part of the key: one camera per output is a Desktop
+        # Duplication rule (one duplication per output per process), not a
+        # rule about outputs.
+        window = getattr(source, "handle", None) if backend == "wgc" else None
+        instance_key = (device_idx, output_idx, bool(prefer_integrated), backend,
+                        window)
         # Everything else the caller chose, as requested -- recorded before the
         # CuPy fallback below can rewrite nvidia_gpu, so the same request always
         # compares equal. The key above picks the output; this decides whether
@@ -407,6 +554,14 @@ class RapidshotFactory(metaclass=Singleton):
         try:
             output = self.outputs[device_idx][output_idx]
             output.update_desc()
+            if backend == "wgc":
+                # WGC frames come in the source's displayed orientation and at
+                # its own size, so the camera lays regions out against WGC's
+                # geometry rather than the DXGI output's.
+                from rapidshot.core import wgc
+
+                output = (wgc.WindowGeometry(window) if window is not None
+                          else wgc.WgcMonitorGeometry(output))
             
             if nvidia_gpu:
                 try:
@@ -416,20 +571,44 @@ class RapidshotFactory(metaclass=Singleton):
                     nvidia_gpu = False
                     logger.warning("NVIDIA GPU acceleration requested but CuPy not available. Falling back to CPU mode.")
             
-            screencapture = ScreenCapture(
-                output=output,
-                device=device,
-                candidate_devices=self._duplication_candidates(
-                    device, prefer_integrated
-                ),
-                region=region,
-                output_color=output_color,
-                nvidia_gpu=nvidia_gpu,
-                max_buffer_len=max_buffer_len,
-                pool_output=pool_output,
-                timeout_ms=timeout_ms,
-                pool_size_frames=pool_size_frames,
-            )
+            def build(output, backend):
+                return ScreenCapture(
+                    output=output,
+                    device=device,
+                    candidate_devices=self._duplication_candidates(
+                        device, prefer_integrated
+                    ),
+                    region=region,
+                    output_color=output_color,
+                    nvidia_gpu=nvidia_gpu,
+                    max_buffer_len=max_buffer_len,
+                    pool_output=pool_output,
+                    timeout_ms=timeout_ms,
+                    pool_size_frames=pool_size_frames,
+                    backend=backend,
+                    source=source,
+                )
+
+            try:
+                screencapture = build(output, backend)
+            except Exception as e:
+                # backend="auto" chose Desktop Duplication and every adapter
+                # refused it: the process is not where the desktop is
+                # composed. WGC does not need to be, so that is what "auto"
+                # means here -- said out loud, not done silently.
+                from rapidshot.core import wgc
+
+                if not (auto and backend == "dxgi"
+                        and getattr(e, "duplication_refused", False)
+                        and wgc.is_available()):
+                    raise
+                logger.warning(
+                    "Desktop Duplication was refused on every adapter; capturing "
+                    f"{source or f'device {device_idx}, output {output_idx}'} "
+                    "through Windows.Graphics.Capture instead.")
+                backend = "wgc"
+                instance_key = instance_key[:3] + ("wgc", None)
+                screencapture = build(wgc.WgcMonitorGeometry(output), backend)
             screencapture._factory_config = requested
             self._screencapture_instances[instance_key] = screencapture
 
@@ -513,6 +692,33 @@ __factory = None
 # which has to clear the global and the instance registry together.
 __factory_lock = threading.RLock()
 
+def _window_display_name(hwnd: int) -> str:
+    """GDI name of the display a window is on (``\\\\.\\DISPLAY1``), or ""."""
+    import ctypes
+    from ctypes import wintypes
+
+    class MONITORINFOEXW(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                    ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD),
+                    ("szDevice", wintypes.WCHAR * 32)]
+
+    try:
+        user32 = ctypes.WinDLL("user32")   # private handle; see util/io.py
+        user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+        user32.MonitorFromWindow.restype = wintypes.HMONITOR
+        user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR,
+                                           ctypes.POINTER(MONITORINFOEXW)]
+        user32.GetMonitorInfoW.restype = wintypes.BOOL
+        monitor = user32.MonitorFromWindow(hwnd, 2)   # MONITOR_DEFAULTTONEAREST
+        info = MONITORINFOEXW()
+        info.cbSize = ctypes.sizeof(info)
+        if monitor and user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            return info.szDevice
+    except (OSError, AttributeError):  # pragma: no cover - non-Windows
+        pass
+    return ""
+
+
 def get_factory() -> "RapidshotFactory":
     """
     Get the global factory instance, initializing it if necessary.
@@ -543,11 +749,20 @@ def create(
     pool_output: bool = True,
     timeout_ms: int = 10,
     pool_size_frames: int = 2,
+    *,
+    source=None,
+    backend: str = "auto",
 ) -> "ScreenCapture":
     """
     Create a ScreenCapture instance.
     
     Args:
+        source: What to capture: ``rapidshot.Monitor(index)``,
+            ``rapidshot.Window(handle)`` or ``rapidshot.Region(l, t, r, b)``.
+            Replaces ``device_idx``/``output_idx``; None keeps the 2.6
+            behaviour exactly.
+        backend: ``"auto"``, ``"dxgi"`` (Desktop Duplication) or ``"wgc"``
+            (Windows.Graphics.Capture).
         device_idx: Device index
         output_idx: Output index (None for primary)
         region: Region to capture (left, top, right, bottom)
@@ -574,7 +789,23 @@ def create(
         pool_output=pool_output,
         timeout_ms=timeout_ms,
         pool_size_frames=pool_size_frames,
+        source=source,
+        backend=backend,
     )
+
+def plan(source=None, consumer=None, size=None, calibrate=False, seconds=2.0):
+    """How ``source`` would be captured here, and why -- see :mod:`rapidshot.planner`.
+
+    Returns a :class:`rapidshot.planner.CapturePlan`; ``print()`` it for the
+    decision and its evidence. ``calibrate=True`` measures every available
+    backend now (a few seconds each) and caches the result, which
+    ``create(source=..., backend="auto")`` then follows.
+    """
+    from rapidshot.planner import plan as _plan
+
+    return _plan(source=source, consumer=consumer, size=size,
+                 calibrate=calibrate, seconds=seconds)
+
 
 def device_info() -> str:
     """

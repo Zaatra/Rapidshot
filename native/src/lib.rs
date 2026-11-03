@@ -25,6 +25,7 @@ mod luma;
 mod preprocess;
 mod preprocess12;
 mod swizzle;
+mod wgc;
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -797,8 +798,15 @@ impl GpuConverter12 {
     /// texels of the captured surface — *not* frame coordinates; the Python
     /// layer translates a frame's region. Give at most one of the two. All
     /// regions run in one dispatch, into slots `0..len(regions)`.
+    ///
+    /// `tone_map` is `None` for a frame used as it is, or `"clip"` /
+    /// `"max_rgb"` for linear scRGB to be brought into sRGB first, with
+    /// `sdr_white` the display's SDR white in scRGB units (`nits / 80`). It is
+    /// per call because whether a frame is linear is per frame; the Python
+    /// layer decides from `Frame.color_space`.
     #[pyo3(signature = (
-        texture_ptr, scale=1.0, bias=0.0, bgr=false, *, source_id=0, crop=None, regions=None
+        texture_ptr, scale=1.0, bias=0.0, bgr=false, *, source_id=0, crop=None, regions=None,
+        tone_map=None, sdr_white=1.0
     ))]
     #[allow(clippy::too_many_arguments)]
     fn process(
@@ -810,7 +818,19 @@ impl GpuConverter12 {
         source_id: u64,
         crop: Option<(u32, u32, u32, u32)>,
         regions: Option<Vec<(u32, u32, u32, u32)>>,
+        tone_map: Option<&str>,
+        sdr_white: f32,
     ) -> PyResult<()> {
+        let tone_map = match tone_map {
+            None => converter12::ToneMap::None,
+            Some("clip") => converter12::ToneMap::Clip { sdr_white },
+            Some("max_rgb") => converter12::ToneMap::MaxRgb { sdr_white },
+            Some(other) => {
+                return Err(PyValueError::new_err(format!(
+                    "tone_map must be None, 'clip' or 'max_rgb', got {other:?}"
+                )))
+            }
+        };
         let inner = self
             .inner
             .lock()
@@ -845,6 +865,7 @@ impl GpuConverter12 {
                         scale,
                         bias,
                         if bgr { 1 } else { 0 },
+                        tone_map,
                         &rects,
                     )
                     .map_err(|e| PyRuntimeError::new_err(format!("D3D12 dispatch failed: {e}")))
@@ -1811,6 +1832,196 @@ fn create_test_device() -> windows::core::Result<ID3D11Device> {
 /// frames, and two captures taken moments apart are not guaranteed identical.
 /// This creates a texture whose exact contents Python chose, so the shader's
 /// output can be compared against a reference with no ambiguity.
+/// A Windows.Graphics.Capture session on a capture device (see `wgc.rs`).
+///
+/// Not `unsendable`, unlike the other classes here: a camera creates it on the
+/// caller's thread and its capture thread acquires from it after `start()`.
+/// Every call goes through the mutex, and `acquire` releases the GIL while it
+/// waits for a frame.
+#[pyclass(name = "WgcSession")]
+struct WgcSession {
+    inner: Mutex<wgc::WgcSession>,
+}
+
+fn wgc_target(monitor: isize, window: isize) -> PyResult<wgc::Target> {
+    match (monitor, window) {
+        (0, 0) => Err(PyValueError::new_err("give monitor= or window=")),
+        (m, 0) => Ok(wgc::Target::Monitor(m)),
+        (0, w) => Ok(wgc::Target::Window(w)),
+        _ => Err(PyValueError::new_err("give monitor= or window=, not both")),
+    }
+}
+
+#[pymethods]
+impl WgcSession {
+    /// Start capturing `monitor` (an HMONITOR) or `window` (an HWND) on the
+    /// D3D11 device at `device_ptr` (borrowed; the caller keeps it alive).
+    ///
+    /// `cursor` draws the pointer into the image; off by default, to match
+    /// Desktop Duplication, whose image never contains it. `border` asks for
+    /// the yellow capture border. `min_update_interval_us` is the shortest
+    /// gap WGC leaves between frames: its default (16 ms on Windows 11 build
+    /// 26300) holds a 165 Hz display to 55 fps.
+    #[new]
+    #[pyo3(signature = (
+        device_ptr, *, monitor=0, window=0, pixel_format="bgra", buffers=wgc::DEFAULT_BUFFERS,
+        cursor=false, border=false, min_update_interval_us=1000
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        device_ptr: usize,
+        monitor: isize,
+        window: isize,
+        pixel_format: &str,
+        buffers: i32,
+        cursor: bool,
+        border: bool,
+        min_update_interval_us: i64,
+    ) -> PyResult<Self> {
+        let target = wgc_target(monitor, window)?;
+        let format = wgc::Format::parse(pixel_format).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "pixel_format must be 'bgra' or 'fp16', got {pixel_format:?}"
+            ))
+        })?;
+        if device_ptr == 0 {
+            return Err(PyValueError::new_err("device pointer is null"));
+        }
+        let raw = device_ptr as *mut core::ffi::c_void;
+        let device = unsafe { ID3D11Device::from_raw_borrowed(&raw) }.ok_or_else(|| {
+            PyRuntimeError::new_err("could not interpret the pointer as an ID3D11Device")
+        })?;
+        let inner = wgc::WgcSession::new(
+            device,
+            target,
+            format,
+            buffers,
+            cursor,
+            border,
+            min_update_interval_us.saturating_mul(10),
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("WGC session setup failed: {e}")))?;
+        Ok(Self {
+            inner: Mutex::new(inner),
+        })
+    }
+
+    /// Wait up to `timeout_ms` for a frame and copy the newest into the
+    /// session's own shareable texture.
+    ///
+    /// Returns a dict whose ``status`` is ``"frame"`` (with ``texture``, the
+    /// borrowed address of that texture, valid until the next acquire or
+    /// close; ``width``, ``height``, ``dxgi_format``, ``arrived_qpc`` (the
+    /// frame's time), ``acquired_qpc``,
+    /// ``system_relative_qpc``, ``serial``, ``skipped``), ``"timeout"``,
+    /// ``"resized"`` (with the new ``width``/``height``: rebuild the session)
+    /// or ``"closed"`` (the window is gone).
+    fn acquire(&self, py: Python<'_>, timeout_ms: u32) -> PyResult<Py<PyDict>> {
+        let outcome = py
+            .detach(|| {
+                let mut inner = self
+                    .inner
+                    .lock()
+                    .map_err(|_| "WGC session lock poisoned".to_string())?;
+                inner.acquire(timeout_ms).map_err(|e| e.to_string())
+            })
+            .map_err(|e| PyRuntimeError::new_err(format!("WGC acquire failed: {e}")))?;
+        let out = PyDict::new(py);
+        match outcome {
+            wgc::Outcome::Frame(frame) => {
+                out.set_item("status", "frame")?;
+                out.set_item("texture", frame.texture)?;
+                out.set_item("width", frame.width)?;
+                out.set_item("height", frame.height)?;
+                out.set_item("dxgi_format", frame.dxgi_format)?;
+                out.set_item("arrived_qpc", frame.arrived_qpc)?;
+                out.set_item("acquired_qpc", frame.acquired_qpc)?;
+                out.set_item("system_relative_qpc", frame.system_relative_qpc)?;
+                out.set_item("serial", frame.serial)?;
+                out.set_item("skipped", frame.skipped)?;
+            }
+            wgc::Outcome::Timeout => out.set_item("status", "timeout")?,
+            wgc::Outcome::Resized(width, height) => {
+                out.set_item("status", "resized")?;
+                out.set_item("width", width)?;
+                out.set_item("height", height)?;
+            }
+            wgc::Outcome::Closed => out.set_item("status", "closed")?,
+        }
+        Ok(out.into())
+    }
+
+    /// Stop capturing and wait for WGC to finish tearing the session down
+    /// (see `wgc.rs`). Idempotent; the owned texture is released. Returns how
+    /// long the teardown took, in milliseconds.
+    fn close(&self, py: Python<'_>) -> PyResult<f64> {
+        py.detach(|| {
+            self.inner
+                .lock()
+                .map(|mut inner| inner.close())
+                .map_err(|_| "WGC session lock poisoned".to_string())
+        })
+        .map_err(PyRuntimeError::new_err)
+    }
+
+    /// ``(width, height)`` the session captures at.
+    #[getter]
+    fn size(&self) -> PyResult<(u32, u32)> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("WGC session lock poisoned"))?
+            .size())
+    }
+
+    /// ``"bgra"`` or ``"fp16"``.
+    #[getter]
+    fn pixel_format(&self) -> PyResult<&'static str> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("WGC session lock poisoned"))?;
+        Ok(match inner.format() {
+            wgc::Format::Bgra8 => "bgra",
+            wgc::Format::Fp16 => "fp16",
+        })
+    }
+
+    /// Settings this Windows build refused (``"cursor"``, ``"border"``,
+    /// ``"min_update_interval"``); capture runs without them.
+    #[getter]
+    fn unsupported(&self) -> PyResult<Vec<&'static str>> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("WGC session lock poisoned"))?
+            .unsupported
+            .clone())
+    }
+}
+
+/// Drop the cached capture items (see `wgc::release_items`). For process
+/// exit, before COM is uninitialised. Returns how many were dropped.
+#[pyfunction]
+fn wgc_release_items() -> usize {
+    wgc::release_items()
+}
+
+/// Whether Windows.Graphics.Capture is available on this system.
+#[pyfunction]
+fn wgc_is_supported() -> bool {
+    wgc::is_supported()
+}
+
+/// ``(width, height)`` WGC would capture `monitor` (HMONITOR) or `window`
+/// (HWND) at, without starting a capture.
+#[pyfunction]
+#[pyo3(signature = (*, monitor=0, window=0))]
+fn wgc_item_size(monitor: isize, window: isize) -> PyResult<(u32, u32)> {
+    let target = wgc_target(monitor, window)?;
+    wgc::item_size(target).map_err(|e| PyRuntimeError::new_err(format!("WGC item failed: {e}")))
+}
+
 #[pyclass(name = "TestTexture", unsendable)]
 struct TestTexture {
     // Field order matters: the texture must drop before the device that made it.
@@ -1940,12 +2151,16 @@ fn _rapidshot_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(luma::bgra_to_gray_into, m)?)?;
     m.add_function(wrap_pyfunction!(swizzle::bgra_swizzle_into, m)?)?;
     m.add_function(wrap_pyfunction!(build_info, m)?)?;
+    m.add_function(wrap_pyfunction!(wgc_is_supported, m)?)?;
+    m.add_function(wrap_pyfunction!(wgc_item_size, m)?)?;
+    m.add_function(wrap_pyfunction!(wgc_release_items, m)?)?;
     m.add_class::<GpuPreprocessor>()?;
     m.add_class::<GpuPreprocessor12>()?;
     m.add_class::<GpuConverter12>()?;
     m.add_class::<TensorTransfer>()?;
     m.add_class::<TestTexture>()?;
     m.add_class::<CrossAdapterTransfer>()?;
+    m.add_class::<WgcSession>()?;
     Ok(())
 }
 #[cfg(test)]

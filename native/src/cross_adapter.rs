@@ -2038,12 +2038,19 @@ fn transition(
     before: D3D12_RESOURCE_STATES,
     after: D3D12_RESOURCE_STATES,
 ) {
+    // Borrowed, not cloned: the barrier's `pResource` is a ManuallyDrop, so a
+    // `clone()` here added a reference nothing ever released, so every
+    // transition kept its resource object alive past the code that recorded it.
+    // It is not the 15.6 MiB per GpuConverter the 2026-09-30 soak reported:
+    // that is Windows charging the process for each open of a shared surface
+    // and never uncharging it (CHANGELOG, Unreleased). The command list only
+    // reads the pointer during the call.
     let barrier = D3D12_RESOURCE_BARRIER {
         Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
         Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
         Anonymous: D3D12_RESOURCE_BARRIER_0 {
             Transition: core::mem::ManuallyDrop::new(D3D12_RESOURCE_TRANSITION_BARRIER {
-                pResource: core::mem::ManuallyDrop::new(Some(resource.clone())),
+                pResource: unsafe { core::mem::transmute_copy(resource) },
                 Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
                 StateBefore: before,
                 StateAfter: after,

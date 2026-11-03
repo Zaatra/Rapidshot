@@ -738,9 +738,19 @@ class HealthGuard:
             return
         self.last = time.monotonic()
         current = self.query()
-        if current != self.baseline:
-            self._event("hardware-error-or-log-change", current=current)
-            raise MotionError("WHEA log changed; stopping live benchmarks")
+        if current == self.baseline:
+            return
+        if (current.get("latest") == self.baseline.get("latest")
+                and current.get("count", 0) < self.baseline.get("count", 0)):
+            # The System log wrapped and dropped an old WHEA record: the newest
+            # is unchanged, so nothing new happened. Treated as a fault, this
+            # stopped a Machine B pass part way through (count 132 -> 131,
+            # latest record the same) with no hardware error at all.
+            self._event("health-log-rolled-over", previous=self.baseline, current=current)
+            self.baseline = current
+            return
+        self._event("hardware-error-or-log-change", current=current)
+        raise MotionError("WHEA log changed; stopping live benchmarks")
 
     def after_case(self, row):
         """Mark ``row`` as a hardware failure if the log moved while it ran.

@@ -90,7 +90,8 @@ def preflight(**overrides):
             "capture_adapters": ["Intel(R) UHD Graphics"],
             "installed": {"mss": True, "dxcam": True, "winrt": True, "cupy": True, "cv2": True,
                           "psutil": True},
-            "display": {"width": 2560, "height": 1600, "refresh_hz": 165}}
+            "display": {"width": 2560, "height": 1600, "refresh_hz": 165},
+            "wgc": True}
     base.update(overrides)
     return base
 
@@ -109,9 +110,10 @@ def test_one_gpu_does_not_attempt_a_crossing():
 
 def test_every_skip_says_how_to_fix_it():
     pre = preflight(installed={"mss": False, "dxcam": True, "winrt": False, "cupy": True,
-                               "cv2": True, "psutil": True}, native=None)
+                               "cv2": True, "psutil": True}, native=None, wgc=False)
     paths, skipped = cli.choose_paths(pre)
     assert paths == ["dxcam", "rapidshot-cpu"]
+    assert "rapidshot-native >= 0.3.0" in skipped["rapidshot-wgc-window"]
     assert "pip install mss" in skipped["mss"]
     assert "winrt" in skipped["dxcam-wgc"]
     assert all("rapidshot[native]" in reason for path, reason in skipped.items()
@@ -128,7 +130,8 @@ def test_without_cupy_every_path_that_can_finish_elsewhere_is_planned():
     # and GpuConverter's on the capture GPU -- the Intel desktop's measurement.
     pre = preflight(topology="single", installed=NO_CUPY)
     paths, skipped = cli.choose_paths(pre)
-    assert paths == ["mss", "dxcam", "dxcam-wgc", "rapidshot-cpu", "rapidshot-converter"]
+    assert paths == ["mss", "dxcam", "dxcam-wgc", "rapidshot-cpu", "rapidshot-wgc",
+                     "rapidshot-wgc-window", "rapidshot-converter"]
     assert paths == list(section7_adapters.NO_CUDA_PATHS)
     assert set(skipped) == {"rapidshot-cupy", "rapidshot-direct"}
     assert all("CuPy" in reason and "NVIDIA" in reason for reason in skipped.values())
@@ -144,7 +147,8 @@ def test_an_nvidia_machine_without_cupy_skips_the_crossing_it_cannot_measure():
 def test_without_cupy_or_the_native_wheel_the_cpu_paths_still_run():
     paths, skipped = cli.choose_paths(preflight(topology="single", installed=NO_CUPY,
                                                 native=None))
-    assert paths == ["mss", "dxcam", "dxcam-wgc", "rapidshot-cpu"]
+    assert paths == ["mss", "dxcam", "dxcam-wgc", "rapidshot-cpu", "rapidshot-wgc",
+                     "rapidshot-wgc-window"]
     assert "rapidshot[native]" in skipped["rapidshot-converter"]
 
 
@@ -154,7 +158,8 @@ def test_without_opencv_the_cpu_paths_name_it_and_the_gpu_paths_still_run():
     paths, skipped = cli.choose_paths(pre)
     assert paths == ["rapidshot-cupy", "rapidshot-direct", "rapidshot-converter",
                      "rapidshot-xadapter", "rapidshot-converter-xadapter"]
-    assert all("opencv-python" in skipped[p] for p in ("mss", "dxcam", "dxcam-wgc", "rapidshot-cpu"))
+    assert all("opencv-python" in skipped[p] for p in ("mss", "dxcam", "dxcam-wgc", "rapidshot-cpu",
+                                                       "rapidshot-wgc", "rapidshot-wgc-window"))
     assert cli.memory_libraries(pre) == ["mss", "rapidshot", "rapidshot-frame"]
     assert "opencv-python" in cli.memory_skipped(pre)["dxcam"]
 

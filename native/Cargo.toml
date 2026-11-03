@@ -8,7 +8,7 @@ name = "rapidshot-native"
 # 0.2.1 changes no extension code: the wheel also carries latency_source.exe
 # (src/bin/latency_source.rs), the controlled test source `rapidshot benchmark`
 # times every capture library against, so a tester needs no Rust toolchain.
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 # `as_chunks` (used by the scalar kernels in luma.rs / swizzle.rs)
 # stabilised in 1.88. Clippy since 1.98 rejects the `chunks_exact`
@@ -30,6 +30,17 @@ pyo3 = { version = "0.29", features = ["abi3-py39", "extension-module"] }
 [dependencies.windows]
 version = "0.62"
 features = [
+    # Windows.Graphics.Capture (wgc.rs): the WinRT capture API, plus the
+    # interop that makes its items from an HMONITOR/HWND and its device from
+    # DXGI.
+    "Foundation",
+    "Graphics",
+    "Graphics_Capture",
+    "Graphics_DirectX",
+    "Graphics_DirectX_Direct3D11",
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics_Capture",
     "Win32_Foundation",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D_Fxc",

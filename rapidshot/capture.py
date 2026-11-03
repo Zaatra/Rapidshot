@@ -20,6 +20,7 @@ from rapidshot.util.errors import ( # Added for Phase 2
     RapidShotDeviceError,
     RapidShotConfigError,
     RapidShotProtectedContentError,
+    RapidShotSourceClosedError,
 )
 from rapidshot.core.device import Device
 from rapidshot.core.output import Output
@@ -94,6 +95,13 @@ class ScreenCapture:
     #: this is also the point past which stop() stops tidying up after it.
     _stop_join_timeout_s = 10.0
 
+    #: What ``__init__`` sets for a camera built straight from an output.
+    #: Class-level as well so an instance assembled without ``__init__`` -- as
+    #: several tests do -- still reports a backend and stamps its frames.
+    _backend_name = "dxgi"
+    _source = None
+    _generation = 0
+
     def __init__(
         self,
         output: Output,
@@ -106,6 +114,8 @@ class ScreenCapture:
         pool_output: bool = True,
         timeout_ms: int = 10,
         candidate_devices: Optional[List[Device]] = None,
+        backend: str = "dxgi",
+        source=None,
     ) -> None:
         """
         Initialize a ScreenCapture instance.
@@ -147,10 +157,23 @@ class ScreenCapture:
                 present a new frame. 0 polls, which costs roughly 4x the CPU for
                 about 7% more frames; the default blocks. See
                 :attr:`timeout_ms` for the measured curve.
+            backend: The capture backend, already resolved -- ``"dxgi"``
+                (Desktop Duplication) or ``"wgc"`` (Windows.Graphics.Capture,
+                which needs rapidshot-native >= 0.3.0). ``"auto"`` is resolved
+                by the factory, not here. With ``"wgc"``, ``output`` is a
+                ``core.wgc`` geometry rather than a DXGI output.
+            source: The :mod:`rapidshot.sources` value this camera was created
+                for, reported on the camera and on every frame. ``None`` for a
+                camera built directly from an output.
 
         Raises:
             ValueError: If timeout_ms is negative.
+            RapidShotConfigError: If ``backend`` is not one this build can run.
         """
+        if backend not in ("dxgi", "wgc"):
+            raise RapidShotConfigError(
+                f"Capture backend must be 'dxgi' or 'wgc', got {backend!r}; "
+                "'auto' is resolved by rapidshot.create().")
         if not isinstance(timeout_ms, int) or isinstance(timeout_ms, bool) or timeout_ms < 0:
             raise ValueError(
                 f"timeout_ms must be a non-negative int, got {timeout_ms!r}"
@@ -165,6 +188,8 @@ class ScreenCapture:
         # Initialize basic attributes first to prevent errors during cleanup if initialization fails
         self._output = output
         self._device = device
+        self._backend_name = backend
+        self._source = source
         self._init_error: Optional[Exception] = None
         # Every adapter that could duplicate this output, in preference order
         # as the factory ranked it. On a hybrid system the adapter that owns
@@ -301,6 +326,18 @@ class ScreenCapture:
             self.release() # Call release to clean up whatever was set up
             raise # Re-raise the exception to signal construction failure
             
+    @property
+    def backend(self) -> str:
+        """The capture backend in use: ``"dxgi"`` (Desktop Duplication) or
+        ``"wgc"`` (Windows.Graphics.Capture)."""
+        return self._backend_name
+
+    @property
+    def source(self):
+        """The :mod:`rapidshot.sources` value this camera captures, or None
+        for a camera built directly from an output."""
+        return self._source
+
     def _device_label(self, device: Device) -> str:
         """Adapter description, for messages. Never raises."""
         try:
@@ -325,6 +362,9 @@ class ScreenCapture:
             RapidShotConfigError: every candidate refused. The message names
                 the likely system-level cause, which the raw HRESULT did not.
         """
+        if self._backend_name == "wgc":
+            return self._build_wgc_backend()
+
         # Try in the stored preference order. Not "current device first":
         # `self._device` starts as the adapter that owns the output, and with
         # prefer_integrated the iGPU is deliberately ranked ahead of it, so
@@ -374,11 +414,42 @@ class ScreenCapture:
             ]
             return duplicator
 
-        raise RapidShotConfigError(
+        error = RapidShotConfigError(
             probe_topology().duplication_failure_help()
             + "\n\nWhat each adapter reported:\n"
             + "\n".join(refusals)
         )
+        # Every adapter refused for adapter-specific reasons -- the one failure
+        # Windows.Graphics.Capture can route around, since it does not need
+        # the process on the display's adapter. A desktop or protected-content
+        # refusal is raised above, unmarked, because WGC would meet it too.
+        error.duplication_refused = True
+        raise error
+
+    def _build_wgc_backend(self):
+        """A Windows.Graphics.Capture session for this camera's source.
+
+        No adapter search: WGC captures from any adapter (measured on the one
+        without the display too, at about +7 ms), so it runs on the first
+        candidate -- the display's adapter, or the integrated one first with
+        ``prefer_integrated``. ``self._device`` follows it, because the stage
+        surface and every copy share that device.
+        """
+        from rapidshot.core.wgc import WgcBackend
+
+        device = self._all_devices[0]
+        backend = WgcBackend(output=self._output, device=device,
+                             timeout_ms=self._timeout_ms)
+        self._device = device
+        return backend
+
+    def _source_closed(self, error) -> None:
+        """The source is gone for good -- a closed window. Stop here instead of
+        entering the rebuild loop, which would retry something that cannot
+        come back."""
+        logger.error(f"Capture source closed: {error}")
+        self._last_capture_error_message = str(error)
+        self._capture_permanently_failed = True
 
     def _initialize_resources(self, is_reinit=False) -> bool:
         """
@@ -523,6 +594,8 @@ class ScreenCapture:
         except (RapidShotConfigError, RapidShotDeviceError, RapidShotDXGIError, RapidShotError) as e:
             logger.error(f"Failed to {'re-initialize' if is_reinit else 'initialize'} resources: {e}")
             self._is_initialized = False
+            if isinstance(e, RapidShotSourceClosedError):
+                self._source_closed(e)
             # Keep the real cause. This used to be logged and dropped, and the
             # caller then raised "Check logs for details" -- which discarded a
             # diagnosis that had already been made, in the one situation where
@@ -644,13 +717,13 @@ class ScreenCapture:
         self._ensure_no_live_frame("grab()")
         self._refuse_while_capturing("grab()")
 
-        current_region_tuple: Tuple[int, int, int, int]
-        if region is None:
-            current_region_tuple = self.region
-        else:
-            current_region_tuple = self._normalize_region(region)
-
-        return self._grab(current_region_tuple)
+        # None goes down as None: the camera's region is read inside the lock,
+        # after any rebuild that call performs. Read here, a grab that rebuilt
+        # for a new resolution or window size cropped the new frame to the old
+        # region.
+        if region is not None:
+            region = self._normalize_region(region)
+        return self._grab(region)
 
     def _checkout_output_buffer(self, width: int, height: int):
         """A pooled buffer for the converted frame, or None if not in use.
@@ -1023,6 +1096,9 @@ class ScreenCapture:
             logger.warning(f"grab_frame(): {e}. Flagging for re-initialization.")
             self._note_recovery_needed("device or re-init error during grab_frame")
             return None
+        except RapidShotSourceClosedError as e:
+            self._source_closed(e)
+            return None
         except RapidShotError as e:
             logger.error(f"grab_frame(): {e}")
             return None
@@ -1053,6 +1129,8 @@ class ScreenCapture:
             cursor=self._cursor_info(),
             dxgi_format=dxgi_format,
             color=self._color_for(dxgi_format),
+            backend=self._backend_name,
+            source=self._source,
         )
         self._live_frame = frame
         return frame
@@ -1407,6 +1485,9 @@ class ScreenCapture:
             self._last_capture_error_message = str(e)
             self._on_output_change()
             return False
+        except RapidShotSourceClosedError as e:
+            self._source_closed(e)
+            return False
         except RapidShotError as e:
             # Protected content included: no rebuild can fix that while the
             # content is on screen.
@@ -1605,6 +1686,10 @@ class ScreenCapture:
                 self._note_recovery_needed("capture resources not initialized")
                 return None
 
+            # The camera's region, as it stands after any rebuild above.
+            if region is None:
+                region = self.region
+
             pooled_buffer_wrapper = None
             output_wrapper = None
             output_array_for_region = None
@@ -1658,6 +1743,11 @@ class ScreenCapture:
                 logger.error(f"DXGI error during update_frame: {e}")
                 if self._duplicator._frame_acquired:
                     self._duplicator.release_frame()
+                if pooled_buffer_wrapper:
+                    pooled_buffer_wrapper.release()
+                return None
+            except RapidShotSourceClosedError as e:
+                self._source_closed(e)
                 if pooled_buffer_wrapper:
                     pooled_buffer_wrapper.release()
                 return None
@@ -1848,7 +1938,12 @@ class ScreenCapture:
         # the new surface with the old SDR white.
         self._display_color = None
 
-        self._output.update_desc()
+        try:
+            self._output.update_desc()
+        except RapidShotSourceClosedError as e:
+            # A window source that closed: nothing to rebuild against.
+            self._source_closed(e)
+            return False
         self.width, self.height = self._output.resolution
         self.region = self._fit_requested_region()
         self._validate_region(self.region)
@@ -1891,6 +1986,12 @@ class ScreenCapture:
                         )
                     raise
                 self._duplicator = candidate
+                # A rebuild like any other: the new duplicator may differ in
+                # size, rotation or format, which is what `generation` exists
+                # to signal. Only _initialize_resources used to count, so a
+                # consumer comparing Frame.generation missed every rebuild made
+                # here -- mode changes, access loss in shot(), start(delay).
+                self._generation += 1
                 logger.info(
                     f"Duplication rebuilt after output change "
                     f"(attempt {attempt + 1}, resolution {self.width}x{self.height})."
@@ -1900,6 +2001,9 @@ class ScreenCapture:
                 # Retrying cannot help while the protected surface is on screen.
                 logger.error(f"Cannot rebuild duplication: {e}")
                 self._last_capture_error_message = str(e)
+                return False
+            except RapidShotSourceClosedError as e:
+                self._source_closed(e)
                 return False
             except (comtypes.COMError, RapidShotError) as e:
                 # DXGI commonly reports UNSUPPORTED/ACCESS_DENIED for a short
@@ -2248,9 +2352,10 @@ class ScreenCapture:
                     self._stop_capture_event.set() # Signal thread to stop
                     break # Exit while loop
 
-                # Use self.region for continuous capture, which was set during start()
-                # _grab will handle _needs_reinit flag internally.
-                grab_result = self._grab(self.region) 
+                # The camera's region, which start() set. Resolved inside
+                # _grab, after any rebuild it performs, so a rebuild for a new
+                # size is not cropped to the old one.
+                grab_result = self._grab(None)
 
                 if grab_result is not None:
                     self._frame_count += 1

@@ -51,6 +51,13 @@ def _reload_with(available):
     finally:
         builtins.__import__ = real_import
         sys.modules["rapidshot.native"] = saved if saved else sys.modules["rapidshot.native"]
+        # import_module also rebinds the package attribute. Restoring only
+        # sys.modules left `rapidshot.native` pointing at the last fake, so
+        # every later `from rapidshot import native` got an extension with
+        # nothing but build_info -- which is how the live WGC tests, run after
+        # this module, found Windows.Graphics.Capture unavailable.
+        if saved is not None:
+            sys.modules["rapidshot"].native = saved
 
 
 def _fake_ext(tag):

@@ -99,15 +99,17 @@ def test_every_python_block_parses():
 
 
 def test_the_native_floor_is_stated_consistently():
-    """The README, pyproject and the feature table must name one version.
+    """The README and pyproject must floor at the newest gated feature.
 
-    Three places tell a user which native version they need, and a reader who
-    finds two different answers cannot know which is wrong.
+    Three places tell a user which native version they need. The feature
+    table records when each symbol arrived, so it can name several versions;
+    the floor everyone installs is the newest of them, and a README or extra
+    naming an older one would install an extension missing a documented
+    feature.
     """
     text = README.read_text(encoding="utf-8")
-    required = sorted(set(native._FEATURE_SINCE.values()))
-    assert len(required) == 1, f"more than one floor in _FEATURE_SINCE: {required}"
-    floor = required[0]
+    floor = max(native._FEATURE_SINCE.values(),
+                key=lambda v: tuple(int(part) for part in v.split(".")))
 
     assert f"rapidshot-native >= {floor}" in text or f"rapidshot-native>={floor}" in text, (
         f"README does not state the native floor {floor}"

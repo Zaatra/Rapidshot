@@ -660,6 +660,84 @@ def test_sdr_frames_and_10bit_sdr_desktops_convert_as_before(ext):
     assert len(conv._impl.calls) == 2
 
 
+# --------------------------------------------------------------------------
+# HDR: a tone map converts linear scRGB instead of refusing it
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("fmt", [10, 24])
+@pytest.mark.parametrize("tone_map,native_name", [("auto", "max_rgb"), ("clip", "clip")])
+def test_a_tone_map_converts_linear_input_instead_of_refusing_it(ext, fmt, tone_map, native_name):
+    conv = GpuConverter(hdr_frame(fmt), (8, 4), tone_map=tone_map)
+    conv.process(hdr_frame(fmt))
+    call = conv._impl.calls[-1]
+    assert (call["tone_map"], call["sdr_white"]) == (native_name, 3.0)
+    assert (conv.tone_map, conv.output_color_space) == (tone_map, "srgb")
+
+
+def test_the_tone_map_is_decided_per_frame(ext):
+    """HDR can be switched while a camera runs: an SDR frame through the same
+    converter is used as it is, and the next HDR one is mapped again."""
+    conv = GpuConverter(frame(), (8, 4), tone_map="auto")
+    conv.process(frame())
+    conv.process(hdr_frame(24, hdr_on=False))
+    conv.process(hdr_frame(10, nits=200.0))
+    assert ["tone_map" in call for call in conv._impl.calls] == [False, False, True]
+    assert conv._impl.calls[-1]["sdr_white"] == 2.5
+
+
+def test_uint8_output_can_be_tone_mapped(ext):
+    """allow_linear refuses uint8, which would saturate scRGB; a tone map does
+    not, because its output is sRGB -- the frame grab() would have returned."""
+    conv = GpuConverter(hdr_frame(), (8, 4), dtype="uint8", layout="nhwc", tone_map="clip")
+    conv.process(hdr_frame())
+    assert conv._impl.calls[-1]["tone_map"] == "clip"
+
+
+@pytest.mark.parametrize("nits", [80.0, 203.0, 240.0, 250.0, 333.3, 1000.0, 0.01])
+def test_sdr_white_reaches_the_gpu_as_grab_quantises_it(nits):
+    """hdr.to_bgra8 divides by thousandths of 80 nits; the GPU must divide by
+    the same number or the two paths drift apart on odd settings."""
+    from rapidshot.core.hdr import DisplayColor
+    milli = max(1, int(round(DisplayColor(True, nits).sdr_white_scale * 1000)))
+    assert converter_module._sdr_white_scale(nits) == milli / 1000.0
+
+
+@pytest.mark.parametrize("kwargs,match", [
+    ({"tone_map": "reinhard"}, "tone_map must be one of"),
+    ({"tone_map": "AUTO"}, "tone_map must be one of"),
+    ({"output_color_space": "bt2020-pq"}, "HDR10 output"),
+    ({"tone_map": "auto", "allow_linear": True}, "choose one"),
+    ({"tone_map": "clip", "pixel_format": "nv12"}, "not available with pixel_format"),
+])
+def test_tone_map_arguments_that_cannot_both_hold_are_refused(ext, kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        GpuConverter(frame(), (8, 4), **kwargs)
+
+
+def test_the_default_still_refuses_and_names_the_way_out(ext):
+    """Existing callers see no change: no tone map unless asked for one."""
+    conv = GpuConverter(frame(), (8, 4))
+    assert conv.tone_map == "none"
+    with pytest.raises(ValueError, match="tone_map='auto'"):
+        conv.process(hdr_frame())
+    conv.process(frame())
+    assert "tone_map" not in conv._impl.calls[-1]
+
+
+def test_a_native_build_without_the_tone_map_is_refused_at_construction(monkeypatch):
+    """A 0.2 wheel exports GpuConverter12 too; without this check it would
+    fail on the first HDR frame with an unexpected-keyword TypeError."""
+    class OldImpl(FakeImpl):
+        def process(self, texture, scale, bias, bgr, *, source_id=0, crop=None, regions=None):
+            self.calls.append(dict(crop=crop, regions=regions))
+
+    monkeypatch.setattr(native, "require",
+                        lambda: types.SimpleNamespace(GpuConverter12=OldImpl))
+    with pytest.raises(RuntimeError, match="rapidshot-native >= 0.3.0"):
+        GpuConverter(frame(), (8, 4), tone_map="auto")
+    GpuConverter(frame(), (8, 4)).process(frame())     # no tone map: still fine
+
+
 def test_a_frame_says_what_it_holds():
     plain = frame()
     assert (plain.pixel_format, plain.hdr, plain.sdr_white_nits, plain.color_space) == \

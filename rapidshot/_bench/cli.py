@@ -66,6 +66,8 @@ LABELS = {
     "dxcam": "DXcam (DXGI)",
     "dxcam-wgc": "DXcam (WGC)",
     "rapidshot-cpu": "RapidShot grab()",
+    "rapidshot-wgc": "RapidShot grab(), WGC",
+    "rapidshot-wgc-window": "RapidShot grab() of the window, WGC",
     "rapidshot-cupy": "RapidShot grab(), nvidia_gpu=True",
     "rapidshot-direct": "RapidShot direct, single adapter",
     "rapidshot-xadapter": "RapidShot full frame across adapters",
@@ -119,6 +121,19 @@ def _cpu_name():
         return platform.processor()
 
 
+def _wgc_available() -> bool:
+    try:
+        from rapidshot.core import wgc
+        return wgc.is_available()
+    except Exception:  # noqa: BLE001 -- no COM, no extension: simply unavailable
+        return False
+
+
+#: Why RapidShot's WGC rows are skipped without it.
+NO_WGC = ("needs Windows.Graphics.Capture from rapidshot-native >= 0.3.0: "
+          'pip install --upgrade "rapidshot[native]"')
+
+
 def preflight() -> dict:
     """Everything decided before a single frame is captured, and why."""
     import rapidshot
@@ -143,6 +158,7 @@ def preflight() -> dict:
                       (("mss", "mss"), ("dxcam", "dxcam"), ("winrt", "winrt"),
                        ("cupy", "cupy"), ("cv2", "cv2"), ("psutil", "psutil"))},
         "versions": {name: _distribution_version(name) for name in ("mss", "dxcam")},
+        "wgc": _wgc_available(),
     }
     try:
         info["display"] = section7.display_mode()
@@ -195,6 +211,10 @@ def choose_paths(pre: dict):
     else:
         skipped["dxcam"] = "not installed: pip install dxcam"
     cpu.append("rapidshot-cpu")
+    if pre.get("wgc"):
+        cpu += ["rapidshot-wgc", "rapidshot-wgc-window"]
+    else:
+        skipped.update({p: NO_WGC for p in ("rapidshot-wgc", "rapidshot-wgc-window")})
     if not have.get("cv2"):
         skipped.update({p: NO_CV2 for p in cpu})
         cpu = []

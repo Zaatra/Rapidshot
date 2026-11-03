@@ -10,9 +10,33 @@ This document is written to be read cold. It states where the project actually i
 
 **Current state.** Rapidshot captures the desktop via DXGI Desktop Duplication and can hand a frame to a GPU consumer as a **model-ready tensor that never touches the CPU** — `float16` or `float32`, NCHW or NHWC, produced by one fused dispatch and exported zero-copy to Torch, CuPy or DLPack (2.6). The CPU path for the same work costs ~8 ms per 1080p frame on a toolchain-free install. Core capture is pure Python; an *optional* Rust extension provides GPU interop **and byte-exact AVX2 conversion kernels** — with it, colour conversion drops to 0.26–0.36 ms and stops being the dominant CPU cost (§ 3, § 10).
 
-> **2.6.0 is released, and the project is in feature freeze.** Tagged and
-> published 2026-09-20 along with `rapidshot-native` 0.2.0. Nothing in § 7.3 and
-> beyond should start yet.
+> **2.7.0 is in progress: § 7.3 in full.** The feature freeze that followed
+> 2.6.0 was lifted on 2026-10-22. 2.7.0 brings the source/backend split
+> (`Monitor`, `Window`, `Region`), a native Windows.Graphics.Capture backend for
+> monitors and windows (`rapidshot-native` 0.3.0), the HDR tone map in
+> `GpuConverter`, and a measured planner behind `backend="auto"`. The 2.6 fixes
+> still unreleased ship with it; there is no 2.6.4.
+>
+> **Why the freeze was lifted while the evidence it asked for is incomplete.**
+> The freeze existed so usage could find 2.6's weaknesses, and a month of it
+> found the ones it was going to find on hardware this project can reach: a
+> benchmark that required CuPy (2.6.2), the testing and HDR findings
+> (2.6.3), and the per-process GPU counter that looked like a leak and was not
+> (§ 7.3's notes; README, Known limitations). What it could not do is bring
+> new users, because RapidShot still could not capture a window -- the gap
+> § 7.3 names as the one that limits who can use the pipeline at all. The
+> maintainer chose, on 2026-10-22, to close that gap rather than wait longer.
+>
+> **The freeze's condition still binds the tag.** 2.7.0 is built and tested on
+> Machine B only. Before `v2.7.0` is tagged it needs the multi-pass
+> `rapidshot benchmark --full` on more than one machine, the tone map on an HDR
+> panel, and an older Windows build (no `MinUpdateInterval`). No AMD part has
+> run any of it, and the release notes say so rather than implying otherwise.
+>
+> **The freeze, for the record.** 2.6.0 was tagged and published 2026-09-20
+> along with `rapidshot-native` 0.2.0, and the project then took only bugs and
+> evidence through 2.6.3 (2026-09-30). The reasoning stands for the next large
+> release:
 >
 > 2.6 changed a great deal at once — `GpuConverter`, FP16, `TensorStream`,
 > Torch/CuPy/DLPack export, `TensorTransfer`, convert-before-transfer, the
@@ -20,13 +44,11 @@ This document is written to be read cold. It states where the project actually i
 > validated on two machines that belong to one developer. **That is exactly when
 > to stop adding architecture and let usage find the weaknesses.**
 >
-> Until further notice, accept only: correctness bugs, crashes, leaks, packaging
+> The freeze accepted only correctness bugs, crashes, leaks, packaging
 > failures, hardware-compatibility reports, documentation fixes and performance
-> regressions. If any of those warrant a release, it is **2.6.1**. Version
-> numbers do not have to move continuously, and there is no backlog demanding
-> otherwise.
+> regressions.
 >
-> The one thing worth doing during the freeze is **evidence**: § 7.5's
+> The one thing worth doing during the freeze was **evidence**: § 7.5's
 > `rapidshot benchmark --full` and the hardware matrix. No AMD part has ever run
 > any of this (§ 2), and that gap is not closed by writing more code.
 >
@@ -85,7 +107,7 @@ Both of the related settings were checked the same way on 2026-09-13:
 
 **Region cameras: fixed on every GPU path.** `GpuConverter`, `GpuPreprocessor12` and the D3D11 `GpuPreprocessor` all converted the whole monitor on a region camera; all three now convert the region, with whole-frame output unchanged bit for bit (§ 10). This changes output for anyone using the two shipped preprocessors on a region camera — which is the fix.
 
-**Next feature task: none — see the freeze notice in § 1.** § 6.3 is complete and shipped in 2.6. When development resumes, § 7.3 (2.7: Windows capture sources) is the entry point, and the priority order at the end of § 7 was re-ranked on 2026-09-20 to put userbase growth ahead of further capture optimisation.
+**Next feature task: finish 2.7.0 (§ 7.3).** What is left is evidence, not code: the release conditions in the block above. After it, § 7.3a, in the priority order at the end of § 7 (re-ranked on 2026-09-20 to put userbase growth ahead of further capture optimisation).
 
 **Do not start another round of D3D12 synchronisation work without a measurement or a user report asking for it.** That seam has been through feature work, hardware validation, adversarial review, four rounds of fixes, targeted regression tests and a clean final pass. The next thing to do here is nothing; the returns are elsewhere.
 
@@ -2594,6 +2616,101 @@ for tensor in stream:
 > RapidShot still cannot do is capture **a window**, and that limits who can use
 > the pipeline at all. Encoding is valuable and is not what gates adoption.
 
+#### Where 7.3 stands — 2026-10-29
+
+**Built, on main, unreleased:** the source model (`Monitor`, `Window`,
+`Region`; `core/backend.py`'s `CaptureBackend` contract), the native WGC
+backend (`rapidshot-native` 0.3.0, `native/src/wgc.rs`), window capture, the
+planner (`rapidshot.plan()`, `backend="auto"`), and WGC rows in
+`rapidshot benchmark`, and the HDR tone map in `GpuConverter` (verified on
+WARP against `core/hdr.py`; never run on an HDR panel, so nothing below claims
+HDR). **Not done:** the HDR panel run, the multi-pass benchmark on more than one
+machine, an older Windows build, and the OBS recovery table's monitor-unplug,
+adapter-change and fullscreen rows for WGC.
+
+**The spikes that shaped the backend** (Machine B, hybrid, 2560x1600 @ 165 Hz;
+one variable per run; raw data was kept outside the repository):
+
+| Question | Answer |
+| --- | --- |
+| Can D3D12 consume WGC's pool surface? | Yes: it is `SHARED \| SHARED_NTHANDLE` (0x802) on our device |
+| Then why copy? | Reading it is only safe while the frame is open: after `Close()` WGC rewrote it within 40 ms (50/50). Holding frames open for a consumer delivered older frames (+25 ms at a 30 ms hold). The copy is 0.75 ms of GPU time |
+| What can RapidShot own? | `SHARED \| SHARED_NTHANDLE` without a keyed mutex creates, opens on D3D12 and read back 150/150 byte-exact. § 2's "refuses SHARED_NTHANDLE without a keyed mutex" is true only of `0x800` alone |
+| Does the copy need ordering? | Yes: 7/150 D3D12 reads were the previous frame without the capture-order fence, 150/150 with it |
+| Default rate? | `MinUpdateInterval` defaults to 16 ms: 55 fps on a 165 Hz panel. 1 ms gives 164 |
+| Is `SystemRelativeTime` a capture time? | No: QPC-based but 3.4 ms *after* acquisition, 17.6 ms after `Present()` |
+| Window closed? | `Closed` needs a message pump the capture thread does not run; detected from `IsWindow` and the item's 0x0 size instead |
+
+So the "consume the WGC surface directly" experiment above has its answer:
+**take the copy.** Lifetime correctness could not be had without pinning pool
+buffers, and pinning them cost more freshness than the copy costs time. One
+owned texture rather than a ring keeps its address, so `GpuConverter`'s cache
+does not reopen it every frame.
+
+**Two things found on the way, both general.** A session object alive at
+interpreter exit crashed the process once comtypes had uninitialised COM;
+`close()` now drops every COM reference and open sessions close from an atexit
+hook. And the grab that performs a rebuild used the region read before it, so
+the first frame after any size change -- a resized window, or a Desktop
+Duplication resolution change -- came back cropped to the old size.
+
+**Four more from the pre-release review, 2026-10-29, each root-caused before
+it was fixed** (Machine B; one variable per run, fresh process, off core 0):
+
+- **A slow consumer got stale pixels.** A pool frame nobody has taken holds a
+  buffer; with both of a 2-buffer pool's held, WGC drops new frames and never
+  delivers them later. A window changed three times between grabs came back
+  showing its second state, and stayed there while the window held still. The
+  `FrameArrived` handler now takes every frame as it lands and keeps only the
+  newest; the pool has three buffers (one being copied, one newest, one free).
+  The next subsection's two-buffer default is superseded by this measurement.
+- **Every camera leaked handles,** about 2.2 per create/destroy. A standalone
+  probe took the session apart one object at a time: threads, the device, the
+  delegate, the session and `StartCapture` were all flat; each
+  `GraphicsCaptureItem` from `CreateForMonitor` keeps one handle Windows never
+  returns. Items are cached per target (checked for liveness, capped at 64)
+  and released at exit. Handles were flat over 1018 soak cycles.
+- **An open session at exit still crashed, 7-10 runs in 10.** Ruled out one at
+  a time: the item cache (crashed without it), the calling thread's apartment
+  (an MTA worker crashed the same), the delegate (released synchronously).
+  What held was time: half a second before exit gave 0 in 10. The D3D11
+  device's reference count *rises* after `Close()` -- 8 to 12 here -- as WGC's
+  own threads let go of their work, and falls back 2-6 ms later, not in one
+  step, so waiting for the first dip returned too early. `close()` now waits
+  until the count is back to what the session added, ten 1 ms samples in a
+  row, at most 1 s: 0 crashes in 60.
+- **`Frame.timestamp_qpc` was the acquisition time,** so a frame that sat in
+  the slot looked fresher than it was. It is now the arrival time, taken on
+  WGC's thread as the frame comes out of the pool.
+
+The planner's cache key gained the display adapter and the power source (a MUX
+switch or unplugging the charger changes the answer), and a plan now says what
+it measured -- `grab()` to NumPy at the capture size -- and that a GPU consumer's
+path was not timed. A WGC setting this Windows build refuses is a warning
+naming the consequence, not a debug line. GPU memory soaks read
+`QueryVideoMemoryInfo` (`rapidshot.util.gpu_memory`): flat for both backends.
+
+**The planner's answer depends on the capture size.** Calibrated on a crop the
+size of the frame-ID marker, WGC was 0.4 ms fresher; reading the whole display
+back, Desktop Duplication was 2.4 ms fresher with 12 more frames a second
+(twice each). The first version calibrated on the crop and would have
+recommended WGC for full-display cameras, where it is measurably worse. It now
+calibrates at the size the source captures and caches one answer per size.
+
+**Indicative, one 8 s pass** (`--category no-cuda`, motion, off core 0;
+README-grade numbers need the full multi-pass run):
+
+| Path | fps | pixel age p50 | p95 | CPU ms/frame |
+| --- | ---: | ---: | ---: | ---: |
+| DXcam (DXGI) | 72.8 | 29.50 | 32.47 | 13.64 |
+| DXcam (WGC) | 68.4 | 32.10 | 35.87 | 15.28 |
+| RapidShot `grab()` | 82.4 | 26.44 | 28.49 | 12.43 |
+| RapidShot `grab()`, WGC | 78.2 | 30.81 | 35.63 | 12.53 |
+| RapidShot window, WGC | 79.8 | 30.48 | 33.09 | 12.72 |
+
+RapidShot's WGC is ahead of DXcam's on every axis and behind RapidShot's own
+Desktop Duplication at full frame -- the same ordering the planner reaches.
+
 **The source model comes before the backend, and getting that order wrong would
 be expensive.** *Source* and *backend* are different axes, and § 9's
 cross-platform work makes the separation load-bearing rather than tidy:
@@ -2612,11 +2729,17 @@ leaks Windows concepts has to be redesigned later, after it is public.
 exposes a `backend` parameter defaulting to `dxgi`, and `windows-capture` ships
 WGC. The genuine wins are per-window capture and capturing without the process
 running on the display's adapter (§ 6.1). WGC is also frame-pool/event oriented,
-which is worth stating against § 4's rejection of event-driven capture — **that
-rejection is correct for DDA's `AcquireNextFrame` and does not generalise to
-WGC.**
+which is worth stating against the case this document makes for blocking capture
+— waiting inside `AcquireNextFrame` on `timeout_ms` beats polling (§ 7.0 results;
+`timeout_ms=0` costs 4.3× the calls for 6% more frames, § 1) — **that case is
+about DDA's `AcquireNextFrame` and does not generalise to WGC.**
 
 #### Start the WGC frame pool at two buffers
+
+> **Superseded 2026-10-29: three, drained on arrival.** Two starved exactly as
+> this section allowed for -- see "Four more from the pre-release review"
+> above. The principle stands: the newest frame, not a queue; the extra buffer
+> is the one the next frame lands in while the current one is copied.
 
 `Direct3D11CaptureFramePool::Create` takes a buffer count, and the obvious
 instinct is to make it generous. OBS uses **2**, and that is the right default

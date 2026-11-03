@@ -13,7 +13,8 @@ array when that is what you want.**
 Windows desktop → native GPU frame → fused preprocessing → Torch / CuPy / DLPack
 ```
 
-It is built on DXGI Desktop Duplication, began as a merge of several DXcam
+It captures through DXGI Desktop Duplication or Windows.Graphics.Capture --
+whole displays, regions or single windows -- began as a merge of several DXcam
 forks, and keeps a broadly familiar API. The capture path, the colour pipeline
 and the GPU interop have since been rewritten.
 
@@ -28,6 +29,28 @@ cells ([Performance](#performance)).
 RapidShot is for the case where the frame has somewhere to go. It owns the whole
 path from the duplicated surface to a `(1, 3, 640, 640)` FP16 tensor your model
 can consume, in one GPU dispatch, with no readback and no `ctypes`.
+
+## What changed in 2.7
+
+Capture is no longer only "the whole display through Desktop Duplication":
+
+- **Windows.** `rapidshot.create(source=rapidshot.Window.find("Notepad"))`
+  captures one window, wherever it is and whatever covers it, through
+  Windows.Graphics.Capture (WGC). Everything downstream -- `grab()`,
+  `grab_frame()`, `GpuConverter`, `TensorStream`, the hybrid-GPU transfer --
+  takes its frames unchanged.
+- **Sources, separate from backends.** `Monitor`, `Window` and `Region` name
+  what to capture; `backend="dxgi"` or `"wgc"` names how. See
+  [Sources and backends](#sources-and-backends).
+- **A planner instead of a guess.** `rapidshot.plan(..., calibrate=True)`
+  measures each backend on your machine -- pixel age, frames, CPU -- and
+  `backend="auto"` follows the result. On the development laptop the answer
+  depended on the capture size: Desktop Duplication was 2.4 ms fresher reading
+  the whole 2560x1600 display back, while for a small region the two were
+  level -- which is why the planner measures at the size you capture.
+
+WGC needs `rapidshot-native >= 0.3.0`. Every 2.6 call that names no `source`
+behaves exactly as before.
 
 ## What changed in 2.6
 
@@ -135,6 +158,8 @@ Clone if you need one to outlive the next frame.
 | Goal | API | CPU pixels? | Native required? |
 | --- | --- | --- | --- |
 | NumPy screenshot | `camera.grab()` | Yes | No |
+| One window | `create(source=Window.find(...))` | Either | **Yes** (WGC) |
+| Which backend, measured | `rapidshot.plan(calibrate=True)` | -- | No |
 | GPU frame, no readback | `camera.grab_frame()` | No | No |
 | Model-ready FP16 tensor | `rapidshot.GpuConverter` | No | **Yes** |
 | Capture-to-model loop | `rapidshot.TensorStream` | No | **Yes** |
@@ -160,9 +185,10 @@ The 2.6 GPU tensor features need the prebuilt native extension:
 pip install "rapidshot[native]"
 ```
 
-This installs **`rapidshot-native >= 0.2.0`**, which is the minimum that exports
-`GpuConverter` and `TensorTransfer` — both were added after `rapidshot-native`
-0.1.0. If you somehow end up with an older extension, RapidShot says so:
+This installs **`rapidshot-native >= 0.3.0`**. 0.2.0 is the minimum that exports
+`GpuConverter` and `TensorTransfer`, and 0.3.0 adds the Windows.Graphics.Capture
+session behind `backend="wgc"` and window capture. If you somehow end up with an
+older extension, RapidShot says which version a feature needs:
 
 ```text
 RuntimeError: GpuConverter12 requires rapidshot-native >= 0.2.0; the installed
@@ -230,8 +256,10 @@ for _ in range(120):
 camera.stop()
 ```
 
-One camera per output; create several for several monitors. `rapidshot.create()`
-returns the same camera for the same output if you ask twice.
+One Desktop Duplication camera per output -- DXGI allows one duplication per
+display per process; create several for several monitors. `rapidshot.create()`
+returns the same camera for the same output if you ask twice. WGC cameras have
+no such limit.
 
 ### Frame buffers and who owns them
 
@@ -261,6 +289,68 @@ the frame you hold *is* the staging buffer and there is nothing to fall back to:
 
 Prefer plain arrays? `rapidshot.create(pool_output=False)`.
 
+## Sources and backends
+
+A *source* is what to capture; a *backend* is how its pixels are delivered.
+
+```python
+import rapidshot
+from rapidshot import Monitor, Region, Window
+
+camera = rapidshot.create(source=Monitor())                    # the primary display
+camera = rapidshot.create(source=Monitor(1), backend="wgc")    # a display, through WGC
+camera = rapidshot.create(source=Region(0, 0, 1280, 720))      # virtual-desktop coordinates
+camera = rapidshot.create(source=Window.find("Notepad"))       # one window: always WGC
+```
+
+| | Desktop Duplication (`"dxgi"`) | Windows.Graphics.Capture (`"wgc"`) |
+| --- | --- | --- |
+| Captures | a whole display | a display or a single window |
+| Needs | nothing extra | `rapidshot-native >= 0.3.0` |
+| Process on the display's adapter | required (RapidShot tries every adapter) | not required |
+| Dirty / move rectangles, cursor shape | reported | `None` |
+| Cameras per display | one | as many as you like |
+| Frame time | DXGI's present time | acquisition time (WGC's own timestamp is not a capture time) |
+
+`backend="auto"` is the default. For a window it means WGC, the only backend
+that can capture one. For a display named by `source` it follows the planner's
+cached measurement, and without one it uses Desktop Duplication -- falling back
+to WGC, with a warning, only when every adapter refuses duplication. A call
+that names no `source` keeps its 2.6 behaviour.
+
+**Which backend is better here?** Ask, and measure:
+
+```python
+plan = rapidshot.plan(Monitor(), consumer="torch", size=(640, 640), calibrate=True)
+print(plan)
+```
+
+`calibrate=True` covers the primary display with RapidShot's test source for a
+few seconds and times each backend's `grab()` at the size the source captures:
+pixel age from the source's `Present()` to your code, frames delivered, CPU per
+frame. The freshest wins; within 1 ms the one delivering more frames, and
+within 3% of those too, the cheaper one. The plan says which criterion decided,
+which adapter the consumer is on, whether frames cross adapters, and where the
+preprocessing belongs. Results are cached per machine
+(`%LOCALAPPDATA%\rapidshot\plans.json`), keyed on adapters, drivers, display
+mode, the adapter driving the display, the power source and versions, so an
+upgrade, a MUX switch or unplugging the charger is measured afresh.
+`python -m rapidshot plan --calibrate` does the same from a terminal.
+
+**What a calibration measures is the CPU path:** `grab()` into NumPy, timed
+from the test source's `Present()`. A GPU consumer takes `grab_frame()` and
+`GpuConverter` instead, which it does not time, and the plan says so in its
+reasons rather than presenting the CPU result as the answer for both.
+
+**A window's lifetime is part of the capture.** Resized: the camera rebuilds at
+the new size and `camera.generation` increments. Minimised: each `grab()`
+waits its timeout and returns `None`, without spinning. Closed: capture stops,
+and `camera.last_capture_error` says the window was closed.
+
+`examples/window_to_numpy.py` and `examples/window_to_tensor.py` are both
+paths end to end -- a window into NumPy, and a window into a 640x640 FP16
+tensor without a CPU copy -- and show each of those transitions as it happens.
+
 ## GPU-resident frames
 
 `grab_frame()` hands back the Direct3D texture itself. Nothing is copied to
@@ -277,8 +367,10 @@ reference is outstanding, so release promptly — `with` does it for you.
 
 Frames also carry the compositor's metadata: `dirty_rects` and `move_rects` in
 frame coordinates, `changed_fraction`, `accumulated_frames`, `cursor`,
-`rotation_angle`, `protected_content`, and `timestamp_qpc` from the present
-itself.
+`rotation_angle`, `protected_content`, and `timestamp_qpc`. With Desktop
+Duplication that is the present itself; with WGC it is when the frame arrived
+from the compositor, taken on WGC's own thread -- not when you acquired it, so
+`frame.age_ms` includes the time a frame waited for you.
 
 ## Model-ready tensors
 
@@ -589,9 +681,13 @@ FP16 surface rather than 8-bit sRGB:
   to white. That is SDR normalisation, not tone mapping.
 - **`grab_frame()` says what it holds**: `frame.hdr`, `frame.sdr_white_nits`,
   `frame.pixel_format` and `frame.color_space`, which is `"scrgb"` for linear
-  light. `GpuConverter` refuses such a frame rather than put linear light into
-  a tensor shaped for sRGB; `allow_linear=True` passes scRGB through for float
-  output. NV12/P010 refuse it regardless.
+  light. By default `GpuConverter` refuses such a frame rather than put linear
+  light into a tensor shaped for sRGB. `tone_map="clip"` converts it to sRGB
+  inside the same dispatch, exactly as `grab()` does, and `tone_map="auto"`
+  does the same while keeping the hue of highlights brighter than SDR white;
+  `allow_linear=True` passes scRGB through for float output. NV12/P010 refuse
+  it regardless. The tone map is checked against an independent reference but
+  has not yet run on an HDR panel.
 - **On platforms without full Windows HDR support the capture is clipped at
   80 nits** before RapidShot sees it, and a warning says so. On an Intel Core
   i5-10500 (Comet Lake, UHD 630) driving a 4K HDR TV the desktop duplicated as
@@ -604,6 +700,35 @@ FP16 surface rather than 8-bit sRGB:
 The conversion is checked against an independent reference in the test suite;
 a live run on a GPU with full HDR support is still to come. SDR desktops are
 unaffected.
+
+**Task Manager overstates GPU memory for programs that create many
+converters.** Each `GpuConverter` opens the captured surface once, and Windows
+charges the process the surface's full size for every such opening without
+taking it back when the converter is closed: 15.6 MiB per converter at
+2560x1600, in Task Manager's per-process "Shared GPU memory" (or "Dedicated GPU
+memory" on a discrete GPU) and the `\GPU Process Memory(*)` performance
+counters. The memory itself is released. Adapter-wide GPU memory, available
+RAM and commit stay flat, and 2,000 openings drove the counter to about 30 GB
+without any of them moving. A program that keeps one converter per camera never
+sees it. To measure a process's GPU memory, use DXGI's
+`IDXGIAdapter3::QueryVideoMemoryInfo` -- `rapidshot.util.gpu_memory.process_gpu_memory_mb()`
+reads it for you -- or the adapter-wide counters instead.
+
+**Windows.Graphics.Capture has limits of its own.** Its frames carry no dirty
+or move rectangles and no cursor shape, so those are `None` rather than
+guessed, and the cursor is not drawn into the image (as with Desktop
+Duplication). It costs one GPU copy per frame -- 0.75 ms at 2560x1600 on an
+Intel UHD -- because reading WGC's own surface is only safe while the frame is
+held, and holding it delivers older frames. The memory is that copy (W x H x 4
+bytes, or x 8 for FP16 HDR: 16.4 MB at 2560x1600 SDR) plus WGC's own pool of three
+frames the same size; RapidShot takes each frame from the pool as it arrives
+and keeps only the newest, so a consumer slower than the source still gets the
+current image. A window is captured at its frame bounds, title bar included.
+Settings this Windows build does not support -- `MinUpdateInterval` before
+Windows 11 24H2, which leaves WGC at 55 fps on a 165 Hz display -- are a
+logged warning naming what you get instead. HDR through WGC is delivered as linear FP16 and
+converted like Desktop Duplication's, and is subject to the same caveat above:
+it has not yet run on a display with full HDR support.
 
 ## Migrating from 2.5
 

@@ -8,7 +8,241 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Entries are grouped by the [ROADMAP.md](ROADMAP.md) stage that motivated them, so
 each release can be traced back to the plan it implements.
 
-## [Unreleased]
+## [2.7.0] - 2026-11-03
+
+### Added — capture sources (ROADMAP § 7.3)
+
+- **`rapidshot.Monitor`, `Window` and `Region` name what to capture, apart
+  from how.** `rapidshot.create(source=...)` takes one; every 2.6 call without
+  it behaves exactly as before. `Monitor(index)` counts displays across all
+  adapters, and `Monitor()` is the primary display wherever it is -- where
+  `output_idx=None` only ever searched adapter 0. `Region(left, top, right,
+  bottom)` is in virtual-desktop coordinates and resolves to the one display
+  containing it; a rectangle that spans two displays or runs off the desktop is
+  refused with the reason. `Window(handle)` or `Window.find(title)` captures a
+  single window (below).
+- **`backend="auto" | "dxgi" | "wgc"` on `create()`.** For a window, `"auto"`
+  is Windows.Graphics.Capture, the only backend that can capture one; for a
+  display it is the planner's measured choice (below). The camera reports its
+  choice as `camera.backend` and every frame as `frame.backend`, alongside
+  `camera.source` / `frame.source`.
+- **`rapidshot.core.backend.CaptureBackend` and `SourceGeometry`** write down
+  what `ScreenCapture` relies on from Desktop Duplication -- the acquire and
+  release lifetime, the errors that trigger a rebuild, frame identity, and
+  which metadata may be `None` -- so a second backend has a contract to meet.
+  `Duplicator` and `Output` are checked against them.
+- **The DXcam shim understands DXcam's `backend`.** `"winrt"` maps to `"wgc"`,
+  and a DXcam caller who names no backend gets DXcam's default, `"dxgi"`.
+
+### Added — HDR tone map in `GpuConverter`
+
+- **`GpuConverter(tone_map="clip" | "auto")` turns an HDR desktop's linear
+  scRGB into sRGB inside the existing single dispatch**, so an HDR frame no
+  longer needs `allow_linear=True` or a trip through `grab()`. `"clip"` is
+  exactly what `grab()` does -- divide by the display's SDR white, clip, apply
+  the sRGB curve. `"auto"` is identical for every pixel at or below SDR white
+  and, above it, scales the whole pixel by its brightest channel, so a bright
+  highlight keeps its hue instead of clipping toward yellow or white. Neither
+  darkens SDR white, which a highlight-preserving curve such as Reinhard or
+  BT.2390 would have to. The conversion runs before resizing, so bilinear
+  filtering averages linear light.
+- **Decided per frame, from `frame.color_space`**, so SDR frames through the
+  same converter are untouched and one converter survives an HDR toggle. The
+  default, `tone_map="none"`, keeps 2.6's behaviour: linear input is refused
+  unless `allow_linear=True` passes it through. NV12/P010 still refuse linear
+  input, and a tone map is refused together with `pixel_format` or
+  `allow_linear`, on an 8-bit surface, or with an SDR white that is not
+  positive. An extension too old to tone map is refused when the converter is
+  built, not on the first HDR frame.
+- **Checked against `core/hdr.py`, not yet on an HDR panel.** On WARP every
+  FP16 bit pattern and every 10-bit code comes out of the real shader as the
+  byte `hdr.py` computes, and the tests fail if the sRGB exponent moves from
+  2.4 to 2.39. The live comparisons against `grab()` skip unless the desktop
+  is HDR. `"auto"` becomes the default only after that run.
+
+### Added — the capture planner
+
+- **`rapidshot.plan(source, consumer=None, size=None, calibrate=False)`**
+  says how a source would be captured on this machine and why: the backend,
+  the evidence behind it, the capture adapter, which adapter the consumer is
+  on, whether frames must cross between them, where preprocessing belongs,
+  and whether the display is HDR. `print()` the result, or run
+  `python -m rapidshot plan [--calibrate] [--monitor N | --window TITLE]
+  [--consumer cpu|torch|cupy]`.
+- **The choice is measured, not assumed.** `calibrate=True` times every
+  backend this process can run against the benchmark's own test source --
+  pixel age from `Present()` to the caller, frames delivered, CPU per frame --
+  and picks the freshest. Within 1 ms of pixel age (the run-to-run spread) the
+  one delivering more frames wins, and within 3% of frames too, the cheaper
+  one. The reason printed names the criterion that decided, and only that one.
+- **It measures at the size the camera captures.** The answer depends on it:
+  on Machine B, reading the whole 2560x1600 display back, Desktop Duplication
+  was 2.4 ms fresher with 12 more frames a second, while cropped to a small
+  region the two were level and WGC came out 0.4 ms ahead (twice each). A
+  `Monitor` is calibrated at full size and a `Region` at its own, each with
+  its own cached answer; a capture too small to carry the test source's
+  frame-ID marker (384x16) cannot be calibrated and says so.
+- **`create(source=..., backend="auto")` follows a cached measurement.**
+  Results are kept in `%LOCALAPPDATA%\rapidshot\plans.json` (or
+  `$RAPIDSHOT_PLAN_CACHE`), keyed on the adapters and their drivers, the
+  display mode, the adapter driving the display, the power source (AC or
+  battery) and the RapidShot and rapidshot-native versions, so an upgrade, a
+  MUX switch or unplugging the charger has no cached answer until it is
+  measured again. Nothing is measured
+  implicitly. Without a measurement a display uses Desktop Duplication, and
+  falls back to WGC only when every adapter refuses duplication -- the case
+  WGC exists to cover, said in a warning rather than done silently. A call
+  that names no `source` keeps its 2.6 behaviour whatever has been measured.
+- The frame-ID marker decoder, present-log reader and percentiles that both
+  the benchmark and the planner measure with moved to
+  `rapidshot/util/pixel_age.py`; `_bench.benchmark_contract` re-exports them
+  under the same names.
+- **A plan says what it measured.** Calibration times `grab()` into NumPy at
+  the capture size, from the test source's `Present()`; the printed plan says
+  exactly that, and for a `torch` or `cupy` consumer adds that the GPU path
+  (`grab_frame()` and `GpuConverter`) was not timed.
+
+### Added — Windows.Graphics.Capture (`rapidshot-native` 0.3.0)
+
+- **Window capture, and WGC for displays.** `create(source=Window(hwnd))`
+  captures one window wherever it is, at its own size and in its displayed
+  orientation; `create(source=Monitor(i), backend="wgc")` captures a display
+  through WGC instead of Desktop Duplication, and the two can run on one
+  display at once. Everything downstream is unchanged: `grab()`, `shot()`,
+  `start()`, `grab_frame()`, `GpuConverter`, `TensorStream` and the
+  cross-adapter transfer all take WGC frames as they take DDA ones. Requires
+  `rapidshot-native` >= 0.3.0, so the `native` and `all` extras now floor
+  there.
+- **Built on measurements, not defaults** (Machine B, 2026-10-22; the numbers
+  are in `native/src/wgc.rs`):
+  - WGC's thread takes every frame from the pool as it arrives and keeps only
+    the newest, and the pool has three buffers. A frame left in the pool holds
+    a buffer, and with every buffer held WGC drops new frames for good: with
+    two buffers and frames taken only on request, a window changed three times
+    between grabs came back showing its second state and stayed there.
+  - Each frame is copied into one RapidShot-owned shareable texture and the WGC
+    frame goes straight back to its pool. Reading WGC's own surface directly
+    was only safe while the frame stayed open -- WGC rewrote it within 40 ms of
+    `Close()` -- and holding frames open to cover a consumer delivered older
+    frames (+25 ms at a 30 ms hold). The copy costs 0.75 ms of GPU time at
+    2560x1600. One texture rather than a ring keeps its address, so a
+    `GpuConverter` does not reopen it every frame.
+  - D3D12 readers of that copy are ordered behind it with the existing
+    capture-order fence; without it, 7 reads in 150 returned the previous
+    frame. `GpuConverter` output on a WGC frame matches an independent D3D11
+    readback in the live tests.
+  - `MinUpdateInterval` is set to 1 ms: WGC's default held a 165 Hz display
+    to 55 fps.
+  - A frame's time (`frame.timestamp_qpc`, and so `age_ms`) is the QPC at
+    which it arrived from the compositor, read on WGC's thread -- not when
+    the caller acquired it, which made a frame that waited look fresher.
+    WGC's `SystemRelativeTime` lands 3.4 ms *after* acquisition and is not a
+    capture time.
+  - Each capture item is created once per display or window and reused:
+    every `GraphicsCaptureItem` from `CreateForMonitor` keeps one handle
+    Windows never returns, about 2.2 handles per camera before. Cached items
+    are checked for liveness, capped at 64 and released at exit; handles were
+    flat over 1018 create/destroy cycles, as was GPU memory by
+    `QueryVideoMemoryInfo` for both backends.
+  - `close()` waits, at most 1 s, until WGC's own threads have let go of the
+    capture device: its reference count rises after `Close()` and settles
+    2-6 ms later, and a process that exited inside that window crashed (7-10
+    runs in 10 with a camera still open at exit). It now waits for ten
+    settled 1 ms samples in a row, because the count does not fall in one
+    step.
+  - A setting this Windows build refuses -- `MinUpdateInterval` before
+    Windows 11 24H2, the border toggle, cursor capture -- is a logged warning
+    that names what happens instead, not a debug line.
+  - The cursor is not drawn into the image, matching Desktop Duplication, and
+    the capture border is off. An HDR display is captured as linear FP16, as
+    Desktop Duplication delivers it, so the CPU paths convert it and
+    `GpuConverter` sees `frame.color_space == "scrgb"`.
+- **A window's life is part of the contract.** Resized: the camera rebuilds
+  at the new size (`generation` increments). Minimised: each grab waits its
+  timeout and returns None, without spinning. Closed: capture stops with
+  `RapidShotSourceClosedError` in `last_capture_error` instead of entering the
+  re-init loop -- WGC's `Closed` event needs a message pump a capture thread
+  does not run, so closure is detected from the window itself.
+- Not reported by WGC, and so `None` on its frames rather than guessed:
+  `dirty_rects`, `move_rects` and the cursor shape.
+
+### Added — benchmark
+
+- **`rapidshot benchmark` measures RapidShot through WGC**: `rapidshot-wgc`
+  (the display) and `rapidshot-wgc-window` (the test source's own window,
+  which covers it -- a per-window capture with the same marker and tensor
+  contract). Both are CPU paths, so they run with or without CuPy, and they
+  are skipped, with the fix named, without `rapidshot-native >= 0.3.0`.
+  `CPU_PATHS` is now spelled out instead of sliced from `PATHS`, which would
+  have shifted silently with every inserted path.
+
+### Added — measuring memory, and examples
+
+- **`rapidshot.util.gpu_memory.process_gpu_memory_mb()`** reads this
+  process's GPU memory from `IDXGIAdapter3::QueryVideoMemoryInfo`, summed over
+  adapters -- the number to watch instead of Task Manager's (Documented,
+  below).
+- **`examples/window_to_numpy.py` and `examples/window_to_tensor.py`**: one
+  window into NumPy, and one window into a 640x640 FP16 tensor on the GPU,
+  each reporting resize, minimise and close as they happen.
+
+### Changed
+
+- **The `native` and `all` extras require `rapidshot-native>=0.3.0`**, the
+  first version with the Windows.Graphics.Capture session.
+- **`camera.generation` now counts every rebuild of the capture resources.**
+  The output-change path -- a display mode change, access loss in `shot()`,
+  `start(delay=...)` -- rebuilt the duplicator without counting it, so a
+  consumer comparing `Frame.generation` against the camera missed exactly the
+  rebuilds most likely to change size, rotation or format.
+
+### Fixed
+
+- **The grab that performs a rebuild captured at the old size.** `grab()` and
+  the capture thread read the camera's region *before* `_grab` ran a pending
+  rebuild, so the first frame after a resolution change -- or now a resized
+  window -- was cropped to the region of the old size, or ran past the edge of
+  a smaller one. A still window sends no second frame, so that crop was all a
+  caller got. The default region is now resolved after any rebuild.
+
+### Fixed — `rapidshot-native`
+
+- **Every D3D12 resource barrier leaked a reference.** The `transition`
+  helpers in the converter, the preprocessor and the cross-adapter transfer
+  built each barrier from `resource.clone()` inside a `ManuallyDrop` that was
+  never dropped, and the converter and preprocessor did the same with the root
+  signature in their pipeline description. They now borrow the pointer, as
+  windows-rs's own D3D12 samples do.
+
+### Documented
+
+- **`GpuConverter` does not leak GPU memory; Windows' per-process counter
+  says it does.** A 30-minute soak on Machine B saw a process's shared GPU
+  memory grow 15.6 MiB -- one 2560x1600 BGRA surface -- for every converter
+  that processed a frame (+5.4 GB/h), surviving `close()`, camera release and
+  `clean_up()`. An earlier draft of this entry called that a leak. It is
+  accounting. Windows charges a process the full size of a shared resource
+  each time the process opens it, through D3D12 `OpenSharedHandle` or D3D11
+  `OpenSharedResource1` alike, and does not take the charge back when the
+  opening is released. Every converter opens the captured surface once. A
+  standalone probe, run beneath RapidShot on Intel and NVIDIA adapters,
+  reproduced it with nothing but open and release. 2,000 opens of the desktop
+  surface drove the counter to about 30 GB while adapter-wide GPU memory,
+  DXGI's own per-process usage (`QueryVideoMemoryInfo`), available RAM,
+  commit, kernel pool and handles all stayed flat. A 256 MiB texture opened
+  four times and then freed charged 1 GB and returned 256 MiB to the counter,
+  while the adapter got all of it back. The counter is the one behind Task
+  Manager's per-process "Shared GPU memory" and
+  `\GPU Process Memory(*)\Shared Usage` (dedicated on a discrete GPU); the
+  README's Known limitations now say so.
+
+### Fixed — benchmark harness
+
+- **A wrapped event log is not a hardware error.** The WHEA guard compared the
+  count of WHEA records as well as the newest, so the System log dropping its
+  oldest record (132 -> 131, newest unchanged) stopped a Machine B pass with no
+  fault at all. A lower count with the same newest record now moves the
+  baseline; a new record still stops the run.
 
 ## [2.6.3] - 2026-09-30
 
