@@ -8,6 +8,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Entries are grouped by the [ROADMAP.md](ROADMAP.md) stage that motivated them, so
 each release can be traced back to the plan it implements.
 
+## [2.7.1] - 2026-11-03
+
+### Changed
+
+- **NV12 and P010 output bytes change: chroma is now left-sited.** H.264 and
+  HEVC read 4:2:0 chroma as left-sited unless the stream says otherwise
+  (`chroma_sample_loc_type` 0, MPEG-2 style): on the even luma column
+  horizontally, between the two rows vertically. `GpuConverter` averaged each
+  2x2 block instead, which is centre-sited, so an encoder fed its output placed
+  colour half a pixel to the right of where it belongs -- visible as a fringe
+  on coloured edges and text. Each chroma sample is now a `[1 2 1] / 4` filter
+  centred on its even column (the column left of 0 repeats column 0), averaged
+  over the two rows. The luma plane is unchanged; the chroma plane of every
+  NV12/P010 frame differs from 2.7.0's. Anything comparing those frames byte
+  for byte across versions will see the difference.
+- **`rapidshot-native` floor raised to 0.3.1**, which carries the shader
+  change. A 0.3.0 build exports the same `GpuConverter12`, so the symbol table
+  could not tell the two apart: `native._BEHAVIOUR_SINCE` now records behaviour
+  by the version that introduced it, and an NV12/P010 converter on an older
+  extension is refused with the version it needs (`native.require_behaviour`)
+  rather than quietly writing centre-sited chroma.
+
+### Tests
+
+- The CPU reference in `tests/test_gpu_converter_yuv.py` is left-sited, and the
+  decode check filters luma the same way before comparing. A new test,
+  `test_chroma_is_left_sited`, names the siting: on a frame where the two
+  differ, the chroma plane must match the left-sited reference and not the
+  centre-sited one. Run against 0.3.0's centre-sited kernel, 16 of the file's
+  tests fail; against 0.3.1 they pass.
+- `test_the_native_floor_is_stated_consistently` floors at the newest entry of
+  either table.
+- `test_matrix_and_range_options_match_reference[True-bt709]` failed on a screen
+  with a lot of pure colour, with every code still within one. In full range a
+  saturated colour has Cb or Cr of exactly +-0.5, so `128 +- 127.5` is a
+  rounding tie the GPU's float32 may break either way, and the 99%-exact rule
+  counted those. Ties (within 1e-4 of a code of .5) are now held to the
+  one-code bound and left out of the exact count; a chroma plane deliberately
+  off by one still fails. This was in 2.7.0 too, and only showed with that
+  kind of screen.
+- `test_the_key_changes_with_what_a_measurement_depends_on` set the native
+  version to "0.3.0" to prove the planner's key changes with it, which made it
+  fail against the 0.3.0 extension itself. It uses a version no build reports.
+
 ## [2.7.0] - 2026-11-03
 
 ### Added — capture sources (ROADMAP § 7.3)
