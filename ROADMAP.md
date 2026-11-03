@@ -2564,7 +2564,7 @@ Before more GPU surface area, make the library boringly dependable and easy to a
 > | --- | --- |
 > | `GpuConverter`, bilinear + FP16 + resized BGRA8 | ✅ nearest bit-identical to `GpuPreprocessor12` |
 > | Input `BGRA8 / RGBA8 / R10G10B10A2 / RGBA16F` | ⚠️ all accepted; **only BGRA8 exercised** (SDR desktop) |
-> | Output `NV12 / P010` | ✅ against a CPU reference and the published inverse matrices. Centre-sited chroma — H.264/HEVC assume left-sited, a one-line shader change for § 7.3a if the encoder needs it. HDR `RGBA16F` input refused: linear light needs a tone-map or PQ decision nobody has made |
+> | Output `NV12 / P010` | ✅ against a CPU reference and the published inverse matrices. Left-sited chroma since 2.7.1 (centre-sited until then; H.264/HEVC assume left-sited). HDR `RGBA16F` input refused: linear light needs a tone-map or PQ decision nobody has made |
 > | NHWC float | ✅ bit-identical to NCHW transposed |
 > | Crop | ✅ frame coordinates, honours `Frame.region`, filter clamped inside the crop; refused on rotated displays |
 > | Multi-ROI | ✅ one dispatch, `(N, …)`, capacity via `batch=`; 4 × 224²: 0.20 vs 0.51 ms, 16 × 224²: 0.43 vs 2.11 ms, 8 × 640²: 1.15–1.20 vs 2.02–2.43 ms against N separate calls |

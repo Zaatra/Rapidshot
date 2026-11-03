@@ -21,6 +21,7 @@ Building it (needs Rust and the MSVC C++ toolset)::
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -152,6 +153,46 @@ _FEATURE_SINCE: Dict[str, str] = {
     "TensorTransfer": "0.2.0",
     "WgcSession": "0.3.0",
 }
+
+#: Behaviour RapidShot documents, against the `rapidshot-native` version that
+#: first behaved that way. `_FEATURE_SINCE` cannot see these: the symbol is the
+#: same in the older build, and only its output differs.
+_BEHAVIOUR_SINCE: Dict[str, str] = {
+    # NV12/P010 chroma left-sited, as H.264/HEVC assume; 0.3.0 and earlier
+    # averaged each 2x2 block (centre-sited).
+    "left-sited NV12/P010 chroma": "0.3.1",
+}
+
+
+def _version_tuple(version: str) -> Tuple[int, ...]:
+    return tuple(int(part) for part in re.findall(r"\d+", version)[:3])
+
+
+def require_behaviour(name: str) -> None:
+    """Refuse a loaded extension older than the one that behaves as documented.
+
+    A version the extension does not report is let through: every build that
+    has the symbols these behaviours belong to reports one.
+
+    Raises:
+        RuntimeError: The extension reports a version older than `name` needs.
+    """
+    since = _BEHAVIOUR_SINCE[name]
+    installed = extension_version()
+    if installed is None or _version_tuple(installed) >= _version_tuple(since):
+        return
+    raise RuntimeError(
+        f"{name} requires rapidshot-native >= {since}; the installed extension "
+        f"is version {installed}, from {_ext_source}, which would produce "
+        "different bytes than RapidShot documents.\n"
+        "\n"
+        "Upgrade the prebuilt wheel:\n"
+        "    pip install --upgrade 'rapidshot-native>=" + since + "'\n"
+        "\n"
+        "If you build the extension yourself, rebuild it:\n"
+        "    cd native && cargo build --release\n"
+        "    python native/install_dev.py"
+    )
 
 
 def extension_version() -> Optional[str]:

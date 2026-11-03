@@ -185,9 +185,10 @@ The 2.6 GPU tensor features need the prebuilt native extension:
 pip install "rapidshot[native]"
 ```
 
-This installs **`rapidshot-native >= 0.3.0`**. 0.2.0 is the minimum that exports
-`GpuConverter` and `TensorTransfer`, and 0.3.0 adds the Windows.Graphics.Capture
-session behind `backend="wgc"` and window capture. If you somehow end up with an
+This installs **`rapidshot-native >= 0.3.1`**. 0.2.0 is the minimum that exports
+`GpuConverter` and `TensorTransfer`, 0.3.0 adds the Windows.Graphics.Capture
+session behind `backend="wgc"` and window capture, and 0.3.1 makes NV12/P010
+chroma left-sited, as H.264 and HEVC expect. If you somehow end up with an
 older extension, RapidShot says which version a feature needs:
 
 ```text

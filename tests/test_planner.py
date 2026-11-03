@@ -107,7 +107,9 @@ def test_the_key_changes_with_what_a_measurement_depends_on(machine, monkeypatch
     by_mode = planner._key("display", machine, output, full)
     monkeypatch.setattr(planner, "_topology", lambda f: ["GPU [10de:28e0] 32.0.16.1714"])
     by_driver = planner._key("display", machine, output, full)
-    monkeypatch.setattr("rapidshot.native.extension_version", lambda: "0.3.0")
+    # A version no real build reports: "0.3.0" equalled the 0.3.0 release
+    # extension itself, so on it the key did not change and this failed.
+    monkeypatch.setattr("rapidshot.native.extension_version", lambda: "0.0.0-test")
     by_native = planner._key("display", machine, output, full)
     monkeypatch.setattr(planner, "_power_source", lambda: "battery")
     by_power = planner._key("display", machine, output, full)

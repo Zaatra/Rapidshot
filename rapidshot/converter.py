@@ -650,8 +650,10 @@ class GpuConverter:
     **NV12 and P010** are laid out the standard way: the Y plane, then Cb/Cr
     interleaved at half resolution, so :meth:`GpuTensor.numpy` returns shape
     ``(H * 3 // 2, W)`` — ``uint8`` for NV12, ``uint16`` for P010 with the value
-    in the high ten bits. Width and height must be even. Chroma is the average
-    of each 2×2 block (centre-sited). The source is taken as gamma-encoded
+    in the high ten bits. Width and height must be even. Chroma is left-sited,
+    as H.264 and HEVC assume by default: a ``[1 2 1] / 4`` filter centred on
+    each even column, averaged over the two rows (centre-sited 2×2 averages
+    before 2.7.1). The source is taken as gamma-encoded
     BT.709 RGB, which a UNORM desktop surface is; an HDR ``R16G16B16A16_FLOAT``
     surface is refused, because it holds linear light and no tone-mapping or
     PQ decision has been made for this output.
@@ -768,6 +770,7 @@ class GpuConverter:
                     f"{pixel_format} requires even width and height, got "
                     f"{width}x{height}: 4:2:0 subsamples in 2x2 blocks"
                 )
+            native.require_behaviour("left-sited NV12/P010 chroma")
             native_dtype, native_layout = pixel_format, None
             layout = "yuv420"
         else:

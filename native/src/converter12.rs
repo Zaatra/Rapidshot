@@ -537,16 +537,26 @@ uint luma_code(float3 c)
 #endif
 }
 
-// Chroma for 4:2:0 sample k: the 2x2 block of output pixels it covers,
-// averaged, then through the matrix. Centre-sited (JPEG / MPEG-1 style).
-// Returns (Cb, Cr) codes.
+// One row's contribution to a left-sited chroma sample: [1 2 1] / 4 centred on
+// the even column cx. The column left of 0 repeats column 0; cx + 1 always
+// exists because the width is even.
+float3 sited_row(uint cx, uint y)
+{
+    uint left = (cx == 0) ? 0 : cx - 1;
+    return 0.25f * rgb_at(left, y) + 0.5f * rgb_at(cx, y) + 0.25f * rgb_at(cx + 1, y);
+}
+
+// Chroma for 4:2:0 sample k, then through the matrix. Left-sited, as H.264 and
+// HEVC assume by default (chroma_sample_loc_type 0, MPEG-2 style): on the even
+// luma column horizontally, between the two rows vertically. It was centre-
+// sited (a plain 2x2 average) until 2.7.1, which an encoder reads as chroma
+// shifted half a pixel to the right. Returns (Cb, Cr) codes.
 uint2 chroma_codes(uint k)
 {
     uint cw = OutWidth / 2;
     uint cx = (k % cw) * 2;
     uint cy = (k / cw) * 2;
-    float3 c = 0.25f * (rgb_at(cx, cy) + rgb_at(cx + 1, cy)
-                      + rgb_at(cx, cy + 1) + rgb_at(cx + 1, cy + 1));
+    float3 c = 0.5f * (sited_row(cx, cy) + sited_row(cx, cy + 1));
     float y = luma_of(c);
     float pb = (c.z - y) / (2.0f * (1.0f - KB));
     float pr = (c.x - y) / (2.0f * (1.0f - KR));

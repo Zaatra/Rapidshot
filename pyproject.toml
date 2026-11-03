@@ -59,7 +59,7 @@ rapidshot = "rapidshot.__main__:main"
 # the README's tables do. Without it the tensor is finished in system memory,
 # or on the capture GPU for GpuConverter, and reported separately.
 benchmark = [
-    "rapidshot-native>=0.3.0; platform_system == 'Windows'",
+    "rapidshot-native>=0.3.1; platform_system == 'Windows'",
     "psutil>=5.9",
     "mss>=9.0",
     # 0.3.0 is what the harness is verified against. Every DXcam since 0.1.0
@@ -104,7 +104,9 @@ gpu_cuda13 = ["cupy-cuda13x>=14.0.0"]
 #
 # Raised to 0.3.0 for 2.7: backend="wgc" and Window sources need the native
 # Windows.Graphics.Capture session, which 0.2.x does not have.
-native = ["rapidshot-native>=0.3.0; platform_system == 'Windows'"]
+# Raised to 0.3.1 for 2.7.1: NV12/P010 chroma is left-sited from 0.3.1, and
+# against 0.3.0 the documented siting would silently not hold.
+native = ["rapidshot-native>=0.3.1; platform_system == 'Windows'"]
 # Everything that is not CUDA-version-specific. The cupy-cudaNNx wheels are
 # mutually exclusive, so none of them belongs in a catch-all extra -- pick
 # `gpu`, `gpu_cuda12` or `gpu_cuda13` explicitly.
@@ -123,7 +125,7 @@ native = ["rapidshot-native>=0.3.0; platform_system == 'Windows'"]
 # and nothing else in the library imports it.
 all = [
     "opencv-python>=4.5.0",
-    "rapidshot-native>=0.3.0; platform_system == 'Windows'",
+    "rapidshot-native>=0.3.1; platform_system == 'Windows'",
 ]
 dev = [
     "black>=22.3.0",

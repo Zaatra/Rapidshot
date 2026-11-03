@@ -74,8 +74,35 @@ def round_half_up(v, maxcode):
     return np.clip(np.floor(v + 0.5), 0, maxcode)
 
 
-def yuv_reference(rgb, bits, matrix="bt709", full_range=False):
-    """4:2:0 planar reference with the layout NV12/P010 define."""
+def left_sited(plane):
+    """Downsample to 4:2:0 positions the way H.264 assumes them by default.
+
+    Horizontally a [1 2 1] / 4 filter centred on each even column (the column
+    left of 0 repeats column 0); vertically the mean of the two rows. Works on
+    (H, W) and (H, W, C) arrays alike.
+    """
+    left = np.concatenate([plane[:, :1], plane[:, :-1]], axis=1)
+    right = plane[:, 1:]
+    centre = plane[:, 0::2]
+    rows = 0.25 * left[:, 0::2] + 0.5 * centre + 0.25 * right[:, 0::2]
+    return 0.5 * (rows[0::2] + rows[1::2])
+
+
+def centre_sited(plane):
+    """What the converter did before 2.7.1: each 2x2 block averaged."""
+    h, w = plane.shape[:2]
+    return plane.reshape(h // 2, 2, w // 2, 2, *plane.shape[2:]).mean(axis=(1, 3))
+
+
+def yuv_reference(rgb, bits, matrix="bt709", full_range=False, siting=left_sited,
+                  return_ties=False):
+    """4:2:0 planar reference with the layout NV12/P010 define.
+
+    With ``return_ties`` it also returns where the unrounded value sits on an
+    exact .5, which float32 on the GPU may round either way. Full range makes
+    those structural: a saturated colour has Cb or Cr of exactly +-0.5, so
+    ``mid +- 127.5`` is a tie, and a screen full of pure colour is mostly ties.
+    """
     kr, kb = COEFFS[matrix]
     maxcode = (1 << bits) - 1
     ds = 1 << (bits - 8)
@@ -85,35 +112,48 @@ def yuv_reference(rgb, bits, matrix="bt709", full_range=False):
 
     h, w = rgb.shape[:2]
     y = luma(rgb)
-    block = rgb.reshape(h // 2, 2, w // 2, 2, 3).mean(axis=(1, 3))
+    block = siting(rgb)
     yb = luma(block)
     pb = (block[..., 2] - yb) / (2 * (1 - kb))
     pr = (block[..., 0] - yb) / (2 * (1 - kr))
 
     if full_range:
         mid = (maxcode + 1) / 2
-        yc = round_half_up(y * maxcode, maxcode)
-        cb = round_half_up(mid + pb * maxcode, maxcode)
-        cr = round_half_up(mid + pr * maxcode, maxcode)
+        raw = (y * maxcode, mid + pb * maxcode, mid + pr * maxcode)
     else:
-        yc = round_half_up((16 + 219 * y) * ds, maxcode)
-        cb = round_half_up((128 + 224 * pb) * ds, maxcode)
-        cr = round_half_up((128 + 224 * pr) * ds, maxcode)
+        raw = ((16 + 219 * y) * ds, (128 + 224 * pb) * ds, (128 + 224 * pr) * ds)
+    yc, cb, cr = (round_half_up(v, maxcode) for v in raw)
 
-    chroma = np.stack([cb, cr], axis=-1).reshape(h // 2, w)
-    planes = np.concatenate([yc, chroma], axis=0)
-    if bits == 8:
-        return planes.astype(np.uint8)
-    return (planes.astype(np.uint16) << 6)
+    def interleave(luma_plane, cb_plane, cr_plane):
+        chroma = np.stack([cb_plane, cr_plane], axis=-1).reshape(h // 2, w)
+        return np.concatenate([luma_plane, chroma], axis=0)
+
+    planes = interleave(yc, cb, cr)
+    planes = planes.astype(np.uint8) if bits == 8 else planes.astype(np.uint16) << 6
+    if not return_ties:
+        return planes
+    # Within 1e-4 of a code: the RGB itself arrives in float32 (a saturated 1.0
+    # is 0.99999994), so a true tie lands a few 1e-5 off .5, never on it.
+    ties = interleave(*(np.abs(v - np.floor(v) - 0.5) < 1e-4 for v in raw))
+    return planes, ties
 
 
-def assert_codes_match(got, expected, shift=0, min_exact=0.99):
+def assert_codes_match(got, expected, shift=0, min_exact=0.99, ties=None):
+    """Every sample within one code; ``min_exact`` of them exact.
+
+    ``ties`` marks samples whose true value is an exact .5: those may round
+    either way, so they are held to the one-code bound but left out of the
+    exact count, which would otherwise depend on how much pure colour is on
+    screen rather than on the kernel.
+    """
     g = got.astype(np.int64) >> shift
     e = expected.astype(np.int64) >> shift
     assert got.shape == expected.shape
     assert got.dtype == expected.dtype
     diff = np.abs(g - e)
     assert diff.max() <= 1, f"max code difference {diff.max()}"
+    if ties is not None:
+        diff = diff[~ties]
     exact = (diff == 0).mean()
     assert exact >= min_exact, f"only {exact:.1%} of samples match exactly"
 
@@ -165,7 +205,8 @@ def test_matrix_and_range_options_match_reference(live_frame, matrix, full_range
     assert converter.matrix == matrix
     assert converter.full_range is full_range
     got = converter.process(live_frame).numpy()
-    assert_codes_match(got, yuv_reference(rgb, 8, matrix, full_range))
+    expected, ties = yuv_reference(rgb, 8, matrix, full_range, return_ties=True)
+    assert_codes_match(got, expected, ties=ties)
 
 
 # --------------------------------------------------------------------------
@@ -178,11 +219,12 @@ def test_matrix_and_range_options_match_reference(live_frame, matrix, full_range
 def test_decodes_back_with_the_published_inverse(live_frame, matrix, pixel_format, bits):
     """Decode with ITU-published inverse coefficients and recover the RGB.
 
-    Chroma is per 2x2 block, so compare block averages: the matrix is linear,
-    so the block-averaged luma plus the block's chroma decodes to the block's
-    average RGB, up to quantisation. A swapped Cb/Cr, a wrong Kr/Kb, a chroma
-    plane shifted by a row, or limited range labelled full all miss by far
-    more than the tolerance on a frame with colour in it.
+    Chroma is one sample per 2x2 block, so compare at chroma positions: the
+    matrix is linear, so luma filtered the way chroma was sited, plus the
+    chroma, decodes to the RGB filtered the same way, up to quantisation. A
+    swapped Cb/Cr, a wrong Kr/Kb, a chroma plane shifted by a row, or limited
+    range labelled full all miss by far more than the tolerance on a frame with
+    colour in it.
     """
     rgb = rgb_of(live_frame, OUT, OUT, "nearest")
     require_colour(rgb)
@@ -199,7 +241,7 @@ def test_decodes_back_with_the_published_inverse(live_frame, matrix, pixel_forma
     chroma = got[h:].reshape(h // 2, w // 2, 2)
     pb = (chroma[..., 0] / ds - 128) / 224
     pr = (chroma[..., 1] / ds - 128) / 224
-    yb = y.reshape(h // 2, 2, w // 2, 2).mean(axis=(1, 3))
+    yb = left_sited(y)
 
     inv = INVERSE[matrix]
     decoded = np.stack(
@@ -210,9 +252,35 @@ def test_decodes_back_with_the_published_inverse(live_frame, matrix, pixel_forma
         ],
         axis=-1,
     )
-    expected = rgb.reshape(h // 2, 2, w // 2, 2, 3).mean(axis=(1, 3))
+    expected = left_sited(rgb)
     tolerance = 0.012 if bits == 8 else 0.004
     np.testing.assert_allclose(decoded, expected, atol=tolerance)
+
+
+@pytest.mark.parametrize("pixel_format,bits", [("nv12", 8), ("p010", 10)])
+def test_chroma_is_left_sited(live_frame, pixel_format, bits):
+    """H.264 and HEVC read chroma as left-sited unless told otherwise.
+
+    The reference tests above would pass a centre-sited kernel against a
+    centre-sited reference, so this one names the siting: the chroma plane
+    must match the left-sited reference and must *not* match the centre-sited
+    one. Before 2.7.1 the kernel was centre-sited and fails here.
+    """
+    rgb = rgb_of(live_frame, OUT, OUT, "nearest")
+    require_colour(rgb)
+    left = yuv_reference(rgb, bits, siting=left_sited)[OUT:]
+    centre = yuv_reference(rgb, bits, siting=centre_sited)[OUT:]
+    shift = 0 if bits == 8 else 6
+    differing = (left.astype(np.int64) >> shift) != (centre.astype(np.int64) >> shift)
+    if differing.mean() < 0.02:
+        pytest.skip("frame has too few horizontal colour edges to tell the sitings apart")
+    got = rapidshot.GpuConverter(
+        live_frame, (OUT, OUT), pixel_format=pixel_format, sampling="nearest"
+    ).process(live_frame).numpy()[OUT:]
+    assert_codes_match(got, left, shift=shift)
+    g = got.astype(np.int64) >> shift
+    c = centre.astype(np.int64) >> shift
+    assert (g[differing] != c[differing]).mean() > 0.5, "chroma still matches the centre-sited reference"
 
 
 def test_matrices_actually_differ(live_frame):
@@ -341,6 +409,17 @@ def test_tensor_arguments_are_refused_with_pixel_format(live_frame, kwargs):
 def test_unknown_pixel_format_is_refused(live_frame):
     with pytest.raises(ValueError, match="pixel_format"):
         rapidshot.GpuConverter(live_frame, (OUT, OUT), pixel_format="yuy2")
+
+
+@pytest.mark.parametrize("pixel_format", ["nv12", "p010"])
+def test_a_centre_sited_extension_is_refused(live_frame, monkeypatch, pixel_format):
+    """0.3.0 builds export the same converter and write centre-sited chroma.
+
+    Accepting one would hand an encoder bytes the docs say it will not get.
+    """
+    monkeypatch.setattr(native, "extension_version", lambda: "0.3.0")
+    with pytest.raises(RuntimeError, match=r"rapidshot-native >= 0\.3\.1"):
+        rapidshot.GpuConverter(live_frame, (OUT, OUT), pixel_format=pixel_format)
 
 
 def test_unknown_matrix_is_refused(live_frame):

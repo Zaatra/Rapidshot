@@ -108,7 +108,7 @@ def test_the_native_floor_is_stated_consistently():
     feature.
     """
     text = README.read_text(encoding="utf-8")
-    floor = max(native._FEATURE_SINCE.values(),
+    floor = max([*native._FEATURE_SINCE.values(), *native._BEHAVIOUR_SINCE.values()],
                 key=lambda v: tuple(int(part) for part in v.split(".")))
 
     assert f"rapidshot-native >= {floor}" in text or f"rapidshot-native>={floor}" in text, (
