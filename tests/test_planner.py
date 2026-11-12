@@ -111,7 +111,10 @@ def test_the_key_changes_with_what_a_measurement_depends_on(machine, monkeypatch
     # extension itself, so on it the key did not change and this failed.
     monkeypatch.setattr("rapidshot.native.extension_version", lambda: "0.0.0-test")
     by_native = planner._key("display", machine, output, full)
-    monkeypatch.setattr(planner, "_power_source", lambda: "battery")
+    # The other power source, not "battery": on a laptop running on battery
+    # that was no change, and this failed (Lunar Lake, 2026-11-12).
+    other_power = "ac" if planner._power_source() == "battery" else "battery"
+    monkeypatch.setattr(planner, "_power_source", lambda: other_power)
     by_power = planner._key("display", machine, output, full)
 
     assert len({base, by_size, by_mode, by_driver, by_native, by_power}) == 6

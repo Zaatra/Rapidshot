@@ -91,6 +91,15 @@ _DUPLICATE_OUTPUT_ENV = "RAPIDSHOT_DUPLICATE_OUTPUT"
 # because a recycled address necessarily belongs to a different duplicator.
 _duplicator_ids = itertools.count(1)
 
+# AcquireNextFrame refusals with DXGI_ERROR_INVALID_CALL, in a row and with no
+# frame held, after which the duplication is treated as lost. One is the call
+# DXGI documents for "a frame is still outstanding"; with none outstanding, a
+# run of them means DXGI invalidated the duplication somewhere this class did
+# not see. On an RTX 4060 (driver 32.0.16.2101, 2026-11-12) that is what
+# followed an HDR switch whose ACCESS_LOST surfaced on ReleaseFrame: 360,694
+# refusals over 48 s, and grab_frame() returning None for all of them.
+_INVALID_CALL_LIMIT = 3
+
 
 def _format_hresult(hresult) -> str:
     """Render an HRESULT as 0x-prefixed hex, tolerating non-integer values."""
@@ -301,6 +310,13 @@ class Duplicator:
     # See _duplicator_ids: identifies which duplicator a texture came from.
     instance_id: int = field(default_factory=lambda: next(_duplicator_ids))
     _frame_acquired: bool = False
+    # Why the duplication was dropped where no caller could be told at once
+    # (ReleaseFrame, or the INVALID_CALL run above), as (exception class,
+    # HRESULT, message). update_frame() raises it on every call from then on,
+    # so each capture path rebuilds as it does for access lost on acquire,
+    # instead of reading "released" as "nothing new on screen" for ever.
+    _lost: Optional[Tuple[type, Optional[int], str]] = None
+    _invalid_call_streak: int = 0
 
     def __post_init__(self, output: Output, device: Device) -> None:
         """
@@ -479,6 +495,9 @@ class Duplicator:
             RapidShotProtectedContentError: protected content blocks capture.
             RapidShotDXGIError: any other unexpected DXGI failure.
         """
+        # Whether the caller still held the previous frame: the one case in
+        # which INVALID_CALL from AcquireNextFrame is the documented answer.
+        frame_was_held = self._frame_acquired
         # Reset state for this update attempt
         self.updated = False
         self.last_error = ""
@@ -487,6 +506,11 @@ class Duplicator:
         info = DXGI_OUTDUPL_FRAME_INFO()
         res = ctypes.POINTER(IDXGIResource)()
         frame_acquired = False
+
+        if self._lost is not None:
+            error_class, hresult, message = self._lost
+            self.last_error = message
+            raise error_class(message, hresult=hresult)
 
         if self.duplicator is None:
             self.last_error = "update_frame called on a released duplicator"
@@ -502,6 +526,7 @@ class Duplicator:
             )
             frame_acquired = True
             self._frame_acquired = True
+            self._invalid_call_streak = 0
             logger.debug("Frame acquired successfully")
 
             # Protected (HDCP/DRM) content is blanked out by the compositor
@@ -584,11 +609,25 @@ class Duplicator:
 
             if hresult == DXGI_ERROR_WAIT_TIMEOUT:
                 # Normal on a static desktop, not an error worth warning about.
+                self._invalid_call_streak = 0
                 logger.debug("Frame acquisition timed out.")
                 self.updated = False  # No new frame
                 return True  # finally: still runs and releases the resource
 
             logger.warning(self.last_error)
+
+            if hresult == DXGI_ERROR_INVALID_CALL and not frame_was_held:
+                self._invalid_call_streak += 1
+                if self._invalid_call_streak >= _INVALID_CALL_LIMIT:
+                    message = (
+                        f"AcquireNextFrame refused {self._invalid_call_streak} times in "
+                        "a row with no frame held: the duplication is no longer "
+                        f"usable, re-initialization needed: {ce}"
+                    )
+                    self._mark_lost(RapidShotReinitError, hresult, message)
+                    raise RapidShotReinitError(message, hresult=hresult) from ce
+            else:
+                self._invalid_call_streak = 0
 
             if hresult in DXGI_RECOVERABLE_ERRORS:
                 # Access lost / session disconnected / mode change in progress.
@@ -702,6 +741,22 @@ class Duplicator:
             # Don't log as warning for specific known error code
             if hresult == DXGI_ERROR_INVALID_CALL:
                 logger.debug(f"Frame already released: {ce}")
+            elif hresult in DXGI_RECOVERABLE_ERRORS or hresult in DXGI_DEVICE_ERRORS:
+                # DXGI invalidated the duplication while the frame was out --
+                # an HDR switch does this on NVIDIA, where it surfaces here
+                # about as often as on the next acquire. Dropping the frame
+                # and keeping the duplication left every later acquire
+                # answering INVALID_CALL. Not raised: this runs as cleanup,
+                # often in a finally. The next update_frame() raises it.
+                device = hresult in DXGI_DEVICE_ERRORS
+                message = (
+                    f"{'Device error' if device else 'Access lost'} on ReleaseFrame, "
+                    f"re-initialization needed: {ce}"
+                )
+                logger.warning(f"{message} (HRESULT: {_format_hresult(hresult)})")
+                self._mark_lost(
+                    RapidShotDeviceError if device else RapidShotReinitError,
+                    hresult, message)
             else:
                 logger.warning(
                     f"Failed to release frame: {ce} "
@@ -718,6 +773,12 @@ class Duplicator:
             # against the same frame, and holding the flag would make every
             # later acquire look like a leak.
             self._frame_acquired = False
+
+    def _mark_lost(self, error_class: type, hresult: Optional[int], message: str) -> None:
+        """Drop the duplication and have every later update_frame() raise."""
+        self._release_duplication()
+        self._lost = (error_class, hresult, message)
+        self.last_error = message
 
     def _release_duplication(self) -> None:
         """
