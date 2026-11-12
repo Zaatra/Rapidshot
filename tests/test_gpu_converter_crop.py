@@ -20,6 +20,9 @@ import pytest
 import rapidshot
 from rapidshot import native
 
+from _hdr_desktop import (BGRA8_REFERENCE, LINEAR_LIGHT_FILTERING, YUV_WITHOUT_TONE_MAP,
+                          skip_on_an_hdr_desktop)
+
 pytestmark = pytest.mark.skipif(
     not native.is_available(), reason="native extension not built"
 )
@@ -171,6 +174,7 @@ def test_upscaled_crop_matches_crop_then_resize(live_frame, surface):
     precision, so hardware weights can be 1/64 away from exact. A leak from
     outside the crop or a half-texel offset misses by far more on busy content.
     """
+    skip_on_an_hdr_desktop(live_frame, LINEAR_LIGHT_FILTERING)
     crop = busy_crop(surface, 24, 16)
     got = bgra(live_frame, (96, 64), "bilinear", crop).astype(np.float64)
     expected = bilinear_reference(texels(surface, crop), 96, 64)
@@ -183,6 +187,7 @@ def test_upscaled_crop_matches_crop_then_resize(live_frame, surface):
 
 
 def test_float_output_honours_crop(live_frame, surface):
+    skip_on_an_hdr_desktop(live_frame, BGRA8_REFERENCE)
     crop = busy_crop(surface, 64, 48)
     got = rapidshot.GpuConverter(
         live_frame, (64, 48), dtype="float32", sampling="nearest"
@@ -193,6 +198,7 @@ def test_float_output_honours_crop(live_frame, surface):
 
 
 def test_nv12_output_honours_crop(live_frame, surface):
+    skip_on_an_hdr_desktop(live_frame, YUV_WITHOUT_TONE_MAP)
     crop = busy_crop(surface, 64, 48)
     got = rapidshot.GpuConverter(
         live_frame, (64, 48), pixel_format="nv12", sampling="nearest"

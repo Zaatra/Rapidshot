@@ -10,14 +10,20 @@ Its own module because it needs its own camera: a second camera on the same
 output with different settings is refused.
 
 The reference is read through the native converter directly, which knows
-nothing about regions and so sees the whole surface.
+nothing about regions and so sees the whole surface. On an HDR desktop it is
+given the tone map ``GpuConverter`` applies by default, which works pixel by
+pixel and so commutes with taking a region: these stay tests of *where* the
+pixels come from. The older preprocessors refuse an HDR surface and skip.
 """
 
 import numpy as np
 import pytest
 
 import rapidshot
+from rapidshot import converter as converter_module
 from rapidshot import native
+
+from _hdr_desktop import LEGACY_PREPROCESSOR, is_hdr, skip_on_an_hdr_desktop
 
 pytestmark = pytest.mark.skipif(
     not native.is_available(), reason="native extension not built"
@@ -52,7 +58,13 @@ def surface(region_frame):
     impl = native.require().GpuConverter12(
         native._texture_address(region_frame), w, h, sampling="nearest", dtype="bgra8"
     )
-    impl.process(native._texture_address(region_frame), source_id=region_frame.source_id)
+    tone = {}
+    if is_hdr(region_frame):
+        # What GpuConverter's default passes for this frame (tone_map="auto").
+        tone = dict(tone_map=converter_module._TONE_MAPS["auto"],
+                    sdr_white=converter_module._sdr_white_scale(region_frame.sdr_white_nits))
+    impl.process(native._texture_address(region_frame), source_id=region_frame.source_id,
+                 **tone)
     return np.frombuffer(impl.read_back(), dtype=np.uint8).reshape(h, w, 4)
 
 
@@ -117,6 +129,7 @@ def preprocessor_reference(pixels):
 def test_preprocessor12_converts_only_the_region(region_frame, surface):
     """Verified broken 2026-09-14: the output was bit-identical to the whole
     1920x1080 monitor resized, and matched the region not at all."""
+    skip_on_an_hdr_desktop(region_frame, LEGACY_PREPROCESSOR)
     left, top, right, bottom = REGION
     expected = preprocessor_reference(surface[top:bottom, left:right])
     whole = preprocessor_reference(surface[
@@ -135,6 +148,7 @@ def test_preprocessor12_converts_only_the_region(region_frame, surface):
 
 def test_preprocessor12_downscaled_region_matches_decimation(region_frame, surface):
     """Nearest decimation of the *region*, with the region's own stride."""
+    skip_on_an_hdr_desktop(region_frame, LEGACY_PREPROCESSOR)
     out_w, out_h = 64, 48
     left, top, right, bottom = REGION
     ys = top + np.arange(out_h) * (bottom - top) // out_h
@@ -150,6 +164,7 @@ def test_preprocessor12_downscaled_region_matches_decimation(region_frame, surfa
 def test_preprocessor12_matches_the_converter_on_a_region(region_frame):
     """The two nearest paths agree on full frames (test_gpu_converter.py); they
     must agree on region frames too, or one of them is wrong."""
+    skip_on_an_hdr_desktop(region_frame, LEGACY_PREPROCESSOR)
     pre = native.GpuPreprocessor12(region_frame, 64, 48)
     pre.process(region_frame, 1.0, 0.0, False)
     converted = rapidshot.GpuConverter(
@@ -162,6 +177,7 @@ def test_d3d11_preprocessor_converts_only_the_region(region_frame, surface):
     """The D3D11 `native.GpuPreprocessor` — verified broken 2026-09-14, output
     bit-identical to the whole monitor on this region camera. It reads on the
     capture device's own queue, so it needs no capture ordering."""
+    skip_on_an_hdr_desktop(region_frame, LEGACY_PREPROCESSOR)
     left, top, right, bottom = REGION
     expected = preprocessor_reference(surface[top:bottom, left:right])
 
@@ -172,6 +188,7 @@ def test_d3d11_preprocessor_converts_only_the_region(region_frame, surface):
 
 def test_d3d11_and_d3d12_preprocessors_agree_on_a_region(region_frame):
     """Same shader, two APIs: on a region frame they must produce one tensor."""
+    skip_on_an_hdr_desktop(region_frame, LEGACY_PREPROCESSOR)
     d3d11 = native.GpuPreprocessor(region_frame, 64, 48)
     d3d11.process(region_frame, 1.0, 0.0, False)
     d3d12 = native.GpuPreprocessor12(region_frame, 64, 48)
@@ -183,6 +200,7 @@ def test_raw_preprocessor12_without_crop_still_converts_the_whole_surface(region
     """The extension works in texels and knows nothing of regions; translating
     one is the Python wrapper's job. A raw caller that omits `crop` keeps the
     old behaviour, which is what the benchmarks calling it directly rely on."""
+    skip_on_an_hdr_desktop(region_frame, LEGACY_PREPROCESSOR)
     h, w = surface.shape[:2]
     impl = native.require().GpuPreprocessor12(native._texture_address(region_frame), w, h)
     impl.process(native._texture_address(region_frame), 1.0, 0.0, False,
@@ -192,6 +210,7 @@ def test_raw_preprocessor12_without_crop_still_converts_the_whole_surface(region
 
 
 def test_raw_preprocessor12_refuses_a_crop_outside_the_surface(region_frame, surface):
+    skip_on_an_hdr_desktop(region_frame, LEGACY_PREPROCESSOR)
     h, w = surface.shape[:2]
     impl = native.require().GpuPreprocessor12(native._texture_address(region_frame), 16, 16)
     with pytest.raises(RuntimeError, match="does not fit"):

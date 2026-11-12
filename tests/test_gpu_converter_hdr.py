@@ -9,9 +9,10 @@ D3D12 and no shader in between. Those skip unless Windows HDR is on for the
 captured display.
 
 The arithmetic itself is checked headlessly in ``tests/test_tone_map.py`` and
-on WARP by the Rust ``warp_tests`` in ``native/src/converter12.rs``; this is
-the end-to-end run on real hardware and a real HDR surface. Until it has passed
-on an HDR panel the README makes no HDR claim (ROADMAP).
+on WARP by the Rust ``warp_tests`` in ``native/core/src/converter12.rs``; this is
+the end-to-end run on real hardware and a real HDR surface. It first passed on
+an HDR panel on 2026-11-12 (Arc 130V, Samsung TU7100, FP16), which is what
+made ``"auto"`` the default; the README claims no more than that run covered.
 """
 import ctypes
 

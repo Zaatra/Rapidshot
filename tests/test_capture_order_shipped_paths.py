@@ -34,6 +34,7 @@ import pytest
 
 import rapidshot
 from rapidshot import native
+from _hdr_desktop import LEGACY_PREPROCESSOR, skip_on_an_hdr_desktop
 
 pytestmark = pytest.mark.skipif(
     not native.is_available(), reason="native extension not built"
@@ -83,9 +84,12 @@ def test_preprocessor12_first_read_is_current(camera):
         pre.process(frame, 1.0, 0.0, False)
         return np.asarray(pre.read_back()).copy()
 
-    stale, unstable = first_vs_settled(
-        camera, lambda f: native.GpuPreprocessor12(f, 96, 64), read
-    )
+    def build(frame):
+        # Inside first_vs_settled's `with frame:`, so the skip releases it.
+        skip_on_an_hdr_desktop(frame, LEGACY_PREPROCESSOR)
+        return native.GpuPreprocessor12(frame, 96, 64)
+
+    stale, unstable = first_vs_settled(camera, build, read)
     assert unstable == 0, "a held frame changed between settled reads; the method is unsound"
     assert stale == 0
 

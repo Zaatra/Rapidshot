@@ -2853,6 +2853,20 @@ had made; this is where that decision gets made.
 > the path a player uses, but no decoded HDR video is played. NV12 now takes a
 > tone map (SDR for an encoder); P010 / HDR10 is still not decided.
 
+> **2026-11-12: a first panel run, narrower than the kit above.** The Lunar Lake
+> laptop's test kit on the same Samsung TV (TU7100, HDMI 2.0 once "Input Signal
+> Plus" was on; HDR on, SDR white 240 nits, FP16 scRGB through Desktop
+> Duplication): `tests/test_gpu_converter_hdr.py` passed, `clip` matched
+> `grab()` on every pixel, and over 45 s of decoded HDR video on YouTube
+> (highlights to 3,460 nits, up to 42% of a frame above SDR white) `auto`
+> matched `tests/test_tone_map.py`'s transcription of the shader to within one
+> code, at least 99.9999% exact. On that evidence `tone_map="auto"` is now
+> `GpuConverter`'s default for tensor and `uint8` output. **Still not run:**
+> WGC, NV12's tone map, `start()` across an HDR toggle, the lowest and highest
+> SDR white, known-value and out-of-gamut patches (`hdr-check.exe pattern`),
+> and anything but Intel. Wide-gamut colours were seen clamped per channel by
+> both maps, as `grab()` clamps them; gamut mapping is not planned yet.
+
 **Do not claim HDR until it has run on an HDR panel.** § 2's vendor-coverage rule
 applies with force here, because a wrong colour transform produces a plausible
 image. Test HDR desktop, SDR desktop, HDR video, white clipping, dark gradients,

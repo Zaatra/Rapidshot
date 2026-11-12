@@ -10,8 +10,127 @@ each release can be traced back to the plan it implements.
 
 ## [Unreleased]
 
-Native extension 0.4.0, to be published with 2.7.3 once it has run on an HDR
-panel. Nothing here changes what a 2.7.2 call does unless it asks for it.
+## [2.7.3] - 2026-11-12: HDR desktops convert by default, with rapidshot-native 0.4.0
+
+Published together with `rapidshot-native` 0.4.0, now that both have run on
+an HDR panel. The install floor stays at 0.3.1: what here needs 0.4.0 (NV12's
+tone map, `RAPIDSHOT_DUPLICATOR=native`) is asked for explicitly and says so
+against an older build. One default changes, and only on an HDR desktop: a
+`GpuConverter` that used to refuse an HDR frame now converts it to sRGB
+(below). Nothing else here changes what a 2.7.2 call does unless it asks for
+it.
+
+### Changed — `GpuConverter` tone-maps HDR frames by default
+
+- **`tone_map` defaults to `None`, which is `"auto"` for tensor and `uint8`
+  output.** A converter given no tone map used to refuse every frame from an
+  HDR desktop with a `ValueError` naming `tone_map="auto"`; it now applies that
+  map, so `camera.stream()` tensors, the benchmark's converter routes and the
+  examples work with Windows HDR on. SDR frames are untouched, as they were
+  under an explicit `"auto"`. Where a tone map cannot apply as the call stands,
+  the default is `"none"` and the call behaves as in 2.7.2: with
+  `allow_linear=True` (an explicit tone map there is refused as
+  contradictory), with any `pixel_format` (P010 has no tone map, NV12's needs
+  native 0.4.0 and is still asked for explicitly), and on a native build too
+  old to tone map. `tone_map="none"` keeps the refusal for anyone who wants it,
+  and `converter.tone_map` says which map was chosen. On the HDR desktop
+  below, the whole suite was run on this branch with and without the change:
+  nothing that passed before fails after, and 104 tests that failed with HDR
+  on now pass -- all nine `test_tensor_stream.py` tests among them, so
+  `camera.stream()` had been unusable on an HDR desktop.
+- **Live tests that only hold on an SDR desktop skip on an HDR one, naming
+  why** (`tests/_hdr_desktop.py`), instead of failing as they all did before.
+  Four reasons, each a property of the test or of a path, never of the code
+  under test: the reference is the surface as 8-bit sRGB bytes (a
+  `B8G8R8A8_UNORM` staging copy, or bytes compared exactly with float
+  output); the converter filters an HDR frame in linear light and the
+  reference filters sRGB bytes; NV12/P010 without a tone map refuse scRGB by
+  design; and `GpuPreprocessor` / `GpuPreprocessor12` take BGRA8 only. 27 call
+  sites, covering 46 of the 51 failures on the HDR run above.
+  The region tests' reference now applies the default tone map instead, so
+  those three keep running on an HDR desktop; and
+  `test_an_hdr_frame_is_refused_without_a_tone_map` checks the NV12/P010
+  refusal on the live surface, which the YUV file used to list as not
+  verifiable. `test_preprocess_cache.py`'s fixture skips before the
+  preprocessor runs, with the frame released: the refusal escaping with it
+  held had made all five of that file's tests fail, four of them only
+  because the next frame could not be acquired.
+- **Still failing on that HDR run, and not a skip**:
+  `test_planner_live.py::test_calibration_measures_both_backends_and_auto_follows_it`
+  (both backends "delivered 14 timed frames in 1.5 s" at 4K). It failed the
+  same way without this change; it is about timing at that size, not about
+  HDR references.
+- **Intermittent on the HDR desktop**:
+  `test_gpu_converter_capture_order.py::test_the_motion_source_actually_moves`,
+  2 failures in 5 runs on its own ("assert 2 >= 3": too few of five
+  consecutive crops differed). It can only run on an HDR desktop now that the
+  converter tone-maps by default; before, the converter refused the frame.
+  The stale-read test it guards passed every time. Not yet explained.
+- **The release tree on the HDR desktop** (main at 2.7.2 with these changes,
+  native 0.4.0 built from it, 2026-11-12): 2304 passed, 90 skipped, and the
+  two above failed.
+- **On the HDR desktop with these skips**, the edited test files ran 107
+  passed and 71 skipped -- the 46 above, by name -- with the WGC exit crash
+  fixed below as the only failure. On SDR the whole suite passed (2368
+  passed, 24 skipped).
+- **The panel run the 2.7.0 entry waited for.** On an Intel Core Ultra 5 226V
+  (Arc 130V) driving a Samsung TU7100 4K TV, HDR on, SDR white 240 nits,
+  Desktop Duplication handing back FP16 scRGB: `tests/test_gpu_converter_hdr.py`
+  passed, and `clip` matched `grab()` on 100% of pixels (max difference 0).
+  Over 45 s of HDR video, 9 of 12 sampled frames had highlights above SDR
+  white (to 3,460 nits, up to 42% of a frame); in every frame `auto` matched
+  `tests/test_tone_map.py`'s float32 transcription of the shader to within one
+  code, at least 99.9999% exact, highlights included, and kept hue where `clip`
+  did not -- a bright blue `clip` returned as cyan (0, 255, 255) came back
+  azure (0, 145, 255). Colours outside sRGB's gamut (negative scRGB channels)
+  are clamped per channel by both maps, as `grab()` clamps them.
+  **Not covered by that run:** WGC, NV12's tone map, `start()` across an HDR
+  toggle, other SDR white levels, non-Intel GPUs, and a desktop that
+  duplicates as 10-bit `R10G10B10A2`. The README says so.
+- **The TV first reported no HDR at all**: 4K at 30 Hz, a 297 MHz pixel clock,
+  HDMI 1.4 bandwidth. Samsung TVs keep each HDMI port in that mode until
+  "Input Signal Plus" is turned on for it; with it on, the link came up at
+  594 MHz, 4K 60 Hz, and Windows offered HDR. The README's HDR section notes it.
+
+### Fixed — a WGC camera open at exit could still crash the process
+
+- **`GraphicsCapture.dll` is pinned once a WGC session has loaded it**
+  (`core/wgc.py`, `_pin_graphics_capture`), so it stays mapped until the
+  process ends. The atexit hook that closes open sessions and `close()`'s
+  wait for WGC's teardown narrowed the crash but did not end it:
+  WGC finishes a session on its own threads, comtypes' `CoUninitialize` at
+  exit unloads in-process WinRT servers, and work WGC still had queued then
+  ran in an unmapped DLL. Every crash Windows recorded (Event 1000) faulted
+  in `GraphicsCapture.dll_unloaded` at one offset, 0x1106c, code
+  `0xC0000005`. Measured on the HDR desktop above, 120 fresh processes per
+  case: a camera left open after one `grab()` crashed 6 times and one left
+  open before its first frame 74 times; a camera released before exit, 0.
+  With the DLL pinned -- first by the test script, then by the library --
+  0 and 0, and Windows logged no crash. A failed pin is logged at debug
+  level, not raised.
+- **The live test now covers the case that crashed most.**
+  `test_an_open_wgc_camera_does_not_crash_interpreter_exit` runs with and
+  without a grab; three runs of the no-grab case caught the old behaviour
+  with about 95% probability where the grab case caught it about 15% of the
+  time -- which is why it had looked like a rare flake (3 of about 16 HDR
+  runs). Three headless tests pin it down in `tests/test_wgc_backend.py`;
+  without the pin call two of them fail.
+- **Rust callers get the same pin** (native 0.4.0). The remote-support
+  helper drives `WgcSession` from Rust, without Python's atexit hook or the
+  Python pin, so a helper exiting with a session tearing down could meet the
+  same crash. `rapidshot_core::wgc::pin_graphics_capture()` makes the same
+  `GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN, "GraphicsCapture.dll")`
+  call, once, and `WgcSession::new` calls it as soon as capture has started;
+  `graphics_capture_is_pinned_once_it_is_loaded` tests it. `cargo fmt
+  --check`, `cargo clippy --release -- -D warnings`, `cargo clippy
+  --all-targets -- -D warnings` and `cargo test --lib` (70 core, 1 binding)
+  pass. Measured on the same machine with the **Python pin disabled**, so
+  only the native one could act, a camera left open at exit: with the Rust
+  pin, 0 crashes in 120 processes before a first frame and 0 in 60 after
+  one, and the DLL stayed mapped through 64 `FreeLibrary` calls; the same
+  build with the call removed, 85 crashes in 120, all at
+  `GraphicsCapture.dll_unloaded` +0x1106c, and the DLL unloaded. The Python
+  pin stays either way: it covers extensions built without this.
 
 ### Added — NV12 from an HDR desktop, tone-mapped for an encoder
 
@@ -147,6 +266,18 @@ panel. Nothing here changes what a 2.7.2 call does unless it asks for it.
   and gone with the WARP tests taking turns (0 in 60, none under a debugger).
   The library itself does not serialise WARP, so two converters on two threads
   of a GPU-less machine could still meet it.
+
+### Tests
+
+- **`test_the_transcription_matches_the_shader_text` runs again.** It read
+  `native/src/converter12.rs`, which the crate split moved to
+  `native/core/src/converter12.rs`, and skipped whenever that file was absent
+  -- so since the split it skipped everywhere ("native source not in this
+  checkout"), and nothing checked that `tests/test_tone_map.py`'s float32
+  transcription of `to_display()` is still the shader's. It reads the new path,
+  and skips only where there is no `native/` directory at all (an sdist); with
+  the source present and the shader gone it fails, naming the path. The
+  transcription still matches: all 33 tests in the file pass.
 
 ## [2.7.2] - 2026-11-12: Hybrid laptops that refuse screen capture now say why, and how to fix it
 

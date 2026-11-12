@@ -26,6 +26,8 @@ import pytest
 import rapidshot
 from rapidshot import native
 
+from _hdr_desktop import BGRA8_REFERENCE, LEGACY_PREPROCESSOR, skip_on_an_hdr_desktop
+
 pytestmark = pytest.mark.skipif(
     not native.is_available(), reason="native extension not built"
 )
@@ -160,6 +162,7 @@ def test_nearest_float32_matches_the_old_preprocessor_exactly(live_frame):
     If it ever diverges, every stored recording comparing the two becomes
     meaningless, because the thing being compared moved.
     """
+    skip_on_an_hdr_desktop(live_frame, LEGACY_PREPROCESSOR)
     old = native.GpuPreprocessor12(live_frame, OUT, OUT)
     old.process(live_frame, 1.0, 0.0, False)  # 0..1, matching normalize=True
     expected = old.read_back()
@@ -361,7 +364,10 @@ def test_nearest_output_matches_a_cpu_reference(live_camera, live_frame):
     to system memory by D3D11 — so nothing the shader does is used to check the
     shader. This is the independent-reference rule in ROADMAP § 11, and it is
     the check that was skipping on every machine until the readback existed.
+    On an HDR desktop the same comparison is made against ``grab()``'s CPU
+    conversion in ``tests/test_gpu_converter_hdr.py``.
     """
+    skip_on_an_hdr_desktop(live_frame, BGRA8_REFERENCE)
     converter = rapidshot.GpuConverter(
         live_frame, (OUT, OUT), dtype="float32", sampling="nearest"
     )
