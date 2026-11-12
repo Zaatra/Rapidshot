@@ -45,9 +45,29 @@ each release can be traced back to the plan it implements.
   without the fix. Run B of `hdr-checks/toggle_check.py` reported a 0.22 s
   longest gap for a capture that had died; it now counts the time from the
   last frame to the end of the run.
-- **Not yet confirmed on the NVIDIA laptop** with the fixed build. On Intel
-  (Arc 130V) the loss always surfaced on `AcquireNextFrame`, so this machine
-  cannot reproduce it.
+- **Confirmed on the same NVIDIA laptop** with this build, HDR switched off
+  and on twice per try: 5 valid tries through the Python duplicator and 3
+  through the native one all passed. The loss surfaced on `ReleaseFrame` 7
+  times across them, and capture recovered every time, 0.50-0.56 s later;
+  the longest gap between frames was 0.95-1.12 s, as on Intel (1.0-1.1 s),
+  with the colours identical before, between and after the switches. On
+  Intel (Arc 130V) the loss always surfaced on `AcquireNextFrame`, so that
+  machine cannot reproduce the fault.
+
+### Fixed — a frame captured just before an HDR switch could be labelled with the new mode
+
+- **Windows reports an HDR switch before the duplication stops delivering
+  the old mode's frames.** On the RTX 4060 an FP16 frame came back as
+  `color_space="srgb"`, `sdr_white_nits=None` half a second before HDR went
+  off (1 frame in 9 runs): `ScreenCapture` re-reads the display's HDR state
+  about once a second and gave the new state to a surface still in the old
+  mode. A converter or `grab()` handed that frame would have treated linear
+  scRGB as sRGB. Every switch measured also ends the duplication, and the
+  rebuilt one reads the display afresh; so a flip reported while the same
+  duplication delivers the same surface format now keeps the colour that
+  surface was read with, for at most 5 s in case a switch ever leaves the
+  duplication alive. An SDR white change is not a flip and applies at once,
+  as before. Four tests in `tests/test_hdr_capture.py`; two fail without it.
 
 ### Tests
 

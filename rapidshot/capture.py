@@ -228,6 +228,10 @@ class ScreenCapture:
         # when the desktop duplicates as something other than BGRA8.
         self._display_color = None
         self._display_color_at = 0.0
+        # (duplicator instance, surface format) the held colour was read for,
+        # and since when the display has reported the other HDR state for it.
+        self._display_color_key = None
+        self._display_color_flip_since = None
         self._warned_hdr_clip = False
         self._processor = None
         self._pool_output = pool_output
@@ -1611,7 +1615,28 @@ class ScreenCapture:
             return None
         now = time.monotonic()
         if self._display_color is None or now - self._display_color_at > 1.0:
-            self._display_color = hdr.display_color(self._output.devicename)
+            fresh = hdr.display_color(self._output.devicename)
+            key = (getattr(self._duplicator, "instance_id", None), source_format)
+            held = self._display_color
+            # Windows reports an HDR switch before the duplication stops
+            # delivering the old mode's frames: on an RTX 4060 an FP16 frame
+            # came back labelled sRGB half a second before HDR went off.
+            # Every switch so far has also invalidated the duplication, and a
+            # new one is read afresh; so a flip reported for the same
+            # duplication and surface format describes frames still to come,
+            # not this one. Held for at most 5 s, in case a switch ever leaves
+            # the duplication alive. An SDR white change is not a flip, and
+            # applies at once.
+            if (held is not None and fresh.hdr != held.hdr
+                    and key == getattr(self, "_display_color_key", None)):
+                if getattr(self, "_display_color_flip_since", None) is None:
+                    self._display_color_flip_since = now
+                if now - self._display_color_flip_since < 5.0:
+                    fresh = None
+            if fresh is not None:
+                self._display_color = fresh
+                self._display_color_key = key
+                self._display_color_flip_since = None
             self._display_color_at = now
         if (hdr.clipped_at_nominal_white(source_format, self._display_color)
                 and not self._warned_hdr_clip):
@@ -1954,6 +1979,8 @@ class ScreenCapture:
         # Toggling HDR is itself a mode change: ask again rather than convert
         # the new surface with the old SDR white.
         self._display_color = None
+        self._display_color_key = None
+        self._display_color_flip_since = None
 
         try:
             self._output.update_desc()
