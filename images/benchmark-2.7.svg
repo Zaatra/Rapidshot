@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="760" viewBox="0 0 980 760" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+<style>.t{font-size:17px;font-weight:600;fill:#111827}.a{font-size:11px;fill:#6b7280}.v{font-size:10.5px;fill:#374151}.c{font-size:12.5px;font-weight:600;fill:#111827}.s{font-size:11px;fill:#6b7280}.g{stroke:#e5e7eb;stroke-width:1}.h{font-size:20px;font-weight:700;fill:#111827}</style>
+<rect width="980" height="760" fill="#ffffff" rx="10"/>
+<text x="28" y="40" class="h">Screen to a 640×640 FP16 tensor: three PCs, four configurations, medians of five passes</text>
+<text x="28" y="62" class="s">rapidshot benchmark --full, RapidShot 2.7.1, 11–12 November 2026. Pixel age = Windows Present() → tensor ready.</text>
+<rect x="28" y="78" width="14" height="14" fill="#2563eb" rx="2"/><text x="48" y="90" class="c">RapidShot GPU path</text>
+<rect x="202" y="78" width="14" height="14" fill="#60a5fa" rx="2"/><text x="222" y="90" class="c">RapidShot grab()</text>
+<rect x="360" y="78" width="14" height="14" fill="#9ca3af" rx="2"/><text x="380" y="90" class="c">DXcam</text>
+<rect x="430" y="78" width="14" height="14" fill="#d1d5db" rx="2"/><text x="450" y="90" class="c">mss</text>
+<text x="28" y="126" class="t">Pixel age, median (ms) — lower is fresher</text>
+<line x1="62" x2="952" y1="370.0" y2="370.0" class="g"/>
+<text x="56" y="374.0" class="a" text-anchor="end">0</text>
+<line x1="62" x2="952" y1="331.7" y2="331.7" class="g"/>
+<text x="56" y="335.7" class="a" text-anchor="end">10</text>
+<line x1="62" x2="952" y1="293.3" y2="293.3" class="g"/>
+<text x="56" y="297.3" class="a" text-anchor="end">20</text>
+<line x1="62" x2="952" y1="255.0" y2="255.0" class="g"/>
+<text x="56" y="259.0" class="a" text-anchor="end">30</text>
+<line x1="62" x2="952" y1="216.7" y2="216.7" class="g"/>
+<text x="56" y="220.7" class="a" text-anchor="end">40</text>
+<line x1="62" x2="952" y1="178.3" y2="178.3" class="g"/>
+<text x="56" y="182.3" class="a" text-anchor="end">50</text>
+<line x1="62" x2="952" y1="140.0" y2="140.0" class="g"/>
+<text x="56" y="144.0" class="a" text-anchor="end">60</text>
+<rect x="86.5" y="284.3" width="41.4" height="85.7" fill="#2563eb" rx="2"/>
+<text x="107.2" y="280.3" class="v" text-anchor="middle">22.4</text>
+<rect x="129.9" y="250.6" width="41.4" height="119.4" fill="#60a5fa" rx="2"/>
+<text x="150.6" y="246.6" class="v" text-anchor="middle">31.1</text>
+<rect x="173.2" y="227.4" width="41.4" height="142.6" fill="#9ca3af" rx="2"/>
+<text x="193.9" y="223.4" class="v" text-anchor="middle">37.2</text>
+<rect x="216.6" y="207.4" width="41.4" height="162.6" fill="#d1d5db" rx="2"/>
+<text x="237.3" y="203.4" class="v" text-anchor="middle">42.4</text>
+<text x="173.2" y="388" class="c" text-anchor="middle">Intel desktop</text>
+<text x="173.2" y="403" class="s" text-anchor="middle">1080p · 100 Hz</text>
+<rect x="309.0" y="230.7" width="41.4" height="139.3" fill="#2563eb" rx="2"/>
+<text x="329.7" y="226.7" class="v" text-anchor="middle">36.3</text>
+<rect x="352.4" y="200.4" width="41.4" height="169.6" fill="#60a5fa" rx="2"/>
+<text x="373.1" y="196.4" class="v" text-anchor="middle">44.3</text>
+<rect x="395.8" y="188.3" width="41.4" height="181.7" fill="#9ca3af" rx="2"/>
+<text x="416.4" y="184.3" class="v" text-anchor="middle">47.4</text>
+<rect x="439.1" y="144.7" width="41.4" height="225.3" fill="#d1d5db" rx="2"/>
+<text x="459.8" y="140.7" class="v" text-anchor="middle">58.8</text>
+<text x="395.8" y="388" class="c" text-anchor="middle">Lunar Lake laptop</text>
+<text x="395.8" y="403" class="s" text-anchor="middle">1200p · 60 Hz</text>
+<rect x="531.5" y="311.0" width="41.4" height="59.0" fill="#2563eb" rx="2"/>
+<text x="552.2" y="307.0" class="v" text-anchor="middle">15.4</text>
+<rect x="574.9" y="286.0" width="41.4" height="84.0" fill="#60a5fa" rx="2"/>
+<text x="595.6" y="282.0" class="v" text-anchor="middle">21.9</text>
+<rect x="618.2" y="277.3" width="41.4" height="92.7" fill="#9ca3af" rx="2"/>
+<text x="638.9" y="273.3" class="v" text-anchor="middle">24.2</text>
+<rect x="661.6" y="219.8" width="41.4" height="150.2" fill="#d1d5db" rx="2"/>
+<text x="682.3" y="215.8" class="v" text-anchor="middle">39.2</text>
+<text x="618.2" y="388" class="c" text-anchor="middle">RTX 4060 laptop</text>
+<text x="618.2" y="403" class="s" text-anchor="middle">Optimus · 1600p · 165 Hz</text>
+<rect x="754.0" y="316.7" width="41.4" height="53.3" fill="#2563eb" rx="2"/>
+<text x="774.7" y="312.7" class="v" text-anchor="middle">13.9</text>
+<rect x="797.4" y="299.3" width="41.4" height="70.7" fill="#60a5fa" rx="2"/>
+<text x="818.1" y="295.3" class="v" text-anchor="middle">18.4</text>
+<rect x="840.8" y="284.7" width="41.4" height="85.3" fill="#9ca3af" rx="2"/>
+<text x="861.4" y="280.7" class="v" text-anchor="middle">22.3</text>
+<rect x="884.1" y="240.9" width="41.4" height="129.1" fill="#d1d5db" rx="2"/>
+<text x="904.8" y="236.9" class="v" text-anchor="middle">33.7</text>
+<text x="840.8" y="388" class="c" text-anchor="middle">RTX 4060 laptop</text>
+<text x="840.8" y="403" class="s" text-anchor="middle">NVIDIA only · 1600p · 165 Hz</text>
+<text x="28" y="466" class="t">CPU time per frame (ms) — lower is cheaper</text>
+<line x1="62" x2="952" y1="680.0" y2="680.0" class="g"/>
+<text x="56" y="684.0" class="a" text-anchor="end">0</text>
+<line x1="62" x2="952" y1="640.0" y2="640.0" class="g"/>
+<text x="56" y="644.0" class="a" text-anchor="end">5</text>
+<line x1="62" x2="952" y1="600.0" y2="600.0" class="g"/>
+<text x="56" y="604.0" class="a" text-anchor="end">10</text>
+<line x1="62" x2="952" y1="560.0" y2="560.0" class="g"/>
+<text x="56" y="564.0" class="a" text-anchor="end">15</text>
+<line x1="62" x2="952" y1="520.0" y2="520.0" class="g"/>
+<text x="56" y="524.0" class="a" text-anchor="end">20</text>
+<line x1="62" x2="952" y1="480.0" y2="480.0" class="g"/>
+<text x="56" y="484.0" class="a" text-anchor="end">25</text>
+<rect x="86.5" y="676.4" width="41.4" height="3.6" fill="#2563eb" rx="2"/>
+<text x="107.2" y="672.4" class="v" text-anchor="middle">0.4</text>
+<rect x="129.9" y="602.9" width="41.4" height="77.1" fill="#60a5fa" rx="2"/>
+<text x="150.6" y="598.9" class="v" text-anchor="middle">9.6</text>
+<rect x="173.2" y="584.7" width="41.4" height="95.3" fill="#9ca3af" rx="2"/>
+<text x="193.9" y="580.7" class="v" text-anchor="middle">11.9</text>
+<rect x="216.6" y="553.6" width="41.4" height="126.4" fill="#d1d5db" rx="2"/>
+<text x="237.3" y="549.6" class="v" text-anchor="middle">15.8</text>
+<text x="173.2" y="698" class="c" text-anchor="middle">Intel desktop</text>
+<text x="173.2" y="713" class="s" text-anchor="middle">1080p · 100 Hz</text>
+<rect x="309.0" y="671.0" width="41.4" height="9.0" fill="#2563eb" rx="2"/>
+<text x="329.7" y="667.0" class="v" text-anchor="middle">1.1</text>
+<rect x="352.4" y="595.2" width="41.4" height="84.8" fill="#60a5fa" rx="2"/>
+<text x="373.1" y="591.2" class="v" text-anchor="middle">10.6</text>
+<rect x="395.8" y="517.3" width="41.4" height="162.7" fill="#9ca3af" rx="2"/>
+<text x="416.4" y="513.3" class="v" text-anchor="middle">20.3</text>
+<rect x="439.1" y="539.4" width="41.4" height="140.6" fill="#d1d5db" rx="2"/>
+<text x="459.8" y="535.4" class="v" text-anchor="middle">17.6</text>
+<text x="395.8" y="698" class="c" text-anchor="middle">Lunar Lake laptop</text>
+<text x="395.8" y="713" class="s" text-anchor="middle">1200p · 60 Hz</text>
+<rect x="531.5" y="670.0" width="41.4" height="10.0" fill="#2563eb" rx="2"/>
+<text x="552.2" y="666.0" class="v" text-anchor="middle">1.2</text>
+<rect x="574.9" y="623.3" width="41.4" height="56.7" fill="#60a5fa" rx="2"/>
+<text x="595.6" y="619.3" class="v" text-anchor="middle">7.1</text>
+<rect x="618.2" y="609.1" width="41.4" height="70.9" fill="#9ca3af" rx="2"/>
+<text x="638.9" y="605.1" class="v" text-anchor="middle">8.9</text>
+<rect x="661.6" y="569.6" width="41.4" height="110.4" fill="#d1d5db" rx="2"/>
+<text x="682.3" y="565.6" class="v" text-anchor="middle">13.8</text>
+<text x="618.2" y="698" class="c" text-anchor="middle">RTX 4060 laptop</text>
+<text x="618.2" y="713" class="s" text-anchor="middle">Optimus · 1600p · 165 Hz</text>
+<rect x="754.0" y="672.5" width="41.4" height="7.5" fill="#2563eb" rx="2"/>
+<text x="774.7" y="668.5" class="v" text-anchor="middle">0.9</text>
+<rect x="797.4" y="616.1" width="41.4" height="63.9" fill="#60a5fa" rx="2"/>
+<text x="818.1" y="612.1" class="v" text-anchor="middle">8.0</text>
+<rect x="840.8" y="606.4" width="41.4" height="73.6" fill="#9ca3af" rx="2"/>
+<text x="861.4" y="602.4" class="v" text-anchor="middle">9.2</text>
+<rect x="884.1" y="571.3" width="41.4" height="108.7" fill="#d1d5db" rx="2"/>
+<text x="904.8" y="567.3" class="v" text-anchor="middle">13.6</text>
+<text x="840.8" y="698" class="c" text-anchor="middle">RTX 4060 laptop</text>
+<text x="840.8" y="713" class="s" text-anchor="middle">NVIDIA only · 1600p · 165 Hz</text>
+</svg>

@@ -1,0 +1,991 @@
+{
+ "schema": "rapidshot-benchmark/1",
+ "passes": 5,
+ "recorded": "2026-11-11T11:31:26+00:00",
+ "preflight": {
+  "rapidshot": "2.7.1",
+  "python": "3.14.6",
+  "windows": "10.0.26300",
+  "windows_release": "11",
+  "cpu": "Intel(R) Core(TM) Ultra 5 235",
+  "native": {
+   "version": "0.4.0",
+   "stage": "6-m3b-d3d12-preprocess",
+   "source": "development build (rapidshot/_rapidshot_native)"
+  },
+  "test_source": "%USERPROFILE%\\Projects\\Rapidshot\\rapidshot-git\\native\\target\\release\\latency_source.exe",
+  "topology": "single",
+  "adapters": [
+   "Intel(R) Graphics"
+  ],
+  "capture_adapters": [
+   "Intel(R) Graphics"
+  ],
+  "installed": {
+   "mss": true,
+   "dxcam": true,
+   "winrt": true,
+   "cupy": false,
+   "cv2": true,
+   "psutil": true
+  },
+  "versions": {
+   "mss": "10.2.0",
+   "dxcam": "0.3.0"
+  },
+  "wgc": true,
+  "display": {
+   "width": 1920,
+   "height": 1080,
+   "refresh_hz": 100
+  }
+ },
+ "skipped": {
+  "rapidshot-cupy": "ends in an FP16 tensor on CUDA, which needs an NVIDIA GPU and CuPy for your CUDA version, e.g. pip install cupy-cuda12x",
+  "rapidshot-direct": "ends in an FP16 tensor on CUDA, which needs an NVIDIA GPU and CuPy for your CUDA version, e.g. pip install cupy-cuda12x"
+ },
+ "pixel_age": {
+  "target": "no-cuda",
+  "summary": {
+   "mss": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "contaminated",
+     "contaminated"
+    ],
+    "flagged": 2,
+    "flags": [
+     "background"
+    ],
+    "reasons": [
+     "CPU outside this benchmark's process tree ran at a median 16.7% (peak 24.1%) during this case; absolute timings are inflated. This is a warning signal, not proof of contamination -- the compositor and driver threads are counted here too",
+     "CPU outside this benchmark's process tree ran at a median 22.9% (peak 28.1%) during this case; absolute timings are inflated. This is a warning signal, not proof of contamination -- the compositor and driver threads are counted here too"
+    ],
+    "unique_fps": {
+     "median": 33.347766129942904,
+     "min": 33.224890704161446,
+     "max": 33.35092355140177
+    },
+    "age_p50_ms": {
+     "median": 42.4282,
+     "min": 42.166,
+     "max": 42.9888
+    },
+    "age_p95_ms": {
+     "median": 45.3524,
+     "min": 43.6132,
+     "max": 52.4621
+    },
+    "cpu_ms_per_frame": {
+     "median": 15.80056179775281,
+     "min": 14.9812734082397,
+     "max": 16.970973782771537
+    }
+   },
+   "dxcam": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "contaminated",
+     "passed"
+    ],
+    "flagged": 1,
+    "flags": [
+     "background"
+    ],
+    "reasons": [
+     "CPU outside this benchmark's process tree ran at a median 23.5% (peak 38.0%) during this case; absolute timings are inflated. This is a warning signal, not proof of contamination -- the compositor and driver threads are counted here too"
+    ],
+    "unique_fps": {
+     "median": 86.47073073852894,
+     "min": 83.24552199622434,
+     "max": 87.9225215749562
+    },
+    "age_p50_ms": {
+     "median": 37.2033,
+     "min": 37.0487,
+     "max": 37.6495
+    },
+    "age_p95_ms": {
+     "median": 42.5089,
+     "min": 42.2336,
+     "max": 43.2147
+    },
+    "cpu_ms_per_frame": {
+     "median": 11.907941595441596,
+     "min": 11.673591040462428,
+     "max": 12.563497822931785
+    }
+   },
+   "dxcam-wgc": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "contaminated",
+     "contaminated"
+    ],
+    "flagged": 2,
+    "flags": [
+     "background"
+    ],
+    "reasons": [
+     "CPU outside this benchmark's process tree ran at a median 21.6% (peak 43.5%) during this case; absolute timings are inflated. This is a warning signal, not proof of contamination -- the compositor and driver threads are counted here too",
+     "CPU outside this benchmark's process tree ran at a median 23.1% (peak 28.0%) during this case; absolute timings are inflated. This is a warning signal, not proof of contamination -- the compositor and driver threads are counted here too"
+    ],
+    "unique_fps": {
+     "median": 85.8116216815166,
+     "min": 82.295356611255,
+     "max": 86.74165855392945
+    },
+    "age_p50_ms": {
+     "median": 37.8585,
+     "min": 37.6537,
+     "max": 38.5102
+    },
+    "age_p95_ms": {
+     "median": 42.9185,
+     "min": 42.857,
+     "max": 43.8344
+    },
+    "cpu_ms_per_frame": {
+     "median": 11.735807860262009,
+     "min": 11.59934497816594,
+     "max": 12.713068181818182
+    }
+   },
+   "rapidshot-cpu": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "contaminated",
+     "contaminated",
+     "contaminated"
+    ],
+    "flagged": 3,
+    "flags": [
+     "source",
+     "background"
+    ],
+    "reasons": [
+     "source presented as few as 97.1/s (during this case) while this path returned 99.3 unique fps; throughput is source-limited",
+     "CPU outside this benchmark's process tree ran at a median 25.8% (peak 35.2%) during this case; absolute timings are inflated. This is a warning signal, not proof of contamination -- the compositor and driver threads are counted here too",
+     "CPU outside this benchmark's process tree ran at a median 26.7% (peak 30.6%) during this case; absolute timings are inflated. This is a warning signal, not proof of contamination -- the compositor and driver threads are counted here too"
+    ],
+    "unique_fps": {
+     "median": 99.95142485691099,
+     "min": 98.8530830358281,
+     "max": 100.02822144539908
+    },
+    "age_p50_ms": {
+     "median": 31.1431,
+     "min": 30.9715,
+     "max": 31.9534
+    },
+    "age_p95_ms": {
+     "median": 32.4622,
+     "min": 31.7785,
+     "max": 35.9212
+    },
+    "cpu_ms_per_frame": {
+     "median": 9.636392009987516,
+     "min": 9.343789013732835,
+     "max": 10.469342604298356
+    }
+   },
+   "rapidshot-wgc": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "contaminated",
+     "contaminated",
+     "contaminated"
+    ],
+    "flagged": 3,
+    "flags": [
+     "source",
+     "background"
+    ],
+    "reasons": [
+     "source presented as few as 96.6/s (during this case) while this path returned 99.2 unique fps; throughput is source-limited",
+     "CPU outside this benchmark's process tree ran at a median 18.8% (peak 30.1%) during this case; absolute timings are inflated. This is a warning signal, not proof of contamination -- the compositor and driver threads are counted here too",
+     "CPU outside this benchmark's process tree ran at a median 17.6% (peak 27.2%) during this case; absolute timings are inflated. This is a warning signal, not proof of contamination -- the compositor and driver threads are counted here too"
+    ],
+    "unique_fps": {
+     "median": 98.97283072080685,
+     "min": 96.32696174417805,
+     "max": 99.32929983076389
+    },
+    "age_p50_ms": {
+     "median": 30.8416,
+     "min": 30.6833,
+     "max": 31.2961
+    },
+    "age_p95_ms": {
+     "median": 31.8145,
+     "min": 31.6391,
+     "max": 36.1493
+    },
+    "cpu_ms_per_frame": {
+     "median": 9.610849056603774,
+     "min": 9.21322601010101,
+     "max": 9.869487678339818
+    }
+   },
+   "rapidshot-wgc-window": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 0,
+    "flags": [],
+    "reasons": [],
+    "unique_fps": {
+     "median": 98.65252144356154,
+     "min": 94.84610868971718,
+     "max": 99.47817697492609
+    },
+    "age_p50_ms": {
+     "median": 30.8185,
+     "min": 30.5927,
+     "max": 31.004
+    },
+    "age_p95_ms": {
+     "median": 31.9861,
+     "min": 31.8016,
+     "max": 32.9051
+    },
+    "cpu_ms_per_frame": {
+     "median": 9.428524374176549,
+     "min": 9.12766959798995,
+     "max": 9.745896464646465
+    }
+   },
+   "rapidshot-converter": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "contaminated"
+    ],
+    "flagged": 1,
+    "flags": [
+     "background"
+    ],
+    "reasons": [
+     "CPU outside this benchmark's process tree ran at a median 18.3% (peak 22.5%) during this case; absolute timings are inflated. This is a warning signal, not proof of contamination -- the compositor and driver threads are counted here too"
+    ],
+    "unique_fps": {
+     "median": 100.03623284878171,
+     "min": 100.03197151689025,
+     "max": 100.04009347166782
+    },
+    "age_p50_ms": {
+     "median": 22.3644,
+     "min": 22.3135,
+     "max": 22.4117
+    },
+    "age_p95_ms": {
+     "median": 22.8768,
+     "min": 22.7258,
+     "max": 22.9905
+    },
+    "cpu_ms_per_frame": {
+     "median": 0.4486579275905119,
+     "min": 0.39013732833957554,
+     "max": 0.5461922596754057
+    }
+   }
+  },
+  "verify": {
+   "mss": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "dxcam": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "dxcam-wgc": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-cpu": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-wgc": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-wgc-window": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-converter": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ]
+  },
+  "statuses": {
+   "mss": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "contaminated",
+     "reason": "CPU outside this benchmark's process tree ran at a median 16.7% (peak 24.1%) during this case; absolute timings are inflated. This is a warning signal, not proof of contamination -- the compositor and driver threads are counted here too"
+    },
+    {
+     "status": "contaminated",
+     "reason": "CPU outside this benchmark's process tree ran at a median 22.9% (peak 28.1%) during this case; absolute timings are inflated. This is a warning signal, not proof of contamination -- the compositor and driver threads are counted here too"
+    }
+   ],
+   "dxcam": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "contaminated",
+     "reason": "CPU outside this benchmark's process tree ran at a median 23.5% (peak 38.0%) during this case; absolute timings are inflated. This is a warning signal, not proof of contamination -- the compositor and driver threads are counted here too"
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "dxcam-wgc": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "contaminated",
+     "reason": "CPU outside this benchmark's process tree ran at a median 21.6% (peak 43.5%) during this case; absolute timings are inflated. This is a warning signal, not proof of contamination -- the compositor and driver threads are counted here too"
+    },
+    {
+     "status": "contaminated",
+     "reason": "CPU outside this benchmark's process tree ran at a median 23.1% (peak 28.0%) during this case; absolute timings are inflated. This is a warning signal, not proof of contamination -- the compositor and driver threads are counted here too"
+    }
+   ],
+   "rapidshot-cpu": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "contaminated",
+     "reason": "source presented as few as 97.1/s (during this case) while this path returned 99.3 unique fps; throughput is source-limited"
+    },
+    {
+     "status": "contaminated",
+     "reason": "CPU outside this benchmark's process tree ran at a median 25.8% (peak 35.2%) during this case; absolute timings are inflated. This is a warning signal, not proof of contamination -- the compositor and driver threads are counted here too"
+    },
+    {
+     "status": "contaminated",
+     "reason": "CPU outside this benchmark's process tree ran at a median 26.7% (peak 30.6%) during this case; absolute timings are inflated. This is a warning signal, not proof of contamination -- the compositor and driver threads are counted here too"
+    }
+   ],
+   "rapidshot-wgc": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "contaminated",
+     "reason": "source presented as few as 96.6/s (during this case) while this path returned 99.2 unique fps; throughput is source-limited"
+    },
+    {
+     "status": "contaminated",
+     "reason": "CPU outside this benchmark's process tree ran at a median 18.8% (peak 30.1%) during this case; absolute timings are inflated. This is a warning signal, not proof of contamination -- the compositor and driver threads are counted here too"
+    },
+    {
+     "status": "contaminated",
+     "reason": "CPU outside this benchmark's process tree ran at a median 17.6% (peak 27.2%) during this case; absolute timings are inflated. This is a warning signal, not proof of contamination -- the compositor and driver threads are counted here too"
+    }
+   ],
+   "rapidshot-wgc-window": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-converter": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "contaminated",
+     "reason": "CPU outside this benchmark's process tree ran at a median 18.3% (peak 22.5%) during this case; absolute timings are inflated. This is a warning signal, not proof of contamination -- the compositor and driver threads are counted here too"
+    }
+   ]
+  }
+ },
+ "environment": {
+  "schema_version": 1,
+  "captured_at": "2026-11-11T11:23:58.435260+00:00",
+  "cpu": {
+   "topology": "hybrid",
+   "processor": "Intel64 Family 6 Model 198 Stepping 2, GenuineIntel",
+   "physical_cores": 14,
+   "logical_processors": 14,
+   "smt_present": false,
+   "packages": 1,
+   "numa_nodes": [
+    0
+   ],
+   "processor_groups": 1,
+   "groups": [
+    {
+     "maximum_processors": 14,
+     "active_processors": 14,
+     "active_mask": 16383
+    }
+   ],
+   "efficiency_classes": [
+    {
+     "efficiency_class": 0,
+     "logical_processors": 8,
+     "physical_cores": 8,
+     "mask": 1020,
+     "mask_hex": "0x3fc",
+     "smt": [
+      false
+     ],
+     "nominal_frequencies_mhz": [
+      3379
+     ],
+     "homogeneous": true
+    },
+    {
+     "efficiency_class": 1,
+     "logical_processors": 6,
+     "physical_cores": 6,
+     "mask": 15363,
+     "mask_hex": "0x3c03",
+     "smt": [
+      false
+     ],
+     "nominal_frequencies_mhz": [
+      3379
+     ],
+     "homogeneous": true
+    }
+   ],
+   "caches": {
+    "L1_data": {
+     "instances": 14,
+     "sizes_bytes": [
+      32768,
+      49152
+     ],
+     "line_size": 64
+    },
+    "L1_instruction": {
+     "instances": 14,
+     "sizes_bytes": [
+      65536
+     ],
+     "line_size": 64
+    },
+    "L2_unified": {
+     "instances": 8,
+     "sizes_bytes": [
+      3145728,
+      4194304
+     ],
+     "line_size": 64
+    },
+    "L3_unified": {
+     "instances": 1,
+     "sizes_bytes": [
+      25165824
+     ],
+     "line_size": 64
+    }
+   },
+   "affinity": {
+    "process_mask": 15363,
+    "system_mask": 16383,
+    "process_mask_hex": "0x3c03",
+    "logical_processors_allowed": 6,
+    "restricted_before_policy": true
+   },
+   "nominal_frequency_note": "nominal clocks recorded at boot; not what any core ran at during a measurement",
+   "available": true
+  },
+  "memory": {
+   "total_physical_mb": 33752.0,
+   "available_physical_mb": 21611.4,
+   "memory_load_percent": 35,
+   "total_pagefile_mb": 66161.6,
+   "available": true
+  },
+  "displays": {
+   "count": 2,
+   "outputs": [
+    {
+     "adapter_luid": 70767,
+     "target_id": 20535,
+     "source_id": 1,
+     "rotation_degrees": 0,
+     "scaling": "identity",
+     "output_technology": "hdmi",
+     "refresh_rate": {
+      "numerator": 17450000,
+      "denominator": 232752,
+      "hz": 74.97250292156458
+     },
+     "source_mode": {
+      "width": 1920,
+      "height": 1080,
+      "desktop_left": 1920,
+      "desktop_top": 0
+     },
+     "signal": {
+      "active_width": 1920,
+      "active_height": 1080,
+      "total_width": 2080,
+      "total_height": 1119,
+      "pixel_rate_hz": 174500000,
+      "vsync_hz": 74.97250292156458
+     },
+     "monitor_name": "HP P24h G5",
+     "edid_manufacturer_id": 3618,
+     "edid_product_code": 14375,
+     "gdi_device_name": "\\\\.\\DISPLAY2",
+     "advanced_color": {
+      "supported": true,
+      "active": false,
+      "limited_by_policy": false,
+      "hdr_supported": false,
+      "hdr_enabled": false,
+      "wide_color_supported": true,
+      "mode": "SDR",
+      "encoding": "RGB",
+      "bits_per_channel": 8
+     },
+     "desktop_rect": [
+      1920,
+      0,
+      3840,
+      1080
+     ],
+     "primary": false,
+     "effective_dpi": [
+      96,
+      96
+     ],
+     "scale_percent": 100
+    },
+    {
+     "adapter_luid": 70767,
+     "target_id": 4160,
+     "source_id": 0,
+     "rotation_degrees": 0,
+     "scaling": "identity",
+     "output_technology": "displayport-external",
+     "refresh_rate": {
+      "numerator": 29700000,
+      "denominator": 297000,
+      "hz": 100.0
+     },
+     "source_mode": {
+      "width": 1920,
+      "height": 1080,
+      "desktop_left": 0,
+      "desktop_top": 0
+     },
+     "signal": {
+      "active_width": 1920,
+      "active_height": 1080,
+      "total_width": 2640,
+      "total_height": 1125,
+      "pixel_rate_hz": 297000000,
+      "vsync_hz": 100.0
+     },
+     "monitor_name": "HP 324pe",
+     "edid_manufacturer_id": 3618,
+     "edid_product_code": 15154,
+     "gdi_device_name": "\\\\.\\DISPLAY1",
+     "advanced_color": {
+      "supported": true,
+      "active": false,
+      "limited_by_policy": false,
+      "hdr_supported": false,
+      "hdr_enabled": false,
+      "wide_color_supported": true,
+      "mode": "SDR",
+      "encoding": "RGB",
+      "bits_per_channel": 8
+     },
+     "desktop_rect": [
+      0,
+      0,
+      1920,
+      1080
+     ],
+     "primary": true,
+     "effective_dpi": [
+      96,
+      96
+     ],
+     "scale_percent": 100
+    }
+   ],
+   "dpi": {
+    "thread_awareness": "unaware",
+    "system_dpi": 96
+   },
+   "adapters": [
+    70767
+   ],
+   "monitors_without_a_path": [],
+   "physical_pixel_mapping": {
+    "mode": [
+     1920,
+     1080
+    ],
+    "desktop": [
+     1920,
+     1080
+    ],
+    "matches": true
+   },
+   "available": true
+  },
+  "display_fingerprint": "90c64d88a67fbdfc",
+  "power": {
+   "ac_line_status": "ac",
+   "battery_percent": null,
+   "battery_present": false,
+   "power_saver_on": false,
+   "power_scheme_guid": "e9a42b02-d5df-448d-aa00-03f14749eb61",
+   "available": true
+  },
+  "os": {
+   "platform": "Windows-11-10.0.26300-SP0",
+   "release": "11",
+   "version": "10.0.26300",
+   "machine": "AMD64"
+  },
+  "hardware": {
+   "gpus": [
+    {
+     "name": "Intel(R) Graphics",
+     "driver_version": "32.0.101.9150",
+     "driver_date": "/Date(1791417600000)/",
+     "pnp_device_id": "PCI\\VEN_8086&DEV_7D67&SUBSYS_8D13103C",
+     "video_mode": "1920 x 1080 x 4294967296 colors"
+    }
+   ],
+   "system": {
+    "Manufacturer": "HP",
+    "Model": "HP ProDesk 4 Tower G1i Desktop AI PC",
+    "TotalPhysicalMemory": 33752010752
+   },
+   "os": {
+    "Caption": "Microsoft Windows 11 Pro",
+    "Version": "10.0.26300",
+    "BuildNumber": "26300"
+   },
+   "memory_modules": [
+    {
+     "capacity_mb": 17179.9,
+     "rated_speed_mhz": 5600,
+     "configured_speed_mhz": 5600,
+     "manufacturer": "Samsung"
+    },
+    {
+     "capacity_mb": 17179.9,
+     "rated_speed_mhz": 5600,
+     "configured_speed_mhz": 5600,
+     "manufacturer": "Samsung"
+    }
+   ],
+   "available": true
+  },
+  "source": {
+   "root": "%USERPROFILE%\\Projects\\Rapidshot\\rapidshot-git",
+   "commit": "c192117ef726f089ae0fad288751ad8e5bd4d083",
+   "branch": "feature/native-duplicator",
+   "dirty": true,
+   "dirty_files": 8,
+   "dirty_fingerprint": "7b1eb3b1f40f58d1",
+   "package_fingerprint": {
+    "sha256": "403b17680e7dae89e9b733e98da5def73af56c90e399d4680f9af83bce3e7527",
+    "files": 62,
+    "bytes": 1103009
+   },
+   "harness_fingerprint": {
+    "sha256": "e416944917cd7e7af0bd24f1fc2b04c22947cc436b3c03207cde81bca1e50651",
+    "files": 20,
+    "bytes": 444826
+   },
+   "native_binary": {
+    "available": true,
+    "is_available": true,
+    "binaries": [
+     {
+      "path": "%USERPROFILE%\\Projects\\Rapidshot\\rapidshot-git\\rapidshot\\_rapidshot_native.pyd",
+      "sha256": "e602ba1bffa08360e1565813a99055865d0fc80a2923fed14d2854695e1531ac",
+      "bytes": 867840,
+      "origin": "source-tree"
+     }
+    ]
+   },
+   "available": true
+  },
+  "runtime": {
+   "python": "3.14.6",
+   "implementation": "CPython",
+   "packages": {
+    "rapidshot": "2.7.0",
+    "numpy": "2.5.4",
+    "opencv-python": "5.0.0.93",
+    "dxcam": "0.3.0",
+    "mss": "10.2.0",
+    "psutil": "7.2.2"
+   },
+   "threads": {
+    "cpu_count": 14,
+    "process_cpu_count": 14,
+    "environment": {
+     "OMP_NUM_THREADS": null,
+     "MKL_NUM_THREADS": null,
+     "OPENBLAS_NUM_THREADS": null,
+     "NUMEXPR_NUM_THREADS": null,
+     "ORT_NUM_THREADS": null
+    },
+    "opencv_threads": 6,
+    "onnxruntime_version": {
+     "available": false,
+     "reason": "ModuleNotFoundError: No module named 'onnxruntime'"
+    }
+   },
+   "available": true
+  },
+  "collected": [
+   "cpu",
+   "memory",
+   "displays",
+   "power",
+   "os",
+   "hardware",
+   "source",
+   "runtime"
+  ],
+  "machine_id": "m-57577a73eda52cf6"
+ },
+ "hdr": {
+  "display": {
+   "supported": true,
+   "active": false,
+   "limited_by_policy": false,
+   "hdr_supported": false,
+   "hdr_enabled": false,
+   "wide_color_supported": true,
+   "mode": "SDR",
+   "encoding": "RGB",
+   "bits_per_channel": 8
+  },
+  "capture": {
+   "dxgi_format": 87,
+   "format": "B8G8R8A8_UNORM",
+   "hdr": false,
+   "color_space": "srgb",
+   "sdr_white_nits": null,
+   "width": 1920,
+   "height": 1080
+  }
+ },
+ "cross_adapter": {
+  "supported": true,
+  "representative": false,
+  "source": "Intel(R) Graphics",
+  "destination": "Microsoft Basic Render Driver",
+  "source_row_major_texture": true,
+  "destination_row_major_texture": true,
+  "copy_ms_min": 0.5858,
+  "copy_ms_median": 0.6504,
+  "throughput_mb_s": 13503.168743598497
+ },
+ "memory": {
+  "seconds": 8.0,
+  "summary": {
+   "mss": {
+    "static": {
+     "fps": 49.936,
+     "working_set_mb": 72.06,
+     "capture_mb": 20.5,
+     "growth_mb_per_s": 0.0012
+    },
+    "scroll": {
+     "fps": 49.937,
+     "working_set_mb": 71.41,
+     "capture_mb": 20.5,
+     "growth_mb_per_s": 0.0012
+    },
+    "motion": {
+     "fps": 49.948,
+     "working_set_mb": 71.52,
+     "capture_mb": 20.49,
+     "growth_mb_per_s": 0.0012
+    }
+   },
+   "dxcam": {
+    "static": {
+     "fps": 99.75,
+     "working_set_mb": 95.38,
+     "capture_mb": 9.51,
+     "growth_mb_per_s": 0.0441
+    },
+    "scroll": {
+     "fps": 98.875,
+     "working_set_mb": 95.33,
+     "capture_mb": 10.19,
+     "growth_mb_per_s": 0.0821
+    },
+    "motion": {
+     "fps": 99.702,
+     "working_set_mb": 95.13,
+     "capture_mb": 9.92,
+     "growth_mb_per_s": 0.044
+    }
+   },
+   "rapidshot": {
+    "static": {
+     "fps": 100.035,
+     "working_set_mb": 119.81,
+     "capture_mb": 29.05,
+     "growth_mb_per_s": 0.0266
+    },
+    "scroll": {
+     "fps": 99.753,
+     "working_set_mb": 120.14,
+     "capture_mb": 28.68,
+     "growth_mb_per_s": 0.0339
+    },
+    "motion": {
+     "fps": 100.049,
+     "working_set_mb": 119.91,
+     "capture_mb": 29.09,
+     "growth_mb_per_s": 0.0276
+    }
+   },
+   "rapidshot-frame": {
+    "static": {
+     "fps": 100.213,
+     "working_set_mb": 92.45,
+     "capture_mb": 1.09,
+     "growth_mb_per_s": 0.0341
+    },
+    "scroll": {
+     "fps": 99.261,
+     "working_set_mb": 92.26,
+     "capture_mb": 1.56,
+     "growth_mb_per_s": 0.0335
+    },
+    "motion": {
+     "fps": 100.185,
+     "working_set_mb": 92.52,
+     "capture_mb": 1.66,
+     "growth_mb_per_s": 0.034
+    }
+   }
+  },
+  "skipped": {}
+ },
+ "duration_s": 461
+}

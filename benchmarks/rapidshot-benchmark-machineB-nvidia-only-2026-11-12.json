@@ -1,0 +1,1317 @@
+{
+ "schema": "rapidshot-benchmark/1",
+ "passes": 5,
+ "recorded": "2026-11-11T22:48:02+00:00",
+ "preflight": {
+  "rapidshot": "2.7.1",
+  "python": "3.13.15",
+  "windows": "10.0.26300",
+  "windows_release": "11",
+  "cpu": "Intel(R) Core(TM) i9-14900HX",
+  "native": {
+   "version": "0.4.0",
+   "stage": "6-m3b-d3d12-preprocess",
+   "source": "development build (rapidshot/_rapidshot_native)"
+  },
+  "test_source": "C:\\rapidshot-nv\\native\\target\\release\\latency_source.exe",
+  "topology": "single",
+  "adapters": [
+   "NVIDIA GeForce RTX 4060 Laptop GPU"
+  ],
+  "capture_adapters": [
+   "NVIDIA GeForce RTX 4060 Laptop GPU"
+  ],
+  "installed": {
+   "mss": true,
+   "dxcam": true,
+   "winrt": true,
+   "cupy": true,
+   "cv2": true,
+   "psutil": true
+  },
+  "versions": {
+   "mss": "10.2.0",
+   "dxcam": "0.3.0"
+  },
+  "wgc": true,
+  "display": {
+   "width": 2560,
+   "height": 1600,
+   "refresh_hz": 165
+  }
+ },
+ "skipped": {},
+ "pixel_age": {
+  "target": "cuda",
+  "summary": {
+   "mss": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 0,
+    "flags": [],
+    "reasons": [],
+    "unique_fps": {
+     "median": 40.61287857862399,
+     "min": 38.85896193495568,
+     "max": 41.19265827501457
+    },
+    "age_p50_ms": {
+     "median": 33.6657,
+     "min": 33.3786,
+     "max": 34.5143
+    },
+    "age_p95_ms": {
+     "median": 36.477,
+     "min": 35.1182,
+     "max": 40.592
+    },
+    "cpu_ms_per_frame": {
+     "median": 13.589015151515152,
+     "min": 13.173076923076923,
+     "max": 14.226466049382717
+    }
+   },
+   "dxcam": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 0,
+    "flags": [],
+    "reasons": [],
+    "unique_fps": {
+     "median": 135.06876749567135,
+     "min": 133.5148619211798,
+     "max": 138.30101241601727
+    },
+    "age_p50_ms": {
+     "median": 22.2554,
+     "min": 21.8666,
+     "max": 22.3471
+    },
+    "age_p95_ms": {
+     "median": 25.9247,
+     "min": 24.7197,
+     "max": 25.9501
+    },
+    "cpu_ms_per_frame": {
+     "median": 9.202981651376147,
+     "min": 9.135289990645463,
+     "max": 9.541553748870822
+    }
+   },
+   "dxcam-wgc": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 0,
+    "flags": [],
+    "reasons": [],
+    "unique_fps": {
+     "median": 135.27803946609956,
+     "min": 134.15867315982882,
+     "max": 138.68087451845764
+    },
+    "age_p50_ms": {
+     "median": 22.6898,
+     "min": 22.4104,
+     "max": 22.8333
+    },
+    "age_p95_ms": {
+     "median": 25.9603,
+     "min": 25.7864,
+     "max": 26.014
+    },
+    "cpu_ms_per_frame": {
+     "median": 9.192004504504505,
+     "min": 8.801605504587156,
+     "max": 9.616503724394786
+    }
+   },
+   "rapidshot-cpu": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "contaminated",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 1,
+    "flags": [
+     "source"
+    ],
+    "reasons": [
+     "source presented as few as 158.2/s (during this case) while this path returned 159.1 unique fps; throughput is source-limited"
+    ],
+    "unique_fps": {
+     "median": 161.95019019477814,
+     "min": 159.05036561583842,
+     "max": 162.4801652341188
+    },
+    "age_p50_ms": {
+     "median": 18.449,
+     "min": 18.2426,
+     "max": 18.5441
+    },
+    "age_p95_ms": {
+     "median": 20.971,
+     "min": 20.4883,
+     "max": 21.5921
+    },
+    "cpu_ms_per_frame": {
+     "median": 7.981288580246914,
+     "min": 7.65625,
+     "max": 8.30960329929301
+    }
+   },
+   "rapidshot-wgc": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 0,
+    "flags": [],
+    "reasons": [],
+    "unique_fps": {
+     "median": 161.97311448800002,
+     "min": 158.5231389761349,
+     "max": 163.03659951726164
+    },
+    "age_p50_ms": {
+     "median": 18.5334,
+     "min": 18.2115,
+     "max": 18.5582
+    },
+    "age_p95_ms": {
+     "median": 23.5413,
+     "min": 22.2974,
+     "max": 23.7086
+    },
+    "cpu_ms_per_frame": {
+     "median": 7.746647509578544,
+     "min": 7.289204097714736,
+     "max": 7.981288580246914
+    }
+   },
+   "rapidshot-wgc-window": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 0,
+    "flags": [],
+    "reasons": [],
+    "unique_fps": {
+     "median": 162.5446866713925,
+     "min": 155.6611388937511,
+     "max": 162.84302984162179
+    },
+    "age_p50_ms": {
+     "median": 18.4777,
+     "min": 18.1153,
+     "max": 18.5759
+    },
+    "age_p95_ms": {
+     "median": 21.6414,
+     "min": 21.3007,
+     "max": 22.2405
+    },
+    "cpu_ms_per_frame": {
+     "median": 7.530265180630284,
+     "min": 7.273274478330658,
+     "max": 7.986377590176516
+    }
+   },
+   "rapidshot-cupy": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 0,
+    "flags": [],
+    "reasons": [],
+    "unique_fps": {
+     "median": 148.74561200458376,
+     "min": 141.26436351565397,
+     "max": 155.64228192188318
+    },
+    "age_p50_ms": {
+     "median": 21.9624,
+     "min": 21.8012,
+     "max": 22.0013
+    },
+    "age_p95_ms": {
+     "median": 22.8642,
+     "min": 22.6897,
+     "max": 23.7682
+    },
+    "cpu_ms_per_frame": {
+     "median": 6.6451149425287355,
+     "min": 6.420545746388443,
+     "max": 6.777426160337553
+    }
+   },
+   "rapidshot-direct": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 0,
+    "flags": [],
+    "reasons": [],
+    "unique_fps": {
+     "median": 87.11972163424169,
+     "min": 82.75611256841799,
+     "max": 87.47299817884277
+    },
+    "age_p50_ms": {
+     "median": 19.1428,
+     "min": 18.9422,
+     "max": 19.212
+    },
+    "age_p95_ms": {
+     "median": 20.1272,
+     "min": 19.5117,
+     "max": 20.2349
+    },
+    "cpu_ms_per_frame": {
+     "median": 6.209648493543759,
+     "min": 5.844645550527903,
+     "max": 6.450892857142857
+    }
+   },
+   "rapidshot-converter": {
+    "passes": 5,
+    "statuses": [
+     "contaminated",
+     "passed",
+     "contaminated",
+     "contaminated",
+     "contaminated"
+    ],
+    "flagged": 4,
+    "flags": [
+     "source"
+    ],
+    "reasons": [
+     "source presented as few as 163.9/s (during this case) while this path returned 164.8 unique fps; throughput is source-limited",
+     "source presented as few as 164.7/s (during this case) while this path returned 164.7 unique fps; throughput is source-limited",
+     "source presented as few as 164.0/s (during this case) while this path returned 164.6 unique fps; throughput is source-limited"
+    ],
+    "unique_fps": {
+     "median": 164.59471457304412,
+     "min": 164.03859677103188,
+     "max": 164.81932403292072
+    },
+    "age_p50_ms": {
+     "median": 13.9036,
+     "min": 13.7144,
+     "max": 13.9249
+    },
+    "age_p95_ms": {
+     "median": 14.3996,
+     "min": 14.1761,
+     "max": 14.4747
+    },
+    "cpu_ms_per_frame": {
+     "median": 0.9372627182991647,
+     "min": 0.7973153084539223,
+     "max": 0.9721168437025797
+    }
+   }
+  },
+  "verify": {
+   "mss": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "dxcam": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "dxcam-wgc": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-cpu": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-wgc": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-wgc-window": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-cupy": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-direct": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-converter": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ]
+  },
+  "statuses": {
+   "mss": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "dxcam": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "dxcam-wgc": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-cpu": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "contaminated",
+     "reason": "source presented as few as 158.2/s (during this case) while this path returned 159.1 unique fps; throughput is source-limited"
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-wgc": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-wgc-window": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-cupy": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-direct": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-converter": [
+    {
+     "status": "contaminated",
+     "reason": "source presented as few as 163.9/s (during this case) while this path returned 164.8 unique fps; throughput is source-limited"
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "contaminated",
+     "reason": "source presented as few as 164.7/s (during this case) while this path returned 164.7 unique fps; throughput is source-limited"
+    },
+    {
+     "status": "contaminated",
+     "reason": "source presented as few as 164.0/s (during this case) while this path returned 164.6 unique fps; throughput is source-limited"
+    },
+    {
+     "status": "contaminated",
+     "reason": "source presented as few as 164.0/s (during this case) while this path returned 164.6 unique fps; throughput is source-limited"
+    }
+   ]
+  }
+ },
+ "environment": {
+  "schema_version": 1,
+  "captured_at": "2026-11-11T22:34:04.591977+00:00",
+  "cpu": {
+   "topology": "hybrid",
+   "processor": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+   "physical_cores": 24,
+   "logical_processors": 32,
+   "smt_present": true,
+   "packages": 1,
+   "numa_nodes": [
+    0
+   ],
+   "processor_groups": 1,
+   "groups": [
+    {
+     "maximum_processors": 32,
+     "active_processors": 32,
+     "active_mask": 4294967295
+    }
+   ],
+   "efficiency_classes": [
+    {
+     "efficiency_class": 0,
+     "logical_processors": 16,
+     "physical_cores": 16,
+     "mask": 4294901760,
+     "mask_hex": "0xffff0000",
+     "smt": [
+      false
+     ],
+     "nominal_frequencies_mhz": [
+      2419
+     ],
+     "homogeneous": true
+    },
+    {
+     "efficiency_class": 1,
+     "logical_processors": 16,
+     "physical_cores": 8,
+     "mask": 65535,
+     "mask_hex": "0xffff",
+     "smt": [
+      true
+     ],
+     "nominal_frequencies_mhz": [
+      2419
+     ],
+     "homogeneous": true
+    }
+   ],
+   "caches": {
+    "L1_data": {
+     "instances": 24,
+     "sizes_bytes": [
+      32768,
+      49152
+     ],
+     "line_size": 64
+    },
+    "L1_instruction": {
+     "instances": 24,
+     "sizes_bytes": [
+      32768,
+      65536
+     ],
+     "line_size": 64
+    },
+    "L2_unified": {
+     "instances": 12,
+     "sizes_bytes": [
+      2097152,
+      4194304
+     ],
+     "line_size": 64
+    },
+    "L3_unified": {
+     "instances": 1,
+     "sizes_bytes": [
+      37748736
+     ],
+     "line_size": 64
+    }
+   },
+   "affinity": {
+    "process_mask": 65532,
+    "system_mask": 4294967295,
+    "process_mask_hex": "0xfffc",
+    "logical_processors_allowed": 14,
+    "restricted_before_policy": true
+   },
+   "nominal_frequency_note": "nominal clocks recorded at boot; not what any core ran at during a measurement",
+   "available": true
+  },
+  "memory": {
+   "total_physical_mb": 34049.4,
+   "available_physical_mb": 21963.8,
+   "memory_load_percent": 35,
+   "total_pagefile_mb": 43176.2,
+   "available": true
+  },
+  "displays": {
+   "count": 1,
+   "outputs": [
+    {
+     "adapter_luid": 90819,
+     "target_id": 4357,
+     "source_id": 0,
+     "rotation_degrees": 0,
+     "scaling": "identity",
+     "output_technology": "displayport-embedded",
+     "refresh_rate": {
+      "numerator": 77733000,
+      "denominator": 471104,
+      "hz": 165.00178304578182
+     },
+     "source_mode": {
+      "width": 2560,
+      "height": 1600,
+      "desktop_left": 0,
+      "desktop_top": 0
+     },
+     "signal": {
+      "active_width": 2560,
+      "active_height": 1600,
+      "total_width": 2720,
+      "total_height": 1732,
+      "pixel_rate_hz": 777330000,
+      "vsync_hz": 165.00178304578182
+     },
+     "monitor_name": "",
+     "edid_manufacturer_id": 44806,
+     "edid_product_code": 52651,
+     "gdi_device_name": "\\\\.\\DISPLAY1",
+     "advanced_color": {
+      "supported": true,
+      "active": false,
+      "limited_by_policy": false,
+      "hdr_supported": false,
+      "hdr_enabled": false,
+      "wide_color_supported": true,
+      "mode": "SDR",
+      "encoding": "RGB",
+      "bits_per_channel": 8
+     },
+     "desktop_rect": [
+      0,
+      0,
+      2560,
+      1600
+     ],
+     "primary": true,
+     "effective_dpi": [
+      144,
+      144
+     ],
+     "scale_percent": 150
+    }
+   ],
+   "dpi": {
+    "thread_awareness": "per-monitor",
+    "system_dpi": 144
+   },
+   "adapters": [
+    90819
+   ],
+   "monitors_without_a_path": [],
+   "physical_pixel_mapping": {
+    "mode": [
+     2560,
+     1600
+    ],
+    "desktop": [
+     2560,
+     1600
+    ],
+    "matches": true
+   },
+   "available": true
+  },
+  "display_fingerprint": "da3baf9a39c29016",
+  "power": {
+   "ac_line_status": "ac",
+   "battery_percent": 80,
+   "battery_present": true,
+   "power_saver_on": false,
+   "power_scheme_guid": "381b4222-f694-41f0-9685-ff5bb260df2e",
+   "available": true
+  },
+  "os": {
+   "platform": "Windows-11-10.0.26300-SP0",
+   "release": "11",
+   "version": "10.0.26300",
+   "machine": "AMD64"
+  },
+  "hardware": {
+   "gpus": [
+    {
+     "name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+     "driver_version": "32.0.16.2101",
+     "driver_date": "/Date(1792368000000)/",
+     "pnp_device_id": "PCI\\VEN_10DE&DEV_28E0&SUBSYS_17311025",
+     "video_mode": "2560 x 1600 x 4294967296 colors"
+    }
+   ],
+   "system": {
+    "Manufacturer": "Acer",
+    "Model": "Predator PHN16-72",
+    "TotalPhysicalMemory": 34049417216
+   },
+   "os": {
+    "Caption": "Microsoft Windows 11 Pro",
+    "Version": "10.0.26300",
+    "BuildNumber": "26300"
+   },
+   "memory_modules": [
+    {
+     "capacity_mb": 34359.7,
+     "rated_speed_mhz": 5600,
+     "configured_speed_mhz": 5600,
+     "manufacturer": "Crucial Technology"
+    }
+   ],
+   "available": true
+  },
+  "source": {
+   "root": "C:\\rapidshot-nv",
+   "git": {
+    "available": false,
+    "reason": "RuntimeError: git rev-parse HEAD failed: fatal: not a git repository (or any of the parent directories): .git"
+   },
+   "package_fingerprint": {
+    "sha256": "ce6b70dc64705ddb1678d29ae8cc7205ea23864a96d08aac5823e852d83bbcf9",
+    "files": 62,
+    "bytes": 1112331
+   },
+   "harness_fingerprint": {
+    "sha256": "e416944917cd7e7af0bd24f1fc2b04c22947cc436b3c03207cde81bca1e50651",
+    "files": 20,
+    "bytes": 444826
+   },
+   "native_binary": {
+    "available": true,
+    "is_available": true,
+    "binaries": [
+     {
+      "path": "C:\\rapidshot-nv\\rapidshot\\_rapidshot_native.pyd",
+      "sha256": "f91c8381d3366235a7f4a0410b80a8ef2a5ca95f9d80ca7c9d3fb487a4a7e350",
+      "bytes": 867840,
+      "origin": "source-tree"
+     }
+    ]
+   },
+   "available": true
+  },
+  "runtime": {
+   "python": "3.13.15",
+   "implementation": "CPython",
+   "packages": {
+    "rapidshot": "2.7.1",
+    "numpy": "2.5.4",
+    "opencv-python": "5.0.0.93",
+    "dxcam": "0.3.0",
+    "mss": "10.2.0",
+    "pillow": "13.0.0",
+    "psutil": "7.2.2"
+   },
+   "threads": {
+    "cpu_count": 32,
+    "process_cpu_count": 32,
+    "environment": {
+     "OMP_NUM_THREADS": null,
+     "MKL_NUM_THREADS": null,
+     "OPENBLAS_NUM_THREADS": null,
+     "NUMEXPR_NUM_THREADS": null,
+     "ORT_NUM_THREADS": null
+    },
+    "opencv_threads": 14,
+    "onnxruntime_version": {
+     "available": false,
+     "reason": "ModuleNotFoundError: No module named 'onnxruntime'"
+    }
+   },
+   "available": true
+  },
+  "collected": [
+   "cpu",
+   "memory",
+   "displays",
+   "power",
+   "os",
+   "hardware",
+   "source",
+   "runtime"
+  ],
+  "machine_id": "m-bb405744cbdb3043"
+ },
+ "hdr": {
+  "display": {
+   "supported": true,
+   "active": false,
+   "limited_by_policy": false,
+   "hdr_supported": false,
+   "hdr_enabled": false,
+   "wide_color_supported": true,
+   "mode": "SDR",
+   "encoding": "RGB",
+   "bits_per_channel": 8
+  },
+  "capture": {
+   "dxgi_format": 87,
+   "format": "B8G8R8A8_UNORM",
+   "hdr": false,
+   "color_space": "srgb",
+   "sdr_white_nits": null,
+   "width": 2560,
+   "height": 1600
+  }
+ },
+ "cross_adapter": {
+  "supported": true,
+  "representative": false,
+  "source": "NVIDIA GeForce RTX 4060 Laptop GPU",
+  "destination": "Microsoft Basic Render Driver",
+  "source_row_major_texture": false,
+  "destination_row_major_texture": true,
+  "copy_ms_min": 0.6679999999999999,
+  "copy_ms_median": 0.7397,
+  "throughput_mb_s": 11841.55127245509
+ },
+ "call_duration": {
+  "summary": {
+   "mss": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 0,
+    "flags": [],
+    "reasons": [],
+    "fps": {
+     "median": 38.2,
+     "min": 37.5,
+     "max": 38.3
+    },
+    "call_p50_ms": {
+     "median": 25.006,
+     "min": 24.907,
+     "max": 25.399
+    },
+    "cpu_ms_per_frame": {
+     "median": 13.836601307189543,
+     "min": 13.548172757475085,
+     "max": 14.245098039215685
+    }
+   },
+   "dxcam": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 0,
+    "flags": [],
+    "reasons": [],
+    "fps": {
+     "median": 129.1,
+     "min": 124.7,
+     "max": 130.8
+    },
+    "call_p50_ms": {
+     "median": 7.139,
+     "min": 6.974,
+     "max": 7.224
+    },
+    "cpu_ms_per_frame": {
+     "median": 9.3,
+     "min": 9.136141038197845,
+     "max": 9.566380133715377
+    }
+   },
+   "rapidshot-cpu": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 0,
+    "flags": [],
+    "reasons": [],
+    "fps": {
+     "median": 136.8,
+     "min": 131.5,
+     "max": 137.5
+    },
+    "call_p50_ms": {
+     "median": 6.057,
+     "min": 6.033,
+     "max": 6.063
+    },
+    "cpu_ms_per_frame": {
+     "median": 7.277625570776256,
+     "min": 7.024523160762943,
+     "max": 7.512773722627737
+    }
+   },
+   "rapidshot-cupy": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 0,
+    "flags": [],
+    "reasons": [],
+    "fps": {
+     "median": 139.6,
+     "min": 127.2,
+     "max": 140.7
+    },
+    "call_p50_ms": {
+     "median": 6.463,
+     "min": 6.421,
+     "max": 6.577
+    },
+    "cpu_ms_per_frame": {
+     "median": 6.6302596239928375,
+     "min": 6.216110019646365,
+     "max": 6.731108930323847
+    }
+   },
+   "rapidshot-converter": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 0,
+    "flags": [],
+    "reasons": [],
+    "fps": {
+     "median": 157.1,
+     "min": 152.8,
+     "max": 161.8
+    },
+    "call_p50_ms": {
+     "median": 6.062,
+     "min": 6.061,
+     "max": 6.066
+    },
+    "cpu_ms_per_frame": {
+     "median": 0.5688291139240507,
+     "min": 0.41849148418491483,
+     "max": 0.6385936222403925
+    }
+   }
+  },
+  "verify": {
+   "mss": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "dxcam": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-cpu": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-cupy": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-converter": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ]
+  },
+  "statuses": {
+   "mss": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "dxcam": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-cpu": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-cupy": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-converter": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ]
+  }
+ },
+ "memory": {
+  "seconds": 8.0,
+  "summary": {
+   "mss": {
+    "static": {
+     "fps": 38.061,
+     "working_set_mb": 83.74,
+     "capture_mb": 32.81,
+     "growth_mb_per_s": 0.0011
+    },
+    "scroll": {
+     "fps": 33.92,
+     "working_set_mb": 83.43,
+     "capture_mb": 32.81,
+     "growth_mb_per_s": 0.0011
+    },
+    "motion": {
+     "fps": 34.188,
+     "working_set_mb": 84.08,
+     "capture_mb": 32.81,
+     "growth_mb_per_s": 0.0011
+    }
+   },
+   "dxcam": {
+    "static": {
+     "fps": 166.602,
+     "working_set_mb": 104.53,
+     "capture_mb": 25.49,
+     "growth_mb_per_s": 0.0651
+    },
+    "scroll": {
+     "fps": 166.682,
+     "working_set_mb": 105.32,
+     "capture_mb": 25.59,
+     "growth_mb_per_s": 0.0644
+    },
+    "motion": {
+     "fps": 171.267,
+     "working_set_mb": 105.37,
+     "capture_mb": 25.61,
+     "growth_mb_per_s": 0.0826
+    }
+   },
+   "rapidshot": {
+    "static": {
+     "fps": 148.997,
+     "working_set_mb": 155.43,
+     "capture_mb": 70.62,
+     "growth_mb_per_s": 0.0722
+    },
+    "scroll": {
+     "fps": 151.235,
+     "working_set_mb": 155.33,
+     "capture_mb": 70.5,
+     "growth_mb_per_s": 0.0353
+    },
+    "motion": {
+     "fps": 153.539,
+     "working_set_mb": 155.26,
+     "capture_mb": 70.48,
+     "growth_mb_per_s": 0.0336
+    }
+   },
+   "rapidshot-frame": {
+    "static": {
+     "fps": 164.002,
+     "working_set_mb": 85.86,
+     "capture_mb": 1.46,
+     "growth_mb_per_s": 0.0422
+    },
+    "scroll": {
+     "fps": 164.37,
+     "working_set_mb": 86.29,
+     "capture_mb": 1.39,
+     "growth_mb_per_s": 0.0497
+    },
+    "motion": {
+     "fps": 163.65,
+     "working_set_mb": 86.2,
+     "capture_mb": 1.61,
+     "growth_mb_per_s": 0.0428
+    }
+   }
+  },
+  "skipped": {}
+ },
+ "duration_s": 859
+}

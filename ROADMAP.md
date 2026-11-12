@@ -216,9 +216,10 @@ So the matrix below is about what has been **run**, not about what is supported 
 | Intel iGPU, single adapter | Verified — Machine A |
 | NVIDIA dGPU, single adapter, extension built | Verified — Machine B, extensively |
 | NVIDIA dGPU, single adapter, **no extension** | Verified 2026-08-06: 269 passed, 44 skipped, no failures |
-| **Any AMD GPU** | **Never run.** No AMD hardware has touched this project |
+| Intel Lunar Lake laptop (Arc 130V), single adapter | Verified 2026-11-11: full suite, rotation at 0/90/180/270°, five-pass benchmark |
+| **Any AMD GPU capturing** | **Never run.** The only AMD part so far (below) has no screen wired to it |
 | **Intel + NVIDIA Optimus** | **Verified 2026-08-22 on Machine B**, and again 2026-09-14 for the 2.6 paths: 931 passed, 12 skipped, 0 failed, driver 616.92. Capture on the iGPU, cross-adapter transfer to the dGPU byte-exact; `TensorTransfer` and the capture-ordering fence both hold against the discrete GPU. Needed one NVIDIA control-panel setting to reach; see above |
-| **AMD switchable hybrid** | **Never run.** No AMD hardware has touched this project |
+| **AMD switchable hybrid** | **Partly, 2026-11-11**: ThinkPad E580, Intel UHD 620 + Radeon 500, muxless. With Python on the Radeon every duplication was refused (KB3019314), which is what the render-offload diagnosis in 2.7.2 names; capture itself runs on the Intel GPU there |
 | Headless / IDD virtual display | Never run — § 6.2 |
 
 **Machine B has now run as a genuine Optimus system, and getting there took a day. The setting that mattered is one line; everything else is the elimination that found it.**
@@ -2839,6 +2840,18 @@ GpuConverter(output_color_space="srgb", tone_map="auto")
 folded into the existing fused dispatch, not bolted on afterwards. § 7.2 refused
 `RGBA16F` input precisely because linear light needs a tone-map decision nobody
 had made; this is where that decision gets made.
+
+> **2026-11-11: the panel run is built, not yet run.** `kits/rapidshot-hdr-tv-2026-11-11`
+> runs it on the Lunar Lake laptop (Arc 130V, full HDR support) driving a Samsung
+> HDR TV. `tools/hdr-check.exe pattern` draws patches of known value -- scRGB
+> through an FP16 swap chain up to 1000 nits and outside sRGB's gamut, exact sRGB
+> bytes through a BGRA8 one, full-screen and inset -- and
+> `kit/rapidshot_hdr_check.py` checks `grab_frame()`, `grab()`, `GpuConverter`
+> (clip, auto, NV12) on DDA and WGC, and `start()` across an HDR toggle, against
+> a reference in that file; run again at the lowest and highest SDR white. It
+> covers this list except HDR *video* proper: the full-screen FP16 swap chain is
+> the path a player uses, but no decoded HDR video is played. NV12 now takes a
+> tone map (SDR for an encoder); P010 / HDR10 is still not decided.
 
 **Do not claim HDR until it has run on an HDR panel.** § 2's vendor-coverage rule
 applies with force here, because a wrong colour transform produces a plausible
