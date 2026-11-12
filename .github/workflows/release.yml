@@ -221,8 +221,11 @@ jobs:
           version = os.environ["GITHUB_REF_NAME"].lstrip("v")
           text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
 
-          # Everything between this version's heading and the next one.
-          pattern = rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## \[|\Z)"
+          # Everything between this version's heading and the next one. The
+          # heading may name the release after its date:
+          #   ## [2.7.2] - 2026-11-12: Faster than DXcam on every PC measured
+          # and that text becomes the release title.
+          pattern = rf"^## \[{re.escape(version)}\]([^\n]*)\n(.*?)(?=^## \[|\Z)"
           match = re.search(pattern, text, re.S | re.M)
           if not match:
               raise SystemExit(
@@ -231,9 +234,13 @@ jobs:
                   "rather than publishing an empty one."
               )
 
+          title = re.sub(r"^\s*-\s*\d{4}-\d{2}-\d{2}\s*", "", match.group(1))
+          title = title.lstrip(":").strip()
+          pathlib.Path("release-title.txt").write_text(title, encoding="utf-8")
           pathlib.Path("release-notes.md").write_text(
-              match.group(1).strip() + "\n", encoding="utf-8")
-          print(f"extracted {len(match.group(1).split(chr(10)))} lines of notes")
+              match.group(2).strip() + "\n", encoding="utf-8")
+          print(f"title: {title or '(none)'}")
+          print(f"extracted {len(match.group(2).split(chr(10)))} lines of notes")
 
       - name: Create the release
         env:
@@ -241,7 +248,11 @@ jobs:
         run: |
           # Runs only after the PyPI upload succeeded, so a release is never
           # announced for a version that failed to publish.
+          title="RapidShot $GITHUB_REF_NAME"
+          if [ -s release-title.txt ]; then
+            title="$title: $(cat release-title.txt)"
+          fi
           gh release create "$GITHUB_REF_NAME" \
-            --title "RapidShot $GITHUB_REF_NAME" \
+            --title "$title" \
             --notes-file release-notes.md \
             dist/*.whl dist/*.tar.gz dist/*.cdx.json

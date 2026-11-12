@@ -58,6 +58,10 @@ _TONE_MAPS = {"none": None, "clip": "clip", "auto": "max_rgb"}
 _OUTPUT_COLOR_SPACES = ("srgb",)
 #: The native release whose GpuConverter12.process takes a tone map.
 _TONE_MAP_SINCE = "0.3.0"
+#: NV12 output accepts a tone map (an HDR desktop to SDR for an encoder) from
+#: this version; older builds refuse it. Checked where it is asked for, not as
+#: an install floor: nothing else needs this version.
+_NV12_TONE_MAP_SINCE = "0.4.0"
 
 
 def _takes_tone_map(gpu_converter) -> bool:
@@ -714,11 +718,21 @@ class GpuConverter:
                 raise ValueError(
                     f"tone_map={tone_map!r} converts scRGB to sRGB and allow_linear=True "
                     "passes it through unchanged; choose one")
-            if pixel_format is not None:
+            # NV12 is 8-bit SDR for an encoder, so a tone map to sRGB is exactly
+            # the decision it needs. P010 is where HDR10 (PQ + BT.2020) belongs.
+            if pixel_format is not None and pixel_format.lower() != "nv12":
                 raise ValueError(
                     f"tone_map={tone_map!r} is not available with pixel_format="
-                    f"{pixel_format!r}: encoding HDR for an encoder (SDR, or PQ + BT.2020 "
-                    "for HDR10) is a decision NV12/P010 output has not made")
+                    f"{pixel_format!r}: a 10-bit encoder input is where HDR10 (PQ + "
+                    "BT.2020) belongs, which P010 output has not implemented. Use "
+                    "pixel_format='nv12' for SDR")
+            installed = native.extension_version()
+            if (pixel_format is not None and installed is not None
+                    and native._version_tuple(installed) < native._version_tuple(_NV12_TONE_MAP_SINCE)):
+                raise RuntimeError(
+                    f"tone_map={tone_map!r} with pixel_format='nv12' requires rapidshot-native >= "
+                    f"{_NV12_TONE_MAP_SINCE}; the installed extension is {installed}. Upgrade it, or "
+                    "rebuild it if you build it yourself.")
             if not _takes_tone_map(gpu_converter):
                 installed = native.extension_version() or "an unknown version"
                 raise RuntimeError(
@@ -853,15 +867,17 @@ class GpuConverter:
         """
         if getattr(frame, "color_space", "srgb") != "scrgb":
             return
-        if self._tone_map != "none" and not yuv:
+        # A tone map is only accepted with NV12 among the YUV formats (see
+        # __init__), and it makes the frame sRGB before the matrix.
+        if self._tone_map != "none":
             return
         if yuv:
             raise ValueError(
                 f"this frame is linear scRGB from an HDR desktop "
-                f"({frame.pixel_format}), which NV12/P010 cannot encode: a Y'CbCr "
-                "matrix expects gamma-encoded values, and choosing between tone "
-                "mapping and HDR10 has not been done. Turn HDR off, or use grab(), "
-                "which converts HDR to sRGB.")
+                f"({frame.pixel_format}), which NV12/P010 cannot encode as it is: a "
+                "Y'CbCr matrix expects gamma-encoded values. Pass tone_map='clip' or "
+                "'auto' with pixel_format='nv12' to encode it as SDR, turn HDR off, "
+                "or use grab(), which converts HDR to sRGB.")
         if self._allow_linear and dtype in ("float16", "float32"):
             return
         raise ValueError(

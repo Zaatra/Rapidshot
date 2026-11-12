@@ -945,6 +945,14 @@ def capabilities(probe_gpu: bool = False) -> Dict[str, Any]:
         ]
         capture["cross_adapter_required_for_gpu_tensor"] = (
             getattr(topology, "kind", None) == "hybrid")
+        # A display connected to one GPU and listed under the one this
+        # process runs on: Desktop Duplication is refused, and the fix is the
+        # per-app GPU setting, not anything in firmware.
+        capture["render_offloads"] = [
+            {"output": o.output, "wired_to": o.wired_to,
+             "listed_under": o.listed_under}
+            for o in getattr(topology, "render_offloads", ()) or ()
+        ]
     except Exception as exc:
         capture["error"] = f"{type(exc).__name__}: {exc}"
     report["capture"] = capture
@@ -1018,12 +1026,29 @@ def diagnose(probe_gpu: bool = False) -> str:
         lines.append(f"  topology  : {capture.get('kind')} "
                      f"({capture.get('adapter_count')} adapters, "
                      f"{capture.get('display_adapters')} driving a display)")
+        offloads = capture.get("render_offloads") or []
+        listing_only = {o["listed_under"] for o in offloads}
         for adapter in capture.get("adapters", []):
             outputs = adapter.get("outputs")
+            listed = (", listed for this process, not connected"
+                      if adapter.get("description") in listing_only else "")
             lines.append(f"    - {adapter.get('description')} "
                          f"({adapter.get('vendor')}, {outputs} output"
-                         f"{'' if outputs == 1 else 's'})")
-        if capture.get("cross_adapter_required_for_gpu_tensor"):
+                         f"{'' if outputs == 1 else 's'}{listed})")
+        if offloads:
+            lines.append("  NOTE: this process runs on a different GPU from the one "
+                         "the display is connected to,")
+            lines.append("        so Desktop Duplication is refused (Windows.Graphics."
+                         "Capture still works).")
+            for o in offloads:
+                lines.append(f"        {o['output']}: connected to {o['wired_to']}, "
+                             f"listed under {o['listed_under']}")
+            program = getattr(sys, "_base_executable", None) or sys.executable
+            lines.append("        Fix: Settings > System > Display > Graphics, set")
+            lines.append(f"        {program}")
+            lines.append("        to the GPU the display is connected to "
+                         "('Power saving' for an integrated one).")
+        elif capture.get("cross_adapter_required_for_gpu_tensor"):
             lines.append("  NOTE: hybrid system. Capture runs on the display "
                          "adapter, so a GPU tensor")
             lines.append("        must cross adapters before CUDA can import it.")

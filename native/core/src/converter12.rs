@@ -35,11 +35,16 @@ use windows::core::{Interface, PCSTR};
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Graphics::Direct3D::Fxc::{D3DCompile, D3DCOMPILE_OPTIMIZATION_LEVEL3};
 use windows::Win32::Graphics::Direct3D::ID3DBlob;
-use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
+use windows::Win32::Graphics::Direct3D11::{
+    ID3D11Texture2D, D3D11_BIND_SHADER_RESOURCE, D3D11_BIND_UNORDERED_ACCESS,
+    D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW, D3D11_RESOURCE_MISC_SHARED,
+    D3D11_RESOURCE_MISC_SHARED_NTHANDLE, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
+};
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM,
-    DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM,
+    DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_NV12, DXGI_FORMAT_R10G10B10A2_UNORM,
+    DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8_UNORM,
+    DXGI_FORMAT_R8_UNORM,
 };
 use windows::Win32::Graphics::Dxgi::IDXGIResource1;
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject, INFINITE};
@@ -155,6 +160,12 @@ pub enum OutputFormat {
     /// with the value in the **high** ten bits (`code << 6`) — what DXGI, NVENC
     /// and FFmpeg's `p010le` all mean by P010.
     P010,
+    /// NV12 written into a real `DXGI_FORMAT_NV12` texture rather than a
+    /// buffer -- what a hardware encoder takes. Same values as `Nv12`. Created
+    /// shareable, so a D3D11 encoder opens it through `shared_output_handle`
+    /// and reads it where it lies. Needs typed UAV writes to NV12's planes,
+    /// which `Converter12::new` checks for and refuses without.
+    Nv12Texture,
 }
 
 impl OutputFormat {
@@ -166,7 +177,7 @@ impl OutputFormat {
             OutputFormat::Fp32Nchw | OutputFormat::Fp32Nhwc => pixels * 12,
             OutputFormat::Fp16Nchw | OutputFormat::Fp16Nhwc => pixels * 6,
             OutputFormat::Bgra8Nhwc => pixels * 4,
-            OutputFormat::Nv12 => pixels * 3 / 2,
+            OutputFormat::Nv12 | OutputFormat::Nv12Texture => pixels * 3 / 2,
             OutputFormat::P010 => pixels * 3,
         }
     }
@@ -180,11 +191,20 @@ impl OutputFormat {
             OutputFormat::P010 => 4,
             OutputFormat::Fp32Nhwc => 5,
             OutputFormat::Fp16Nhwc => 6,
+            OutputFormat::Nv12Texture => 7,
         }
     }
 
     pub fn is_yuv(self) -> bool {
-        matches!(self, OutputFormat::Nv12 | OutputFormat::P010)
+        matches!(
+            self,
+            OutputFormat::Nv12 | OutputFormat::P010 | OutputFormat::Nv12Texture
+        )
+    }
+
+    /// The output is a texture, not a buffer.
+    pub fn is_texture(self) -> bool {
+        self == OutputFormat::Nv12Texture
     }
 
     /// The FP16 kernels cover two output pixels per thread in x.
@@ -480,7 +500,7 @@ void CSMain(uint3 tid : SV_DispatchThreadID)
     Output.Store(idx * 4, bl | (g << 8) | (r << 16) | (a << 24));
 }
 
-#elif OUTPUT == 3 || OUTPUT == 4
+#elif OUTPUT == 3 || OUTPUT == 4 || OUTPUT == 7
 // NV12 (8-bit) / P010 (10-bit), 4:2:0, in the standard planar layout: the Y
 // plane, then Cb/Cr interleaved at half resolution. Two dispatches, selected by
 // Plane, because the planes have different sample grids.
@@ -492,10 +512,18 @@ void CSMain(uint3 tid : SV_DispatchThreadID)
 // a multiple of four be written without a dword ever straddling two threads.
 //
 // The source is taken as gamma-encoded RGB with BT.709 primaries -- true of a
-// UNORM desktop surface. Linear scRGB (R16G16B16A16_FLOAT) is refused on the
-// Rust side, and so is a tone map: putting linear light through a Y'CbCr
-// matrix is wrong, and the right fix (tone-map to SDR, or PQ + BT.2020 for
-// HDR10) is a decision this output has not made.
+// UNORM desktop surface. Linear scRGB (R16G16B16A16_FLOAT) reaches the matrix
+// only through a tone map to sRGB (NV12, SDR); without one the Rust side
+// refuses it, because linear light through a Y'CbCr matrix is wrong. P010
+// refuses a tone map: HDR10 (PQ + BT.2020) is the decision that belongs there.
+
+#if OUTPUT == 7
+// The planes of a real NV12 texture: Y, then Cb/Cr interleaved at half
+// resolution. UNORM views, so a code is stored as code / 255 and the hardware
+// writes back exactly that code.
+RWTexture2D<unorm float> OutY : register(u1);
+RWTexture2D<unorm float2> OutUV : register(u2);
+#endif
 
 #if MATRIX == 1
 static const float KR = 0.299f;
@@ -505,7 +533,7 @@ static const float KR = 0.2126f;
 static const float KB = 0.0722f;
 #endif
 
-#if OUTPUT == 3
+#if OUTPUT == 3 || OUTPUT == 7
 static const float MAXCODE = 255.0f;
 static const float DEPTH_SCALE = 1.0f;     // 2^(8-8)
 #else
@@ -518,9 +546,11 @@ uint quantize(float v)
     return (uint)clamp(floor(v + 0.5f), 0.0f, MAXCODE);
 }
 
+// Through to_display, so a tone-mapped HDR frame reaches the matrix as sRGB;
+// with ToneMap == 0 that is the texel itself, exactly as before.
 float3 rgb_at(uint x, uint y)
 {
-    return saturate(fetch(x, y).xyz);
+    return saturate(to_display(fetch(x, y)));
 }
 
 float luma_of(float3 c)
@@ -569,6 +599,27 @@ uint2 chroma_codes(uint k)
 #endif
 }
 
+#if OUTPUT == 7
+// One thread per Y sample (Plane 0) or per Cb/Cr pair (Plane 1).
+[numthreads(8, 8, 1)]
+void CSMain(uint3 tid : SV_DispatchThreadID)
+{
+    g_crop = Regions[0];
+    if (Plane == 0)
+    {
+        if (tid.x >= OutWidth || tid.y >= OutHeight)
+            return;
+        OutY[tid.xy] = luma_code(rgb_at(tid.x, tid.y)) / MAXCODE;
+    }
+    else
+    {
+        uint cw = OutWidth / 2;
+        if (tid.x >= cw || tid.y >= OutHeight / 2)
+            return;
+        OutUV[tid.xy] = float2(chroma_codes(tid.y * cw + tid.x)) / MAXCODE;
+    }
+}
+#else
 [numthreads(8, 8, 1)]
 void CSMain(uint3 tid : SV_DispatchThreadID)
 {
@@ -629,6 +680,7 @@ void CSMain(uint3 tid : SV_DispatchThreadID)
     }
 #endif
 }
+#endif
 
 #else
 // FP32 NCHW -- byte-identical in layout to Preprocessor12's output, so the
@@ -731,6 +783,10 @@ pub struct Converter12 {
     /// `capture_order.rs` for the race it closes.
     capture_order: super::capture_order::CaptureOrder,
     shared_output_handle: HANDLE,
+    /// `Nv12Texture` only: the NV12 texture as D3D11 made it, on the source
+    /// texture's device -- the one an encoder reads. `output` is D3D12's view
+    /// of the same memory.
+    output_d3d11: Option<ID3D11Texture2D>,
     cached_texture: std::cell::Cell<(usize, u64)>,
     cached_shared: std::cell::RefCell<Option<ID3D12Resource>>,
     cached_src_size: std::cell::Cell<(u32, u32)>,
@@ -860,6 +916,9 @@ impl Converter12 {
         let fence_event = unsafe { CreateEventW(None, false, false, None)? };
         let capture_order = super::capture_order::CaptureOrder::new(&device)?;
 
+        // u0 is the buffer every output writes to; the NV12 texture writes to
+        // its two planes as u1 (Y) and u2 (Cb/Cr) instead, with u0 left null.
+        let uav_count: u32 = if format.is_texture() { 3 } else { 1 };
         let ranges = [
             // t0 = the captured surface, t1 = the region rectangles.
             D3D12_DESCRIPTOR_RANGE {
@@ -871,7 +930,7 @@ impl Converter12 {
             },
             D3D12_DESCRIPTOR_RANGE {
                 RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
-                NumDescriptors: 1,
+                NumDescriptors: uav_count,
                 BaseShaderRegister: 0,
                 RegisterSpace: 0,
                 OffsetInDescriptorsFromTableStart: 2,
@@ -965,7 +1024,7 @@ impl Converter12 {
         let heap: ID3D12DescriptorHeap = unsafe {
             device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
                 Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-                NumDescriptors: 3,
+                NumDescriptors: 2 + uav_count,
                 Flags: D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
                 NodeMask: 0,
             })?
@@ -981,24 +1040,38 @@ impl Converter12 {
         let byte_size =
             (format.byte_size(out_width, out_height) * batch as u64).next_multiple_of(4);
 
-        let output = super::preprocess12::create_buffer(
-            &device,
-            byte_size,
-            D3D12_HEAP_TYPE_DEFAULT,
-            D3D12_HEAP_FLAG_SHARED,
-            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-        )?;
+        let mut output_d3d11 = None;
+        let mut texture_handle = None;
+        let (output, readback_size) = if format.is_texture() {
+            let (texture12, texture11, handle) =
+                create_nv12_texture(&device, d3d11_texture, out_width, out_height)?;
+            output_d3d11 = Some(texture11);
+            texture_handle = Some(handle);
+            let (_, total) = nv12_footprints(&device, &texture12);
+            (texture12, total)
+        } else {
+            let buffer = super::preprocess12::create_buffer(
+                &device,
+                byte_size,
+                D3D12_HEAP_TYPE_DEFAULT,
+                D3D12_HEAP_FLAG_SHARED,
+                D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            )?;
+            (buffer, byte_size)
+        };
         let readback = super::preprocess12::create_buffer(
             &device,
-            byte_size,
+            readback_size,
             D3D12_HEAP_TYPE_READBACK,
             D3D12_HEAP_FLAG_NONE,
             D3D12_RESOURCE_FLAG_NONE,
             D3D12_RESOURCE_STATE_COPY_DEST,
         )?;
-        let shared_output_handle =
-            unsafe { device.CreateSharedHandle(&output, None, GENERIC_ALL, None)? };
+        let shared_output_handle = match texture_handle {
+            Some(handle) => handle,
+            None => unsafe { device.CreateSharedHandle(&output, None, GENERIC_ALL, None)? },
+        };
 
         // RAW rather than structured: the shader stores 32 bits at a time at
         // byte addresses it computes itself, which is what lets one kernel
@@ -1050,8 +1123,38 @@ impl Converter12 {
             CounterOffsetInBytes: 0,
             Flags: D3D12_BUFFER_UAV_FLAG_RAW,
         };
-        unsafe {
-            device.CreateUnorderedAccessView(&output, None, Some(&uav_desc), uav_handle);
+        if format.is_texture() {
+            // u0: nothing. The variant never reads it, but the table names it.
+            uav_desc.Anonymous.Buffer.NumElements = 1;
+            unsafe { device.CreateUnorderedAccessView(None, None, Some(&uav_desc), uav_handle) };
+            for (slot, plane, view_format) in [
+                (3usize, 0u32, DXGI_FORMAT_R8_UNORM),
+                (4, 1, DXGI_FORMAT_R8G8_UNORM),
+            ] {
+                let mut plane_desc = D3D12_UNORDERED_ACCESS_VIEW_DESC {
+                    Format: view_format,
+                    ViewDimension: D3D12_UAV_DIMENSION_TEXTURE2D,
+                    ..Default::default()
+                };
+                plane_desc.Anonymous.Texture2D = D3D12_TEX2D_UAV {
+                    MipSlice: 0,
+                    PlaneSlice: plane,
+                };
+                unsafe {
+                    device.CreateUnorderedAccessView(
+                        &output,
+                        None,
+                        Some(&plane_desc),
+                        D3D12_CPU_DESCRIPTOR_HANDLE {
+                            ptr: heap_start + slot * descriptor_size as usize,
+                        },
+                    );
+                }
+            }
+        } else {
+            unsafe {
+                device.CreateUnorderedAccessView(&output, None, Some(&uav_desc), uav_handle);
+            }
         }
 
         Ok(Self {
@@ -1070,6 +1173,7 @@ impl Converter12 {
             regions,
             capture_order,
             shared_output_handle,
+            output_d3d11,
             cached_texture: std::cell::Cell::new((0, 0)),
             cached_shared: std::cell::RefCell::new(None),
             cached_src_size: std::cell::Cell::new((0, 0)),
@@ -1122,11 +1226,16 @@ impl Converter12 {
         regions: &[Crop],
     ) -> windows::core::Result<()> {
         if tone_map != ToneMap::None {
-            if self.format.is_yuv() {
+            // NV12 is 8-bit SDR for an encoder, so a tone map to sRGB is the
+            // decision it needs: the matrix then sees gamma-encoded values, as
+            // it would from an SDR desktop. P010 is where HDR10 (PQ +
+            // BT.2020) would go, and mapping it to SDR would hide that choice.
+            if self.format == OutputFormat::P010 {
                 return Err(windows::core::Error::new(
                     windows::Win32::Foundation::E_INVALIDARG,
-                    "NV12/P010 output does not tone map: encoding HDR for an encoder \
-                     (SDR, or PQ + BT.2020 for HDR10) is a decision this path has not made",
+                    "P010 output does not tone map: a 10-bit encoder input is where \
+                     HDR10 (PQ + BT.2020) belongs, a decision this path has not made. \
+                     Use NV12 for SDR",
                 ));
             }
             let white = tone_map.sdr_white();
@@ -1157,6 +1266,20 @@ impl Converter12 {
             .expect("open_texture populates the cache or returns Err");
         let (src_width, src_height) = self.cached_src_size.get();
         let src_format = self.cached_src_format.get();
+        if self.format.is_yuv()
+            && tone_map == ToneMap::None
+            && src_format == DXGI_FORMAT_R16G16B16A16_FLOAT
+        {
+            // Checked here rather than when the surface is opened, because a
+            // tone map is what makes this input right for NV12.
+            return Err(windows::core::Error::new(
+                windows::Win32::Foundation::E_INVALIDARG,
+                "captured surface is R16G16B16A16_FLOAT (HDR, linear scRGB), \
+                 which NV12/P010 output does not convert as it is. A Y'CbCr matrix \
+                 expects gamma-encoded values: pass a tone map for NV12 (SDR), or \
+                 use a float32/float16 output, which passes scRGB through.",
+            ));
+        }
         if tone_map != ToneMap::None
             && src_format != DXGI_FORMAT_R16G16B16A16_FLOAT
             && src_format != DXGI_FORMAT_R10G10B10A2_UNORM
@@ -1254,7 +1377,36 @@ impl Converter12 {
             self.list
                 .SetComputeRootDescriptorTable(1, self.heap.GetGPUDescriptorHandleForHeapStart());
 
-            if self.format.is_yuv() {
+            if self.format.is_texture() {
+                // One thread per Y sample, then one per Cb/Cr pair. The texture
+                // rests in COMMON between calls: a shared texture another API
+                // reads must be left there.
+                transition(
+                    &self.list,
+                    &self.output,
+                    D3D12_RESOURCE_STATE_COMMON,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                );
+                for (pass, width, height) in [
+                    (0u32, self.out_width, self.out_height),
+                    (1u32, self.out_width / 2, self.out_height / 2),
+                ] {
+                    constants[PLANE_CONSTANT] = pass;
+                    self.list.SetComputeRoot32BitConstants(
+                        0,
+                        CONSTANT_COUNT as u32,
+                        constants.as_ptr() as *const _,
+                        0,
+                    );
+                    self.list.Dispatch(width.div_ceil(8), height.div_ceil(8), 1);
+                }
+                transition(
+                    &self.list,
+                    &self.output,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_COMMON,
+                );
+            } else if self.format.is_yuv() {
                 // One thread per dword of each plane, laid out OutWidth dwords
                 // to a dispatch row; the shader maps each byte back to (x, y).
                 let pixels = self.out_width as u64 * self.out_height as u64;
@@ -1328,17 +1480,6 @@ impl Converter12 {
                     ),
                 ));
             }
-            if self.format.is_yuv() && desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT {
-                return Err(windows::core::Error::new(
-                    windows::Win32::Foundation::E_INVALIDARG,
-                    "captured surface is R16G16B16A16_FLOAT (HDR, linear scRGB), \
-                     which NV12/P010 output does not convert. A Y'CbCr matrix \
-                     expects gamma-encoded values, and choosing between tone \
-                     mapping to SDR and PQ + BT.2020 for HDR10 is a decision this \
-                     path has not made. Use a float32/float16 output, which passes \
-                     scRGB through.",
-                ));
-            }
             self.cached_src_format.set(desc.Format);
 
             self.cached_src_size.set((desc.Width as u32, desc.Height));
@@ -1386,6 +1527,9 @@ impl Converter12 {
     /// records that returning `Vec<f32>` here made PyO3 build 1.2M Python
     /// floats per call and turned this into an allocator benchmark.
     pub fn read_back(&self) -> windows::core::Result<Vec<u8>> {
+        if self.format.is_texture() {
+            return self.read_back_texture();
+        }
         let count = self.output_byte_size() as usize;
         unsafe {
             self.allocator.Reset()?;
@@ -1419,10 +1563,90 @@ impl Converter12 {
         Ok(out)
     }
 
+    /// The NV12 texture as tightly packed NV12 bytes (Y rows, then Cb/Cr rows),
+    /// the same layout `Nv12` writes, so the two can be compared directly.
+    fn read_back_texture(&self) -> windows::core::Result<Vec<u8>> {
+        let (footprints, _) = nv12_footprints(&self.device, &self.output);
+        // On a copy queue of its own, not the converter's compute list:
+        // recording a copy of a planar texture on a compute list crashed the
+        // process on an Intel driver (2026-11-03). Readback is not the hot
+        // path, so a queue per call is fine. `process` has already waited for
+        // its dispatch, and a copy queue promotes a texture in COMMON to
+        // COPY_SOURCE by itself and lets it decay back afterwards.
+        let copy = D3D12_COMMAND_LIST_TYPE_COPY;
+        unsafe {
+            let queue: ID3D12CommandQueue =
+                self.device.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC {
+                    Type: copy,
+                    Priority: 0,
+                    Flags: D3D12_COMMAND_QUEUE_FLAG_NONE,
+                    NodeMask: 0,
+                })?;
+            let allocator: ID3D12CommandAllocator = self.device.CreateCommandAllocator(copy)?;
+            let list: ID3D12GraphicsCommandList =
+                self.device.CreateCommandList(0, copy, &allocator, None)?;
+            for (plane, footprint) in footprints.iter().enumerate() {
+                // Borrowed, as in `transition`: a clone into the ManuallyDrop
+                // would never be released.
+                let dst = D3D12_TEXTURE_COPY_LOCATION {
+                    pResource: std::mem::transmute_copy(&self.readback),
+                    Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+                    Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                        PlacedFootprint: *footprint,
+                    },
+                };
+                let src = D3D12_TEXTURE_COPY_LOCATION {
+                    pResource: std::mem::transmute_copy(&self.output),
+                    Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+                    Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                        SubresourceIndex: plane as u32,
+                    },
+                };
+                list.CopyTextureRegion(&dst, 0, 0, 0, &src, None);
+            }
+            list.Close()?;
+            queue.ExecuteCommandLists(&[Some(list.cast::<ID3D12CommandList>()?)]);
+            let fence: ID3D12Fence = self.device.CreateFence(0, D3D12_FENCE_FLAG_NONE)?;
+            queue.Signal(&fence, 1)?;
+            if fence.GetCompletedValue() < 1 {
+                let event = CreateEventW(None, false, false, None)?;
+                fence.SetEventOnCompletion(1, event)?;
+                WaitForSingleObject(event, INFINITE);
+                let _ = CloseHandle(event);
+            }
+        }
+
+        let width = self.out_width as usize;
+        let height = self.out_height as usize;
+        let mut out = Vec::with_capacity(width * height * 3 / 2);
+        unsafe {
+            let mut mapped: *mut std::ffi::c_void = std::ptr::null_mut();
+            self.readback.Map(0, None, Some(&mut mapped))?;
+            let base = mapped as *const u8;
+            // Y: width bytes a row. Cb/Cr: width bytes a row too (width / 2
+            // pairs of two), half as many rows.
+            for (footprint, rows) in [(footprints[0], height), (footprints[1], height / 2)] {
+                let pitch = footprint.Footprint.RowPitch as usize;
+                for row in 0..rows {
+                    let start = base.add(footprint.Offset as usize + row * pitch);
+                    out.extend_from_slice(std::slice::from_raw_parts(start, width));
+                }
+            }
+            self.readback.Unmap(0, None);
+        }
+        Ok(out)
+    }
+
     /// The whole buffer: every batch slot, exact (no dword padding). What a
     /// cross-adapter transfer or a CUDA import must cover.
     pub fn output_byte_size(&self) -> u64 {
         self.format.byte_size(self.out_width, self.out_height) * self.batch as u64
+    }
+
+    /// `Nv12Texture` only: the NV12 texture on the source texture's D3D11
+    /// device, ready for an encoder there once `process` returns.
+    pub fn output_texture(&self) -> Option<&ID3D11Texture2D> {
+        self.output_d3d11.as_ref()
     }
 
     pub fn shared_output_handle(&self) -> isize {
@@ -1482,6 +1706,105 @@ impl Drop for Converter12 {
     }
 }
 
+/// The NV12 texture `Nv12Texture` writes: made by D3D11 on the source
+/// texture's device, shared, and opened on D3D12 for the shader.
+///
+/// D3D11 makes it because that is the direction the platform supports: a
+/// D3D12-made NV12 texture opened on D3D11 crashed the process inside
+/// `OpenSharedResource1` on an Intel driver (2026-11-03), while this way
+/// round is the one the converter already uses for its input. It also puts the
+/// texture on the capture device, which is where a hardware encoder reads.
+///
+/// Typed UAV writes to NV12 are optional hardware support on both APIs, so
+/// both are checked first: without them creation fails with a bare
+/// E_INVALIDARG that names nothing, and this output cannot work on that GPU.
+fn create_nv12_texture(
+    device: &ID3D12Device,
+    source: &ID3D11Texture2D,
+    width: u32,
+    height: u32,
+) -> windows::core::Result<(ID3D12Resource, ID3D11Texture2D, HANDLE)> {
+    let unsupported = || {
+        windows::core::Error::new(
+            windows::Win32::Foundation::E_NOTIMPL,
+            "this GPU cannot write NV12 from a compute shader (no typed UAV support \
+             for DXGI_FORMAT_NV12), so the NV12 texture output is unavailable on it",
+        )
+    };
+    let mut support = D3D12_FEATURE_DATA_FORMAT_SUPPORT {
+        Format: DXGI_FORMAT_NV12,
+        ..Default::default()
+    };
+    unsafe {
+        device.CheckFeatureSupport(
+            D3D12_FEATURE_FORMAT_SUPPORT,
+            &mut support as *mut _ as *mut std::ffi::c_void,
+            std::mem::size_of::<D3D12_FEATURE_DATA_FORMAT_SUPPORT>() as u32,
+        )?;
+    }
+    if support.Support1.0 & D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW.0 == 0 {
+        return Err(unsupported());
+    }
+    let device11 = unsafe { source.GetDevice()? };
+    let support11 = unsafe { device11.CheckFormatSupport(DXGI_FORMAT_NV12) }.unwrap_or(0);
+    if support11 & D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW.0 as u32 == 0 {
+        return Err(unsupported());
+    }
+    let desc = D3D11_TEXTURE2D_DESC {
+        Width: width,
+        Height: height,
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: DXGI_FORMAT_NV12,
+        SampleDesc: windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        Usage: D3D11_USAGE_DEFAULT,
+        BindFlags: (D3D11_BIND_UNORDERED_ACCESS.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+        CPUAccessFlags: 0,
+        MiscFlags: (D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0 | D3D11_RESOURCE_MISC_SHARED.0) as u32,
+    };
+    let mut texture11 = None;
+    unsafe { device11.CreateTexture2D(&desc, None, Some(&mut texture11))? };
+    let texture11 = texture11.expect("CreateTexture2D reported success");
+    let handle = unsafe {
+        texture11
+            .cast::<IDXGIResource1>()?
+            .CreateSharedHandle(None, GENERIC_ALL, None)?
+    };
+    let mut texture12: Option<ID3D12Resource> = None;
+    unsafe { device.OpenSharedHandle(handle, &mut texture12)? };
+    Ok((
+        texture12.expect("OpenSharedHandle reported success"),
+        texture11,
+        handle,
+    ))
+}
+
+/// NV12's two planes as copy footprints, and the bytes they need together.
+fn nv12_footprints(
+    device: &ID3D12Device,
+    texture: &ID3D12Resource,
+) -> ([D3D12_PLACED_SUBRESOURCE_FOOTPRINT; 2], u64) {
+    let desc = unsafe { texture.GetDesc() };
+    let mut footprints = [D3D12_PLACED_SUBRESOURCE_FOOTPRINT::default(); 2];
+    let mut total = 0u64;
+    unsafe {
+        device.GetCopyableFootprints(
+            &desc,
+            0,
+            2,
+            0,
+            Some(footprints.as_mut_ptr()),
+            None,
+            None,
+            Some(&mut total),
+        );
+    }
+    (footprints, total)
+}
+
 fn transition(
     list: &ID3D12GraphicsCommandList,
     resource: &ID3D12Resource,
@@ -1525,7 +1848,7 @@ mod tests {
             .collect()
     }
 
-    const ALL_FORMATS: [OutputFormat; 7] = [
+    const ALL_FORMATS: [OutputFormat; 8] = [
         OutputFormat::Fp32Nchw,
         OutputFormat::Fp16Nchw,
         OutputFormat::Fp32Nhwc,
@@ -1533,6 +1856,7 @@ mod tests {
         OutputFormat::Bgra8Nhwc,
         OutputFormat::Nv12,
         OutputFormat::P010,
+        OutputFormat::Nv12Texture,
     ];
 
     #[test]
@@ -1583,7 +1907,7 @@ mod tests {
         let mut defines: Vec<u32> = ALL_FORMATS.iter().map(|f| f.define()).collect();
         defines.sort_unstable();
         defines.dedup();
-        assert_eq!(defines, (0..7).collect::<Vec<u32>>());
+        assert_eq!(defines, (0..8).collect::<Vec<u32>>());
     }
 
     #[test]
@@ -1605,7 +1929,14 @@ mod tests {
     fn yuv_and_fp16_classification() {
         let yuv: Vec<_> = ALL_FORMATS.iter().filter(|f| f.is_yuv()).collect();
         let fp16: Vec<_> = ALL_FORMATS.iter().filter(|f| f.is_fp16()).collect();
-        assert_eq!(yuv, [&OutputFormat::Nv12, &OutputFormat::P010]);
+        assert_eq!(
+            yuv,
+            [
+                &OutputFormat::Nv12,
+                &OutputFormat::P010,
+                &OutputFormat::Nv12Texture
+            ]
+        );
         assert_eq!(fp16, [&OutputFormat::Fp16Nchw, &OutputFormat::Fp16Nhwc]);
     }
 
@@ -1751,6 +2082,21 @@ mod warp_tests {
         D3D11_USAGE_DEFAULT,
     };
     use windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC;
+
+    /// WARP's shader JIT is not safe across devices: two D3D12 WARP devices
+    /// compiling compute pipelines at once corrupt its shared JIT state, and
+    /// the process dies with an access violation on a WARP worker thread
+    /// (`D3D10Warp!FeCleanup::Pass1`, with another test inside
+    /// `ShaderJIT::~ShaderJIT`). It took about one parallel run in ten once
+    /// the duplicator tests stopped holding the machine busy -- which is what
+    /// a PC that refuses Desktop Duplication does. The tests take turns. The
+    /// library does not: on a machine with no GPU it falls back to WARP, so
+    /// two converters on two threads there could meet the same fault.
+    static WARP: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn one_warp_test_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+        WARP.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     const NAN: u16 = 0x7E00;
     const INF: u16 = 0x7C00;
@@ -1928,8 +2274,47 @@ mod warp_tests {
         Some(converter.read_back().expect("readback"))
     }
 
+    /// The texture output holds exactly the bytes the buffer output writes:
+    /// one shader, two destinations. Skipped where the GPU (here WARP) cannot
+    /// write NV12 from a shader, which is the refusal the output promises.
+    #[test]
+    fn the_nv12_texture_holds_the_nv12_buffers_bytes() {
+        let _warp = one_warp_test_at_a_time();
+        let (width, height) = (16u32, 8u32);
+        let bytes: Vec<u8> = (0..width * height)
+            .flat_map(|i| [(i * 37) as u8, (i * 91) as u8, (i * 13) as u8, 255])
+            .collect();
+        let Some(texture) = warp_surface_sized(DXGI_FORMAT_B8G8R8A8_UNORM, width, height, &bytes)
+        else {
+            eprintln!("no shareable WARP texture on this machine; skipped");
+            return;
+        };
+        let run = |format| -> windows::core::Result<Vec<u8>> {
+            let converter = Converter12::new(
+                &texture,
+                width,
+                height,
+                Sampling::Nearest,
+                format,
+                YuvOptions::default(),
+                1,
+            )?;
+            converter.process(&texture, 1, 1.0, 0.0, 0, ToneMap::None, &[])?;
+            converter.read_back()
+        };
+        let buffer = run(OutputFormat::Nv12).expect("NV12 buffer on WARP");
+        match run(OutputFormat::Nv12Texture) {
+            Ok(texture_bytes) => assert_eq!(texture_bytes, buffer),
+            Err(e) if e.code() == windows::Win32::Foundation::E_NOTIMPL => {
+                eprintln!("WARP cannot write NV12 from a shader; skipped: {e}")
+            }
+            Err(e) => panic!("NV12 texture on WARP: {e}"),
+        }
+    }
+
     #[test]
     fn float_output_follows_the_reference_for_both_maps() {
+        let _warp = one_warp_test_at_a_time();
         for (tone_map, max_rgb) in [
             (ToneMap::Clip { sdr_white: WHITE }, false),
             (ToneMap::MaxRgb { sdr_white: WHITE }, true),
@@ -1965,6 +2350,7 @@ mod warp_tests {
     /// (3, 1.5, 0.375).
     #[test]
     fn bgra8_output_matches_grab_on_an_hdr_desktop() {
+        let _warp = one_warp_test_at_a_time();
         let clip: [[u8; 3]; 8] = [
             [0, 0, 0],
             [255, 255, 255],
@@ -2004,8 +2390,84 @@ mod warp_tests {
         }
     }
 
+    /// An HDR desktop into NV12 for an encoder: each pixel tone-mapped to sRGB
+    /// first, then BT.709 limited range. The expected codes are worked out
+    /// here from `reference`, in f64, never by another converter path. Two
+    /// identical rows, because NV12 needs an even height.
+    #[test]
+    fn nv12_from_an_hdr_desktop_is_the_tone_mapped_picture_through_bt709() {
+        let _warp = one_warp_test_at_a_time();
+        let row = pixels();
+        let (width, height) = (row.len() as u32, 2u32);
+        let bytes: Vec<u8> = row
+            .iter()
+            .chain(row.iter())
+            .flatten()
+            .flat_map(|half| half.to_le_bytes())
+            .collect();
+        let Some(texture) =
+            warp_surface_sized(DXGI_FORMAT_R16G16B16A16_FLOAT, width, height, &bytes)
+        else {
+            eprintln!("no shareable WARP texture on this machine; skipped");
+            return;
+        };
+        let (kr, kb) = (0.2126f64, 0.0722f64);
+        let luma = |c: [f64; 3]| kr * c[0] + (1.0 - kr - kb) * c[1] + kb * c[2];
+        for (tone_map, max_rgb) in [
+            (ToneMap::Clip { sdr_white: WHITE }, false),
+            (ToneMap::MaxRgb { sdr_white: WHITE }, true),
+        ] {
+            let converter = Converter12::new(
+                &texture,
+                width,
+                height,
+                Sampling::Nearest,
+                OutputFormat::Nv12,
+                YuvOptions {
+                    matrix: Matrix::Bt709,
+                    full_range: false,
+                },
+                1,
+            )
+            .expect("converter on WARP");
+            converter
+                .process(&texture, 1, 1.0, 0.0, 0, tone_map, &[])
+                .expect("an NV12 tone map is accepted");
+            let out = converter.read_back().expect("readback");
+            let rgb: Vec<[f64; 3]> = row.iter().map(|&p| reference(p, max_rgb)).collect();
+            for (x, c) in rgb.iter().enumerate() {
+                let expected = (16.0 + 219.0 * luma(*c)).round() as i32;
+                for y in 0..height as usize {
+                    let got = out[y * width as usize + x] as i32;
+                    assert!(
+                        (got - expected).abs() <= 1,
+                        "{tone_map:?} Y at ({x}, {y}): {got} != {expected}"
+                    );
+                }
+            }
+            let uv = &out[(width * height) as usize..];
+            for k in 0..(width / 2) as usize {
+                let cx = 2 * k;
+                let left = cx.saturating_sub(1);
+                let mut c = [0.0f64; 3];
+                for i in 0..3 {
+                    c[i] = 0.25 * rgb[left][i] + 0.5 * rgb[cx][i] + 0.25 * rgb[cx + 1][i];
+                }
+                let y = luma(c);
+                let cb = (128.0 + 224.0 * (c[2] - y) / (2.0 * (1.0 - kb))).round() as i32;
+                let cr = (128.0 + 224.0 * (c[0] - y) / (2.0 * (1.0 - kr))).round() as i32;
+                let (got_cb, got_cr) = (uv[2 * k] as i32, uv[2 * k + 1] as i32);
+                assert!(
+                    (got_cb - cb).abs() <= 1 && (got_cr - cr).abs() <= 1,
+                    "{tone_map:?} chroma {k}: ({got_cb}, {got_cr}) != ({cb}, {cr})"
+                );
+            }
+        }
+    }
+
     #[test]
     fn no_tone_map_passes_scrgb_through_unchanged() {
+        let _warp = one_warp_test_at_a_time();
         let Some(bytes) = convert(OutputFormat::Fp32Nchw, ToneMap::None) else {
             eprintln!("no shareable WARP texture on this machine; skipped");
             return;
@@ -2085,6 +2547,7 @@ mod warp_tests {
 
     #[test]
     fn every_fp16_value_converts_to_the_byte_grab_returns() {
+        let _warp = one_warp_test_at_a_time();
         every_code_matches_hdr_py(
             DXGI_FORMAT_R16G16B16A16_FLOAT,
             256,
@@ -2098,6 +2561,7 @@ mod warp_tests {
 
     #[test]
     fn every_10_bit_code_converts_to_the_byte_grab_returns() {
+        let _warp = one_warp_test_at_a_time();
         every_code_matches_hdr_py(
             DXGI_FORMAT_R10G10B10A2_UNORM,
             32,
@@ -2129,6 +2593,7 @@ mod warp_tests {
 
     #[test]
     fn a_tone_map_is_refused_where_it_cannot_be_right() {
+        let _warp = one_warp_test_at_a_time();
         let Some(sdr) = warp_surface(DXGI_FORMAT_B8G8R8A8_UNORM, 8, &[128u8; 32]) else {
             eprintln!("no shareable WARP texture on this machine; skipped");
             return;
@@ -2137,8 +2602,15 @@ mod warp_tests {
         let clip = ToneMap::Clip { sdr_white: WHITE };
         // 8-bit sRGB is never linear light.
         assert!(refusal(&sdr, OutputFormat::Fp32Nchw, clip).contains("never linear"));
-        // YUV makes no HDR decision, tone map or not.
-        assert!(refusal(&hdr, OutputFormat::Nv12, clip).contains("does not tone map"));
+        // P010 is where HDR10 would go, so it takes no tone map to SDR...
+        assert!(refusal(&hdr, OutputFormat::P010, clip).contains("does not tone map"));
+        // ...and neither YUV output takes linear light as it is.
+        for format in [OutputFormat::Nv12, OutputFormat::P010] {
+            assert!(
+                refusal(&hdr, format, ToneMap::None).contains("does not convert as it is"),
+                "{format:?}"
+            );
+        }
         // A white the shader would divide by.
         for white in [0.0, -1.0, f32::NAN, f32::INFINITY] {
             let message = refusal(

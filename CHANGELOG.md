@@ -8,6 +8,232 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Entries are grouped by the [ROADMAP.md](ROADMAP.md) stage that motivated them, so
 each release can be traced back to the plan it implements.
 
+## [Unreleased]
+
+Native extension 0.4.0, to be published with 2.7.3 once it has run on an HDR
+panel. Nothing here changes what a 2.7.2 call does unless it asks for it.
+
+### Added — NV12 from an HDR desktop, tone-mapped for an encoder
+
+- **`GpuConverter(pixel_format="nv12", tone_map="clip" | "auto")`** turns an
+  HDR desktop's linear scRGB into the SDR picture `grab()` returns, then
+  BT.709 NV12, in the same dispatch. NV12 is 8-bit SDR for an encoder, so a
+  tone map to sRGB is exactly the decision it needed; it was refused only
+  because none had been made. **P010 still refuses a tone map** - a 10-bit
+  input is where HDR10 (PQ + BT.2020) belongs, which is not built - and NV12
+  without one still refuses linear light. Needs native 0.4.0, checked where it
+  is asked for rather than as an install floor. In Rust, `Converter12` takes a
+  `ToneMap` with `OutputFormat::Nv12` / `Nv12Texture`. Checked on WARP against
+  a reference worked out in the test (Y and chroma codes within one), with the
+  old shader line as the negative control.
+- **Not yet run on an HDR panel.** The kit that does it, against colours drawn
+  on the display on purpose, is `kits/rapidshot-hdr-tv-2026-11-11`
+  (`kit/rapidshot_hdr_check.py`). The README's HDR limitation stands until it
+  passes.
+
+### Changed — the native crate is two crates
+
+- **`rapidshot-core` holds the implementation, `rapidshot-native` is the Python
+  binding over it.** Capture, conversion and transfer have no pyo3 in them now,
+  so a Rust program -- the remote-support helper -- links the same code the
+  package wraps. The kernels and probes that mixed Python in return plain
+  results; their Python signatures, messages and dict keys are unchanged.
+
+### Added — Desktop Duplication in Rust (opt-in)
+
+- **`native/core/src/duplicator.rs` is a behaviour-for-behaviour port of
+  `core/duplicator.py`**, with the desktop-access diagnosis (`desktop.rs`) that
+  tells a locked screen or UAC prompt from protected content. Its header lists
+  the nine behaviours it keeps. `RAPIDSHOT_DUPLICATOR=native` makes
+  `ScreenCapture` duplicate through it (`core/native_duplicator.py`); the
+  Python class stays the default, and whether the native one replaces it is
+  undecided -- doing so would make the native wheel necessary for a plain
+  screenshot. With the switch on, the whole suite passes (2318 passed, 46
+  skipped, against 2319 and 45 without it on the same machine; the difference
+  is a screen-dependent skip). COM errors read the way windows-rs renders them
+  rather than comtypes' tuple; classes and HRESULTs are the same.
+- **The duplicator holds at most 512 notes between two `take_log` calls**
+  (`LOG_CAPACITY`). A frame writes two or three, and the remote-support helper
+  never drained them, so its memory grew about 1 MB a minute: measured by
+  driving the duplicator without draining, 15,644 notes and 2.4 MB of private
+  memory in one minute at ~100 frames a second. Past the cap the oldest go and
+  `take_log` leads with a warning naming how many. The Python adapter drains
+  after every call, so nothing it logs changes.
+- **`DuplicateOutput1` is called with the calling thread per-monitor DPI
+  aware, and the thread's own setting is put back after.** It answers
+  `DXGI_ERROR_UNSUPPORTED` (0x887A0004) to anything less: measured on an
+  Intel UHD (7d67) PC, an unaware or system-aware process was refused every
+  time, per-monitor v1 and v2 accepted, and so was a thread-only v2 context
+  in an otherwise unaware process. The remote-support helper is unaware, so
+  every helper had silently been on legacy `DuplicateOutput`, which offers no
+  10-bit or HDR formats. Raising the thread rather than the process leaves the
+  caller's coordinates alone. When the call is still refused, the warning says
+  whether DPI awareness can be the reason. The Python `Duplicator` does the
+  same (`_PerMonitorDpiForThisThread`), with the same messages: it relied on
+  the process-wide per-monitor request in `core/output.py`, so a host that had
+  fixed a different awareness first got the legacy path there too.
+  `tests/test_duplicate_output1_dpi.py` makes its own thread DPI unaware and
+  checks both against a fake that refuses as Windows does and on the real
+  screen.
+  **It had a side effect on Rust callers, found the same day.** Legacy
+  `DuplicateOutput` from an unaware process succeeds and *Windows makes the
+  whole process per-monitor aware*, then records `HIGHDPIAWARE` for that exe
+  under `AppCompatFlags\Layers` so later runs start aware (measured with a
+  probe at 125%: unaware 1536x864 before, aware 1920x1080 on the next run;
+  `DuplicateOutput1` from an unaware thread does neither). The old fallback
+  was therefore quietly fixing every unaware caller's desktop coordinates.
+  With the thread raised only for the call, that stops, and an unaware Rust
+  caller that sizes from `DXGI_OUTPUT_DESC.DesktopCoordinates` gets the scaled
+  size while the texture is physical: the remote helper's converter route
+  then encoded black frames. Python is unaffected (`core/output.py` asks for
+  per-monitor awareness first, and `python.exe`'s manifest already has it).
+  A Rust caller must make its own process per-monitor aware; the helper now
+  does.
+- **A duplicator error says when it is a desktop switch** (`DupError::desktop_switch`).
+  Lock, sign-in, UAC and Ctrl+Alt+Del end a duplication with a different
+  HRESULT each time -- access lost, the abandoned keyed mutex, `INVALID_CALL`,
+  `E_ACCESSDENIED` were all seen on real PCs -- so the class could not tell a
+  switch to follow from a fault to report, and a caller had to treat every
+  error as "start again". Any error but a device error now carries the thread's
+  desktop and the input desktop when the two differ as it happens. `kind` is
+  unchanged, so the Python exception is too; the field is for Rust callers.
+- **Following the input desktop is in core**: `desktop::attach_thread_to_input_desktop`,
+  `desktop_switch`, `thread_desktop_name`, `input_desktop_name`. It was a copy
+  in the remote-support helper, which also kept every desktop handle it ever
+  opened; core closes the previous one once the thread has moved off it.
+  Tested by moving a test thread onto a desktop of its own, which any user may
+  create: the switch is seen, the thread follows back, and a `Duplicator`
+  started there reports the switch. Three mutations (never noting a switch,
+  noting device errors, `new` not noting) each fail a test.
+
+### Added — NV12 as a texture, by two routes
+
+- **`OutputFormat::Nv12Texture`**: the converter's left-sited NV12, written into
+  a real `DXGI_FORMAT_NV12` texture that D3D11 owns on the source texture's
+  device -- where a hardware encoder reads -- instead of a buffer. Same bytes as
+  `Nv12` (pinned by a test). Refused clearly on a GPU without typed UAV writes
+  to NV12. Not exposed to Python yet.
+- **`video_processor.rs`**: the same conversion through the GPU's fixed-function
+  video processor, one blit from the desktop surface, crop and scale included.
+- **`nv12_routes`** (a binary in the core crate) measures the two on one held
+  frame. On an Intel Core Ultra 5 235's integrated GPU at 1920x1080, median /
+  p95 submit-to-done: converter 1.08 / 1.29 ms including the copy into the
+  shareable texture its input needs (0.62 / 0.80 without it), video processor
+  2.08 / 2.20 ms; cropped and scaled to 1280x720, 0.90 / 1.10 (0.40 / 0.57)
+  against 0.64 / 1.81 ms with one 22 ms outlier. Against an exact reference the
+  converter is 100% exact; the video processor's luma is exact and 97.8% of its
+  chroma, up to 37 codes off at coloured edges, though the driver reports
+  support for the BT.709 limited left-sited conversion asked for. One machine,
+  wall time not GPU-engine time, no power measurement.
+
+### Driver behaviour found on the way (Intel, 2026-11-03)
+
+- Recording a copy of a planar NV12 texture on a D3D12 **compute** command list
+  crashed the process, so the texture readback uses a copy queue of its own.
+- Opening a **D3D12-made** NV12 texture on D3D11 (`OpenSharedResource1`)
+  crashed the process; D3D11 makes the texture and D3D12 opens it instead,
+  which is also the direction the converter already used for its input.
+
+### Fixed — Rust core tests
+
+
+- **The Rust core tests no longer crash in parallel.** The access violation
+  (0xC0000005, about one run in ten) is inside WARP's shader JIT
+  (`D3D10Warp!FeCleanup::Pass1`): the `converter12` WARP tests compiled compute
+  pipelines on several D3D12 WARP devices at once, which WARP does not survive.
+  It showed where Desktop Duplication fails, because the duplicator tests then
+  stop holding the machine and the WARP tests overlap; reproduced on Intel by
+  running the suite on a desktop that is not the input one (3 crashes in 30),
+  and gone with the WARP tests taking turns (0 in 60, none under a debugger).
+  The library itself does not serialise WARP, so two converters on two threads
+  of a GPU-less machine could still meet it.
+
+## [2.7.2] - 2026-11-12: Hybrid laptops that refuse screen capture now say why, and how to fix it
+
+The Python package only: `rapidshot-native` stays at 0.3.1 on PyPI and the
+install floor is unchanged. Two additions in this source need native 0.4.0,
+which ships with 2.7.3, and say so when they are asked for:
+`GpuConverter(pixel_format="nv12", tone_map=...)` and
+`RAPIDSHOT_DUPLICATOR=native`.
+
+### Fixed — found by the AMD test kit (ThinkPad E580, 2026-11-11)
+
+- **A display connected to one GPU and listed under another is named, with the
+  fix.** On a muxless hybrid laptop with Python on the discrete GPU, DXGI lists
+  the screen under that GPU and refuses every duplication with
+  `DXGI_ERROR_UNSUPPORTED` (Microsoft KB3019314); the cure is the per-app GPU
+  setting. The error said the OS hybrid path was not running and pointed at the
+  MUX and firmware, and `rapidshot diagnose` called the discrete GPU the one
+  driving the display. `probe_topology()` now compares the adapter GDI says
+  each display is connected to (PCI vendor and device) with the one DXGI lists
+  it under (`GpuTopology.render_offloads`); where they differ, the error,
+  `describe()` and `diagnose()` name both GPUs and the interpreter to set in
+  Settings > System > Display > Graphics. Where they cannot be compared the
+  hybrid text still applies, now with the GPU setting as its first check.
+- **Desktop Duplication asks for `DuplicateOutput1` with the calling thread
+  per-monitor DPI aware.** Windows answers `DXGI_ERROR_UNSUPPORTED` to an
+  unaware or system-aware caller, and the duplicator then fell back to legacy
+  `DuplicateOutput`, which offers no 10-bit or HDR formats. RapidShot relied
+  on the process-wide per-monitor request in `core/output.py`, so a host that
+  had fixed a different awareness first got the legacy path. The thread is
+  raised only for the call and its own setting put back
+  (`_PerMonitorDpiForThisThread`), so the host's coordinates are untouched,
+  and a refusal that persists says whether DPI awareness can be the reason.
+  Measured on an Intel UHD (7d67) PC; `tests/test_duplicate_output1_dpi.py`
+  makes its own thread DPI unaware and checks it against a fake that refuses as
+  Windows does and against the real screen.
+
+- **Tests that need Desktop Duplication skip where the machine refuses it**,
+  instead of failing. `create()` falls back to Windows.Graphics.Capture there,
+  so those tests drove WGC. Python: a `desktop_duplication` fixture asks a child
+  process once per session and skips on a refusal only. Rust: the four
+  duplicator tests return with a note on `DXGI_ERROR_UNSUPPORTED` only; any
+  other error still fails.
+
+### Measured — three PCs, four configurations
+
+- **`rapidshot benchmark --full` on three PCs**, RapidShot 2.7.1 with a
+  pre-release `rapidshot-native` 0.4.0 build whose additions none of the
+  measured paths use: Machine A (Core Ultra 5 235, Intel graphics, 1080p
+  100 Hz), a Lunar Lake laptop (Core Ultra 5 226V, Arc 130V, 1200p 60 Hz) and
+  Machine B (i9-14900HX, RTX 4060, 2560x1600 165 Hz) in both MUX modes.
+  `GpuConverter` delivered the freshest pixels on all four, 8.4-14.8 ms
+  younger than DXcam's, at 4-14% of its CPU per frame and the panel's full
+  refresh rate; `grab()` beat DXcam's default backend on frames, pixel age
+  and CPU on all four. The reports are in `benchmarks/` and the tables in the
+  README.
+- **The README is rewritten around those measurements.** It no longer says
+  DXcam wins the frame-rate column: that came from a 2.1-2.4 capture-only loop
+  (`docs/BENCHMARKS.md`, kept as history), and the 2.7 harness shows the
+  opposite on every machine. Where DXcam still leads -- `grab()` holds 20-70 MB
+  more than DXcam because it keeps converted output buffers -- it says so.
+- **Machine A's run had background load**: other programs used more than 15%
+  of the CPU in 10 of 35 timed cases (median 22.9%), and a first run the same
+  morning was discarded at a median 27% with all 35 flagged. The other three
+  configurations had none.
+
+### Tests
+
+- **`test_duplication_get_desc_declares_its_parameter` failed under comtypes
+  1.5.0**, which keeps a method's argument types as a tuple where 1.4 kept a
+  list. The declaration was right in both; the test compared the container. It
+  compares the types now, and passes under 1.4.17 and 1.5.0. `comtypes>=1.1.0`
+  is unpinned, so every fresh install, CI's included, gets 1.5.0.
+
+- **`test_cleanup_failures_after_a_bad_stage_surface_still_surface_the_cause`
+  counted another test's stage surface.** A camera from an earlier test
+  finalised mid-test released its surface through the patched `release`,
+  used up the "ordinary teardown" and made the cleanup's error reach the
+  caller instead of the build failure. Seen once, on the RTX laptop in Optimus.
+  It now counts only the camera's own surface, as its duplicator check
+  already did.
+
+### Release tooling
+
+- **A release can be titled from its changelog heading.**
+  `## [x.y.z] - YYYY-MM-DD: Title` names the GitHub Release
+  "RapidShot vx.y.z: Title"; without a title it stays "RapidShot vx.y.z".
+
 ## [2.7.1] - 2026-11-03
 
 ### Changed

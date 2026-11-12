@@ -168,7 +168,7 @@ def test_non_input_desktop_reason_names_the_real_cause(child_result):
     assert "player window" not in reason.lower()
 
 
-def test_capture_from_a_non_input_desktop_fails(child_result):
+def test_capture_from_a_non_input_desktop_fails(child_result, desktop_duplication):
     """It must still fail — the fix is about the message, not about making
     capture work from a desktop that genuinely cannot see the screen."""
     assert child_result["created"] is False

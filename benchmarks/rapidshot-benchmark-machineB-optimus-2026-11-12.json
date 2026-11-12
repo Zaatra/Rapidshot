@@ -1,0 +1,1462 @@
+{
+ "schema": "rapidshot-benchmark/1",
+ "passes": 5,
+ "recorded": "2026-11-12T01:11:16+00:00",
+ "preflight": {
+  "rapidshot": "2.7.1",
+  "python": "3.13.15",
+  "windows": "10.0.26300",
+  "windows_release": "11",
+  "cpu": "Intel(R) Core(TM) i9-14900HX",
+  "native": {
+   "version": "0.4.0",
+   "stage": "6-m3b-d3d12-preprocess",
+   "source": "development build (rapidshot/_rapidshot_native)"
+  },
+  "test_source": "C:\\rapidshot-nv\\native\\target\\release\\latency_source.exe",
+  "topology": "hybrid",
+  "adapters": [
+   "Intel(R) UHD Graphics",
+   "NVIDIA GeForce RTX 4060 Laptop GPU"
+  ],
+  "capture_adapters": [
+   "Intel(R) UHD Graphics"
+  ],
+  "installed": {
+   "mss": true,
+   "dxcam": true,
+   "winrt": true,
+   "cupy": true,
+   "cv2": true,
+   "psutil": true
+  },
+  "versions": {
+   "mss": "10.2.0",
+   "dxcam": "0.3.0"
+  },
+  "wgc": true,
+  "display": {
+   "width": 2560,
+   "height": 1600,
+   "refresh_hz": 165
+  }
+ },
+ "skipped": {},
+ "pixel_age": {
+  "target": "cuda",
+  "summary": {
+   "mss": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 0,
+    "flags": [],
+    "reasons": [],
+    "unique_fps": {
+     "median": 33.08536621267969,
+     "min": 32.758279792229224,
+     "max": 33.38922623358616
+    },
+    "age_p50_ms": {
+     "median": 39.1814,
+     "min": 38.7824,
+     "max": 39.5451
+    },
+    "age_p95_ms": {
+     "median": 41.7979,
+     "min": 41.202,
+     "max": 57.2668
+    },
+    "cpu_ms_per_frame": {
+     "median": 13.80404135338346,
+     "min": 13.292910447761194,
+     "max": 14.622641509433961
+    }
+   },
+   "dxcam": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 0,
+    "flags": [],
+    "reasons": [],
+    "unique_fps": {
+     "median": 108.18474161154953,
+     "min": 102.74843565506731,
+     "max": 109.41526198266783
+    },
+    "age_p50_ms": {
+     "median": 24.195,
+     "min": 24.0637,
+     "max": 24.4542
+    },
+    "age_p95_ms": {
+     "median": 27.2636,
+     "min": 26.4092,
+     "max": 28.0221
+    },
+    "cpu_ms_per_frame": {
+     "median": 8.857968369829683,
+     "min": 7.538697429906542,
+     "max": 9.544601616628176
+    }
+   },
+   "dxcam-wgc": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 0,
+    "flags": [],
+    "reasons": [],
+    "unique_fps": {
+     "median": 107.63615055265565,
+     "min": 99.01982238241348,
+     "max": 109.11187247784231
+    },
+    "age_p50_ms": {
+     "median": 28.8136,
+     "min": 28.6547,
+     "max": 29.2437
+    },
+    "age_p95_ms": {
+     "median": 32.6228,
+     "min": 32.2384,
+     "max": 33.7278
+    },
+    "cpu_ms_per_frame": {
+     "median": 8.881960556844547,
+     "min": 8.026668653158522,
+     "max": 9.103089533417402
+    }
+   },
+   "rapidshot-cpu": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 0,
+    "flags": [],
+    "reasons": [],
+    "unique_fps": {
+     "median": 132.6900638981373,
+     "min": 118.80789581534623,
+     "max": 143.980200911696
+    },
+    "age_p50_ms": {
+     "median": 21.9131,
+     "min": 21.3566,
+     "max": 22.3216
+    },
+    "age_p95_ms": {
+     "median": 23.1708,
+     "min": 22.7795,
+     "max": 23.765
+    },
+    "cpu_ms_per_frame": {
+     "median": 7.091110019646365,
+     "min": 6.80205047318612,
+     "max": 7.915489642184557
+    }
+   },
+   "rapidshot-wgc": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 0,
+    "flags": [],
+    "reasons": [],
+    "unique_fps": {
+     "median": 122.06995255489696,
+     "min": 119.9960941958099,
+     "max": 123.05370268466545
+    },
+    "age_p50_ms": {
+     "median": 24.3731,
+     "min": 24.1781,
+     "max": 24.4441
+    },
+    "age_p95_ms": {
+     "median": 27.807,
+     "min": 27.7723,
+     "max": 28.0782
+    },
+    "cpu_ms_per_frame": {
+     "median": 7.500639713408393,
+     "min": 6.947969543147208,
+     "max": 8.676997950819672
+    }
+   },
+   "rapidshot-wgc-window": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 0,
+    "flags": [],
+    "reasons": [],
+    "unique_fps": {
+     "median": 121.99852686778797,
+     "min": 118.56996130608619,
+     "max": 122.493703823623
+    },
+    "age_p50_ms": {
+     "median": 24.2713,
+     "min": 24.0963,
+     "max": 24.5451
+    },
+    "age_p95_ms": {
+     "median": 27.7634,
+     "min": 27.5804,
+     "max": 28.2941
+    },
+    "cpu_ms_per_frame": {
+     "median": 7.190688775510204,
+     "min": 6.579789959016393,
+     "max": 7.924107142857143
+    }
+   },
+   "rapidshot-cupy": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 0,
+    "flags": [],
+    "reasons": [],
+    "unique_fps": {
+     "median": 119.3476261300991,
+     "min": 113.98590584874107,
+     "max": 129.69189154799156
+    },
+    "age_p50_ms": {
+     "median": 22.3944,
+     "min": 22.074,
+     "max": 22.6196
+    },
+    "age_p95_ms": {
+     "median": 23.7283,
+     "min": 23.2571,
+     "max": 24.3526
+    },
+    "cpu_ms_per_frame": {
+     "median": 4.515895953757226,
+     "min": 4.343051118210862,
+     "max": 4.924738219895288
+    }
+   },
+   "rapidshot-xadapter": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 0,
+    "flags": [],
+    "reasons": [],
+    "unique_fps": {
+     "median": 81.18873802286626,
+     "min": 79.47173289800449,
+     "max": 82.51226349438755
+    },
+    "age_p50_ms": {
+     "median": 22.1617,
+     "min": 21.7636,
+     "max": 23.667
+    },
+    "age_p95_ms": {
+     "median": 24.8368,
+     "min": 24.043,
+     "max": 27.5461
+    },
+    "cpu_ms_per_frame": {
+     "median": 4.644626524390244,
+     "min": 4.4951923076923075,
+     "max": 5.079930662557781
+    }
+   },
+   "rapidshot-converter-xadapter": {
+    "passes": 5,
+    "statuses": [
+     "contaminated",
+     "contaminated",
+     "contaminated",
+     "passed",
+     "contaminated"
+    ],
+    "flagged": 4,
+    "flags": [
+     "source"
+    ],
+    "reasons": [
+     "source presented as few as 161.5/s (during this case) while this path returned 162.7 unique fps; throughput is source-limited",
+     "source presented as few as 141.0/s (during this case) while this path returned 161.1 unique fps; throughput is source-limited",
+     "source presented as few as 160.1/s (during this case) while this path returned 164.0 unique fps; throughput is source-limited",
+     "source presented as few as 113.2/s (during this case) while this path returned 159.2 unique fps; throughput is source-limited"
+    ],
+    "unique_fps": {
+     "median": 162.6605793797441,
+     "min": 159.19474549377517,
+     "max": 164.04443367751074
+    },
+    "age_p50_ms": {
+     "median": 15.3879,
+     "min": 15.2101,
+     "max": 15.4353
+    },
+    "age_p95_ms": {
+     "median": 15.8541,
+     "min": 15.7131,
+     "max": 16.1477
+    },
+    "cpu_ms_per_frame": {
+     "median": 1.2485453840186191,
+     "min": 1.180820610687023,
+     "max": 1.3560867895545314
+    }
+   }
+  },
+  "verify": {
+   "mss": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "dxcam": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "dxcam-wgc": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-cpu": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-wgc": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-wgc-window": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-cupy": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-direct": [
+    {
+     "status": "unavailable",
+     "reason": "CrossAdapterRequired: no CUDA device owns the adapter this frame was captured on. On a hybrid laptop that is expected: capture runs on the integrated GPU and CUDA only sees the discrete one. The frame has to cross adapters first \u2014 see native.cross_adapter_transfer() and ROADMAP \u00a7 6.1."
+    }
+   ],
+   "rapidshot-converter": [
+    {
+     "status": "unavailable",
+     "reason": "CrossAdapterRequired: no CUDA device is on the adapter holding this tensor (LUID aa46010000000000); 1 CUDA device(s) present, none matching. This is the ordinary hybrid-laptop case: capture is on the integrated GPU. Transfer the frame to the CUDA adapter first."
+    }
+   ],
+   "rapidshot-xadapter": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-converter-xadapter": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ]
+  },
+  "statuses": {
+   "mss": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "dxcam": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "dxcam-wgc": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-cpu": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-wgc": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-wgc-window": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-cupy": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-direct": [
+    {
+     "status": "unavailable",
+     "reason": "CrossAdapterRequired: no CUDA device owns the adapter this frame was captured on. On a hybrid laptop that is expected: capture runs on the integrated GPU and CUDA only sees the discrete one. The frame has to cross adapters first \u2014 see native.cross_adapter_transfer() and ROADMAP \u00a7 6.1."
+    },
+    {
+     "status": "unavailable",
+     "reason": "CrossAdapterRequired: no CUDA device owns the adapter this frame was captured on. On a hybrid laptop that is expected: capture runs on the integrated GPU and CUDA only sees the discrete one. The frame has to cross adapters first \u2014 see native.cross_adapter_transfer() and ROADMAP \u00a7 6.1."
+    },
+    {
+     "status": "unavailable",
+     "reason": "CrossAdapterRequired: no CUDA device owns the adapter this frame was captured on. On a hybrid laptop that is expected: capture runs on the integrated GPU and CUDA only sees the discrete one. The frame has to cross adapters first \u2014 see native.cross_adapter_transfer() and ROADMAP \u00a7 6.1."
+    },
+    {
+     "status": "unavailable",
+     "reason": "CrossAdapterRequired: no CUDA device owns the adapter this frame was captured on. On a hybrid laptop that is expected: capture runs on the integrated GPU and CUDA only sees the discrete one. The frame has to cross adapters first \u2014 see native.cross_adapter_transfer() and ROADMAP \u00a7 6.1."
+    },
+    {
+     "status": "unavailable",
+     "reason": "CrossAdapterRequired: no CUDA device owns the adapter this frame was captured on. On a hybrid laptop that is expected: capture runs on the integrated GPU and CUDA only sees the discrete one. The frame has to cross adapters first \u2014 see native.cross_adapter_transfer() and ROADMAP \u00a7 6.1."
+    }
+   ],
+   "rapidshot-converter": [
+    {
+     "status": "unavailable",
+     "reason": "CrossAdapterRequired: no CUDA device is on the adapter holding this tensor (LUID aa46010000000000); 1 CUDA device(s) present, none matching. This is the ordinary hybrid-laptop case: capture is on the integrated GPU. Transfer the frame to the CUDA adapter first."
+    },
+    {
+     "status": "unavailable",
+     "reason": "CrossAdapterRequired: no CUDA device is on the adapter holding this tensor (LUID aa46010000000000); 1 CUDA device(s) present, none matching. This is the ordinary hybrid-laptop case: capture is on the integrated GPU. Transfer the frame to the CUDA adapter first."
+    },
+    {
+     "status": "unavailable",
+     "reason": "CrossAdapterRequired: no CUDA device is on the adapter holding this tensor (LUID aa46010000000000); 1 CUDA device(s) present, none matching. This is the ordinary hybrid-laptop case: capture is on the integrated GPU. Transfer the frame to the CUDA adapter first."
+    },
+    {
+     "status": "unavailable",
+     "reason": "CrossAdapterRequired: no CUDA device is on the adapter holding this tensor (LUID aa46010000000000); 1 CUDA device(s) present, none matching. This is the ordinary hybrid-laptop case: capture is on the integrated GPU. Transfer the frame to the CUDA adapter first."
+    },
+    {
+     "status": "unavailable",
+     "reason": "CrossAdapterRequired: no CUDA device is on the adapter holding this tensor (LUID aa46010000000000); 1 CUDA device(s) present, none matching. This is the ordinary hybrid-laptop case: capture is on the integrated GPU. Transfer the frame to the CUDA adapter first."
+    }
+   ],
+   "rapidshot-xadapter": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-converter-xadapter": [
+    {
+     "status": "contaminated",
+     "reason": "source presented as few as 161.5/s (during this case) while this path returned 162.7 unique fps; throughput is source-limited"
+    },
+    {
+     "status": "contaminated",
+     "reason": "source presented as few as 141.0/s (during this case) while this path returned 161.1 unique fps; throughput is source-limited"
+    },
+    {
+     "status": "contaminated",
+     "reason": "source presented as few as 160.1/s (during this case) while this path returned 164.0 unique fps; throughput is source-limited"
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "contaminated",
+     "reason": "source presented as few as 113.2/s (during this case) while this path returned 159.2 unique fps; throughput is source-limited"
+    }
+   ]
+  }
+ },
+ "environment": {
+  "schema_version": 1,
+  "captured_at": "2026-11-12T00:54:11.286006+00:00",
+  "cpu": {
+   "topology": "hybrid",
+   "processor": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+   "physical_cores": 24,
+   "logical_processors": 32,
+   "smt_present": true,
+   "packages": 1,
+   "numa_nodes": [
+    0
+   ],
+   "processor_groups": 1,
+   "groups": [
+    {
+     "maximum_processors": 32,
+     "active_processors": 32,
+     "active_mask": 4294967295
+    }
+   ],
+   "efficiency_classes": [
+    {
+     "efficiency_class": 0,
+     "logical_processors": 16,
+     "physical_cores": 16,
+     "mask": 4294901760,
+     "mask_hex": "0xffff0000",
+     "smt": [
+      false
+     ],
+     "nominal_frequencies_mhz": [
+      2419
+     ],
+     "homogeneous": true
+    },
+    {
+     "efficiency_class": 1,
+     "logical_processors": 16,
+     "physical_cores": 8,
+     "mask": 65535,
+     "mask_hex": "0xffff",
+     "smt": [
+      true
+     ],
+     "nominal_frequencies_mhz": [
+      2419
+     ],
+     "homogeneous": true
+    }
+   ],
+   "caches": {
+    "L1_data": {
+     "instances": 24,
+     "sizes_bytes": [
+      32768,
+      49152
+     ],
+     "line_size": 64
+    },
+    "L1_instruction": {
+     "instances": 24,
+     "sizes_bytes": [
+      32768,
+      65536
+     ],
+     "line_size": 64
+    },
+    "L2_unified": {
+     "instances": 12,
+     "sizes_bytes": [
+      2097152,
+      4194304
+     ],
+     "line_size": 64
+    },
+    "L3_unified": {
+     "instances": 1,
+     "sizes_bytes": [
+      37748736
+     ],
+     "line_size": 64
+    }
+   },
+   "affinity": {
+    "process_mask": 65532,
+    "system_mask": 4294967295,
+    "process_mask_hex": "0xfffc",
+    "logical_processors_allowed": 14,
+    "restricted_before_policy": true
+   },
+   "nominal_frequency_note": "nominal clocks recorded at boot; not what any core ran at during a measurement",
+   "available": true
+  },
+  "memory": {
+   "total_physical_mb": 34049.4,
+   "available_physical_mb": 21048.5,
+   "memory_load_percent": 38,
+   "total_pagefile_mb": 43176.2,
+   "available": true
+  },
+  "displays": {
+   "count": 1,
+   "outputs": [
+    {
+     "adapter_luid": 83626,
+     "target_id": 8388688,
+     "source_id": 0,
+     "rotation_degrees": 0,
+     "scaling": "identity",
+     "output_technology": "internal",
+     "refresh_rate": {
+      "numerator": 77733000,
+      "denominator": 471104,
+      "hz": 165.00178304578182
+     },
+     "source_mode": {
+      "width": 2560,
+      "height": 1600,
+      "desktop_left": 0,
+      "desktop_top": 0
+     },
+     "signal": {
+      "active_width": 2560,
+      "active_height": 1600,
+      "total_width": 2720,
+      "total_height": 1732,
+      "pixel_rate_hz": 777330000,
+      "vsync_hz": 165.00178304578182
+     },
+     "monitor_name": "",
+     "edid_manufacturer_id": 44806,
+     "edid_product_code": 52651,
+     "gdi_device_name": "\\\\.\\DISPLAY1",
+     "advanced_color": {
+      "supported": true,
+      "active": false,
+      "limited_by_policy": false,
+      "hdr_supported": false,
+      "hdr_enabled": false,
+      "wide_color_supported": true,
+      "mode": "SDR",
+      "encoding": "RGB",
+      "bits_per_channel": 8
+     },
+     "desktop_rect": [
+      0,
+      0,
+      2560,
+      1600
+     ],
+     "primary": true,
+     "effective_dpi": [
+      144,
+      144
+     ],
+     "scale_percent": 150
+    }
+   ],
+   "dpi": {
+    "thread_awareness": "per-monitor",
+    "system_dpi": 144
+   },
+   "adapters": [
+    83626
+   ],
+   "monitors_without_a_path": [],
+   "physical_pixel_mapping": {
+    "mode": [
+     2560,
+     1600
+    ],
+    "desktop": [
+     2560,
+     1600
+    ],
+    "matches": true
+   },
+   "available": true
+  },
+  "display_fingerprint": "01f42fec52cc21b0",
+  "power": {
+   "ac_line_status": "ac",
+   "battery_percent": 80,
+   "battery_present": true,
+   "power_saver_on": false,
+   "power_scheme_guid": "381b4222-f694-41f0-9685-ff5bb260df2e",
+   "available": true
+  },
+  "os": {
+   "platform": "Windows-11-10.0.26300-SP0",
+   "release": "11",
+   "version": "10.0.26300",
+   "machine": "AMD64"
+  },
+  "hardware": {
+   "gpus": [
+    {
+     "name": "Intel(R) UHD Graphics",
+     "driver_version": "32.0.101.7092",
+     "driver_date": "/Date(1788393600000)/",
+     "pnp_device_id": "PCI\\VEN_8086&DEV_A788&SUBSYS_17311025",
+     "video_mode": "2560 x 1600 x 4294967296 colors"
+    },
+    {
+     "name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+     "driver_version": "32.0.16.2101",
+     "driver_date": "/Date(1792368000000)/",
+     "pnp_device_id": "PCI\\VEN_10DE&DEV_28E0&SUBSYS_17311025",
+     "video_mode": null
+    }
+   ],
+   "system": {
+    "Manufacturer": "Acer",
+    "Model": "Predator PHN16-72",
+    "TotalPhysicalMemory": 34049417216
+   },
+   "os": {
+    "Caption": "Microsoft Windows 11 Pro",
+    "Version": "10.0.26300",
+    "BuildNumber": "26300"
+   },
+   "memory_modules": [
+    {
+     "capacity_mb": 34359.7,
+     "rated_speed_mhz": 5600,
+     "configured_speed_mhz": 5600,
+     "manufacturer": "Crucial Technology"
+    }
+   ],
+   "available": true
+  },
+  "source": {
+   "root": "C:\\rapidshot-nv",
+   "git": {
+    "available": false,
+    "reason": "RuntimeError: git rev-parse HEAD failed: fatal: not a git repository (or any of the parent directories): .git"
+   },
+   "package_fingerprint": {
+    "sha256": "ce6b70dc64705ddb1678d29ae8cc7205ea23864a96d08aac5823e852d83bbcf9",
+    "files": 62,
+    "bytes": 1112331
+   },
+   "harness_fingerprint": {
+    "sha256": "e416944917cd7e7af0bd24f1fc2b04c22947cc436b3c03207cde81bca1e50651",
+    "files": 20,
+    "bytes": 444826
+   },
+   "native_binary": {
+    "available": true,
+    "is_available": true,
+    "binaries": [
+     {
+      "path": "C:\\rapidshot-nv\\rapidshot\\_rapidshot_native.pyd",
+      "sha256": "f91c8381d3366235a7f4a0410b80a8ef2a5ca95f9d80ca7c9d3fb487a4a7e350",
+      "bytes": 867840,
+      "origin": "source-tree"
+     }
+    ]
+   },
+   "available": true
+  },
+  "runtime": {
+   "python": "3.13.15",
+   "implementation": "CPython",
+   "packages": {
+    "rapidshot": "2.7.1",
+    "numpy": "2.5.4",
+    "opencv-python": "5.0.0.93",
+    "dxcam": "0.3.0",
+    "mss": "10.2.0",
+    "pillow": "13.0.0",
+    "psutil": "7.2.2"
+   },
+   "threads": {
+    "cpu_count": 32,
+    "process_cpu_count": 32,
+    "environment": {
+     "OMP_NUM_THREADS": null,
+     "MKL_NUM_THREADS": null,
+     "OPENBLAS_NUM_THREADS": null,
+     "NUMEXPR_NUM_THREADS": null,
+     "ORT_NUM_THREADS": null
+    },
+    "opencv_threads": 14,
+    "onnxruntime_version": {
+     "available": false,
+     "reason": "ModuleNotFoundError: No module named 'onnxruntime'"
+    }
+   },
+   "available": true
+  },
+  "collected": [
+   "cpu",
+   "memory",
+   "displays",
+   "power",
+   "os",
+   "hardware",
+   "source",
+   "runtime"
+  ],
+  "machine_id": "m-bb405744cbdb3043"
+ },
+ "hdr": {
+  "display": {
+   "supported": true,
+   "active": false,
+   "limited_by_policy": false,
+   "hdr_supported": false,
+   "hdr_enabled": false,
+   "wide_color_supported": true,
+   "mode": "SDR",
+   "encoding": "RGB",
+   "bits_per_channel": 8
+  },
+  "capture": {
+   "dxgi_format": 87,
+   "format": "B8G8R8A8_UNORM",
+   "hdr": false,
+   "color_space": "srgb",
+   "sdr_white_nits": null,
+   "width": 2560,
+   "height": 1600
+  }
+ },
+ "cross_adapter": {
+  "supported": true,
+  "representative": true,
+  "source": "Intel(R) UHD Graphics",
+  "destination": "NVIDIA GeForce RTX 4060 Laptop GPU",
+  "source_row_major_texture": true,
+  "destination_row_major_texture": false,
+  "copy_ms_min": 1.4327999999999999,
+  "copy_ms_median": 1.653,
+  "throughput_mb_s": 5520.76790201005
+ },
+ "call_duration": {
+  "summary": {
+   "mss": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 0,
+    "flags": [],
+    "reasons": [],
+    "fps": {
+     "median": 28.9,
+     "min": 28.6,
+     "max": 29.4
+    },
+    "call_p50_ms": {
+     "median": 34.316,
+     "min": 33.925,
+     "max": 34.936
+    },
+    "cpu_ms_per_frame": {
+     "median": 16.763948497854077,
+     "min": 16.41949152542373,
+     "max": 17.722943722943725
+    }
+   },
+   "dxcam": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 0,
+    "flags": [],
+    "reasons": [],
+    "fps": {
+     "median": 88.4,
+     "min": 87.3,
+     "max": 89.3
+    },
+    "call_p50_ms": {
+     "median": 9.705,
+     "min": 9.266,
+     "max": 10.147
+    },
+    "cpu_ms_per_frame": {
+     "median": 10.100424328147101,
+     "min": 9.84113475177305,
+     "max": 11.69098712446352
+    }
+   },
+   "rapidshot-cpu": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 0,
+    "flags": [],
+    "reasons": [],
+    "fps": {
+     "median": 91.8,
+     "min": 90.7,
+     "max": 93.0
+    },
+    "call_p50_ms": {
+     "median": 11.278,
+     "min": 11.251,
+     "max": 11.451
+    },
+    "cpu_ms_per_frame": {
+     "median": 6.33469387755102,
+     "min": 5.7245179063360885,
+     "max": 7.525170068027211
+    }
+   },
+   "rapidshot-cupy": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 0,
+    "flags": [],
+    "reasons": [],
+    "fps": {
+     "median": 92.7,
+     "min": 91.7,
+     "max": 93.8
+    },
+    "call_p50_ms": {
+     "median": 10.9,
+     "min": 10.751,
+     "max": 11.104
+    },
+    "cpu_ms_per_frame": {
+     "median": 5.326231691078562,
+     "min": 4.943699731903485,
+     "max": 5.390835579514825
+    }
+   },
+   "rapidshot-xadapter": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 0,
+    "flags": [],
+    "reasons": [],
+    "fps": {
+     "median": 91.6,
+     "min": 82.4,
+     "max": 93.1
+    },
+    "call_p50_ms": {
+     "median": 10.818,
+     "min": 10.757,
+     "max": 10.886
+    },
+    "cpu_ms_per_frame": {
+     "median": 4.593288590604027,
+     "min": 4.391541609822647,
+     "max": 6.25
+    }
+   },
+   "rapidshot-converter-xadapter": {
+    "passes": 5,
+    "statuses": [
+     "passed",
+     "passed",
+     "passed",
+     "passed",
+     "passed"
+    ],
+    "flagged": 0,
+    "flags": [],
+    "reasons": [],
+    "fps": {
+     "median": 97.9,
+     "min": 95.4,
+     "max": 99.3
+    },
+    "call_p50_ms": {
+     "median": 10.009,
+     "min": 9.903,
+     "max": 10.305
+    },
+    "cpu_ms_per_frame": {
+     "median": 0.9635220125786164,
+     "min": 0.8571428571428571,
+     "max": 1.5549738219895288
+    }
+   }
+  },
+  "verify": {
+   "mss": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "dxcam": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-cpu": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-cupy": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-converter": [
+    {
+     "status": "unavailable",
+     "reason": "capture adapter has no CUDA device: no CUDA device is on the adapter holding this tensor (LUID aa46010000000000); 1 CUDA device(s) present, none matching. This is the ordinary hybrid-laptop case: capture is on the integrated GPU. Transfer the frame to the CUDA adapter first."
+    }
+   ],
+   "rapidshot-xadapter": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-converter-xadapter": [
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ]
+  },
+  "statuses": {
+   "mss": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "dxcam": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-cpu": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-cupy": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-converter": [
+    {
+     "status": "unavailable",
+     "reason": "capture adapter has no CUDA device: no CUDA device is on the adapter holding this tensor (LUID aa46010000000000); 1 CUDA device(s) present, none matching. This is the ordinary hybrid-laptop case: capture is on the integrated GPU. Transfer the frame to the CUDA adapter first."
+    },
+    {
+     "status": "unavailable",
+     "reason": "capture adapter has no CUDA device: no CUDA device is on the adapter holding this tensor (LUID aa46010000000000); 1 CUDA device(s) present, none matching. This is the ordinary hybrid-laptop case: capture is on the integrated GPU. Transfer the frame to the CUDA adapter first."
+    },
+    {
+     "status": "unavailable",
+     "reason": "capture adapter has no CUDA device: no CUDA device is on the adapter holding this tensor (LUID aa46010000000000); 1 CUDA device(s) present, none matching. This is the ordinary hybrid-laptop case: capture is on the integrated GPU. Transfer the frame to the CUDA adapter first."
+    },
+    {
+     "status": "unavailable",
+     "reason": "capture adapter has no CUDA device: no CUDA device is on the adapter holding this tensor (LUID aa46010000000000); 1 CUDA device(s) present, none matching. This is the ordinary hybrid-laptop case: capture is on the integrated GPU. Transfer the frame to the CUDA adapter first."
+    },
+    {
+     "status": "unavailable",
+     "reason": "capture adapter has no CUDA device: no CUDA device is on the adapter holding this tensor (LUID aa46010000000000); 1 CUDA device(s) present, none matching. This is the ordinary hybrid-laptop case: capture is on the integrated GPU. Transfer the frame to the CUDA adapter first."
+    }
+   ],
+   "rapidshot-xadapter": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ],
+   "rapidshot-converter-xadapter": [
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    },
+    {
+     "status": "passed",
+     "reason": null
+    }
+   ]
+  }
+ },
+ "memory": {
+  "seconds": 8.0,
+  "summary": {
+   "mss": {
+    "static": {
+     "fps": 38.319,
+     "working_set_mb": 84.07,
+     "capture_mb": 32.8,
+     "growth_mb_per_s": 0.0012
+    },
+    "scroll": {
+     "fps": 38.42,
+     "working_set_mb": 84.18,
+     "capture_mb": 32.81,
+     "growth_mb_per_s": 0.0011
+    },
+    "motion": {
+     "fps": 37.19,
+     "working_set_mb": 83.7,
+     "capture_mb": 32.82,
+     "growth_mb_per_s": 0.0012
+    }
+   },
+   "dxcam": {
+    "static": {
+     "fps": 163.713,
+     "working_set_mb": 104.03,
+     "capture_mb": 23.95,
+     "growth_mb_per_s": 0.0366
+    },
+    "scroll": {
+     "fps": 164.182,
+     "working_set_mb": 104.41,
+     "capture_mb": 24.16,
+     "growth_mb_per_s": 0.0355
+    },
+    "motion": {
+     "fps": 163.92,
+     "working_set_mb": 103.88,
+     "capture_mb": 23.8,
+     "growth_mb_per_s": 0.0374
+    }
+   },
+   "rapidshot": {
+    "static": {
+     "fps": 109.599,
+     "working_set_mb": 175.17,
+     "capture_mb": 70.5,
+     "growth_mb_per_s": 0.0285
+    },
+    "scroll": {
+     "fps": 110.156,
+     "working_set_mb": 174.91,
+     "capture_mb": 70.49,
+     "growth_mb_per_s": 0.0278
+    },
+    "motion": {
+     "fps": 110.574,
+     "working_set_mb": 175.25,
+     "capture_mb": 70.49,
+     "growth_mb_per_s": 0.0262
+    }
+   },
+   "rapidshot-frame": {
+    "static": {
+     "fps": 158.918,
+     "working_set_mb": 105.77,
+     "capture_mb": 1.44,
+     "growth_mb_per_s": 0.0438
+    },
+    "scroll": {
+     "fps": 160.857,
+     "working_set_mb": 105.71,
+     "capture_mb": 1.38,
+     "growth_mb_per_s": 0.0434
+    },
+    "motion": {
+     "fps": 162.428,
+     "working_set_mb": 105.89,
+     "capture_mb": 1.14,
+     "growth_mb_per_s": 0.0426
+    }
+   }
+  },
+  "skipped": {}
+ },
+ "duration_s": 1062
+}

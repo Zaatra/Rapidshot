@@ -22,9 +22,11 @@ See ROADMAP.md § 6.1 and § 6.2.
 
 import ctypes
 import logging
+import re
+import sys
 import textwrap
 from dataclasses import dataclass, field
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Mapping, Optional, Sequence, Tuple
 
 logger = logging.getLogger("rapidshot.util.topology")
 
@@ -85,31 +87,53 @@ _HYBRID_NOTE = (
     "describes the arrangement, not a guarantee."
 )
 
-# Every adapter refused DuplicateOutput. Distinct from headless (nothing to
-# capture) and from a single adapter refusing (try another one): when the
-# adapter that owns the display refuses too, adapter selection cannot help,
-# because nothing is composing a desktop DDA can attach to. Measured
-# 2026-08-21 on an Acer PHN16-72 with the MUX set to Optimus but the OS-level
-# hybrid path never brought up -- NVIDIA (1 output), Intel (0 outputs) and
-# WARP all returned DXGI_ERROR_UNSUPPORTED for the only output present.
+# Every adapter refused DuplicateOutput on a hybrid machine, and the display
+# could not be shown to be rendered on one GPU and scanned out by another (when
+# it can, _RENDER_OFFLOAD_HELP is said instead). Measured 2026-08-21 on an Acer
+# PHN16-72: NVIDIA (1 output), Intel (0 outputs) and WARP all returned
+# DXGI_ERROR_UNSUPPORTED. This text used to blame the OS hybrid path and the
+# MUX alone; on 2026-11-11 a ThinkPad E580 gave the identical signature and the
+# cause was the process's GPU preference, so that is checked first now.
 _HYBRID_NO_TARGET_HELP = (
     "No adapter on this hybrid system can duplicate the display.\n"
     "\n"
-    "Every adapter was tried, including the one that owns the display, and "
-    "each refused with DXGI_ERROR_UNSUPPORTED. Because the display-owning "
-    "adapter refused too, selecting a different adapter cannot fix this: the "
-    "OS-level hybrid graphics path is not running, so no adapter is composing "
-    "a desktop for Desktop Duplication to attach to.\n"
-    "\n"
-    "This is a system configuration problem rather than a capture failure. On "
-    "a laptop with a MUX switch, check that:\n"
-    "  - the GPU mode (Optimus / Hybrid / Discrete) is set consistently in the "
-    "vendor utility and in firmware, and the machine was rebooted after it was "
-    "changed;\n"
+    "Every adapter was tried and each refused with DXGI_ERROR_UNSUPPORTED. "
+    "Desktop Duplication only works through the GPU that sends the picture to "
+    "the screen, so this usually means the process is running on the other "
+    "one. Check, in this order:\n"
+    "  - Settings > System > Display > Graphics: {program} must not be set to "
+    "the GPU the display is not connected to (on a laptop, usually 'High "
+    "performance'), here or in the NVIDIA / AMD control panel. Choose the one "
+    "the display is connected to ('Power saving' for the integrated GPU);\n"
+    "  - on a laptop with a MUX switch, the GPU mode (Optimus / Hybrid / "
+    "Discrete) is set consistently in the vendor utility and in firmware, and "
+    "the machine was rebooted after it was changed;\n"
     "  - the integrated GPU driver is current. A stale iGPU driver can leave "
-    "the hybrid path uninitialised while the GPU still enumerates normally;\n"
-    "  - the GPU control panel is not forcing every application onto the "
-    "discrete GPU."
+    "the hybrid path uninitialised while the GPU still enumerates normally."
+)
+
+# The display is connected to one GPU (GDI says which) while DXGI lists it
+# under another for this process: Windows renders on the second and copies to
+# the first, and Desktop Duplication through the rendering GPU is refused with
+# DXGI_ERROR_UNSUPPORTED (Microsoft KB3019314). Measured 2026-11-11 on a
+# ThinkPad E580 (Radeon 500 + UHD 620, both outputs wired to Intel): with
+# python.exe on the Radeon every output and every device refused; set to Power
+# saving, DXGI listed the display under Intel and duplication worked.
+_RENDER_OFFLOAD_HELP = (
+    "Desktop Duplication is refused because this process runs on a different "
+    "GPU from the one the display is connected to.\n"
+    "\n"
+    "{offloads}\n"
+    "\n"
+    "Windows draws this process's view of the desktop on the GPU it runs on and "
+    "copies it to the GPU wired to the screen, and Desktop Duplication only "
+    "works through the GPU wired to the screen. Nothing in firmware or a driver "
+    "needs to change. In Settings > System > Display > Graphics, add {program} "
+    "and set it to the GPU the display is connected to ('Power saving' for an "
+    "integrated GPU, 'High performance' for a discrete one), then start it "
+    "again. In a virtual environment the setting belongs on the base "
+    "interpreter, which the environment's python.exe starts; that is the path "
+    "named here."
 )
 
 _NO_TARGET_HELP = (
@@ -174,10 +198,77 @@ class AdapterInfo:
 
 
 @dataclass(frozen=True)
+class RenderOffload:
+    """A display connected to one GPU that this process sees through another."""
+
+    output: str
+    #: The adapter GDI says the display is connected to.
+    wired_to: str
+    #: The adapter DXGI lists the display under for this process.
+    listed_under: str
+
+    def __str__(self) -> str:
+        return (f"{self.output} is connected to {self.wired_to}, but this "
+                f"process runs on {self.listed_under}, which only lists it.")
+
+
+_PCI_ID = re.compile(r"VEN_([0-9A-F]{4})&DEV_([0-9A-F]{4})", re.IGNORECASE)
+
+
+def pci_ids(device_id: str) -> Optional[Tuple[int, int]]:
+    """(vendor, device) from a GDI DeviceID such as ``PCI\\VEN_8086&DEV_5917&...``.
+
+    ``None`` for anything that is not a PCI device -- an indirect display
+    driver's ``ROOT\\...`` id, a remote session's -- which cannot be compared
+    with DXGI's ids and so must never be called a mismatch.
+    """
+    match = _PCI_ID.search(device_id or "")
+    if not match:
+        return None
+    return int(match.group(1), 16), int(match.group(2), 16)
+
+
+def find_render_offloads(
+    listed: Sequence[Tuple[str, AdapterInfo]],
+    wired: Mapping[str, Tuple[str, str]],
+) -> Tuple[RenderOffload, ...]:
+    """Displays DXGI lists under an adapter that is not the one driving them.
+
+    Args:
+        listed: (output device name, adapter it is listed under) from DXGI.
+        wired: output device name -> (adapter description, GDI DeviceID), for
+            the GDI adapters attached to the desktop.
+
+    Pure, so the hybrid laptops it exists for are tested by describing them.
+    A display GDI does not name, or names with no PCI id, is left out: this
+    reports a mismatch only when both sides are known and disagree.
+    """
+    found = []
+    for name, adapter in listed:
+        if adapter.is_software or name not in wired:
+            continue
+        description, device_id = wired[name]
+        ids = pci_ids(device_id)
+        if ids is None or ids == (adapter.vendor_id, adapter.device_id):
+            continue
+        found.append(RenderOffload(output=name, wired_to=description,
+                                   listed_under=adapter.description))
+    return tuple(found)
+
+
+def _program() -> str:
+    """The executable Windows applies a per-app GPU preference to."""
+    return getattr(sys, "_base_executable", None) or sys.executable or "python.exe"
+
+
+@dataclass(frozen=True)
 class GpuTopology:
     """How this machine's adapters and displays are arranged."""
 
     adapters: Tuple[AdapterInfo, ...] = field(default_factory=tuple)
+    #: Displays this process sees through a GPU other than the one they are
+    #: connected to. Empty when there are none, or GDI could not be asked.
+    render_offloads: Tuple[RenderOffload, ...] = field(default_factory=tuple)
 
     @property
     def kind(self) -> str:
@@ -232,7 +323,13 @@ class GpuTopology:
         surfaced as a raw COM string that named neither.
         """
         adapters = "\n".join(f"  {a}" for a in self.adapters)
-        base = _HYBRID_NO_TARGET_HELP if self.is_hybrid else _NO_TARGET_HELP
+        if self.render_offloads:
+            offloads = "\n".join(f"  {o}" for o in self.render_offloads)
+            base = _RENDER_OFFLOAD_HELP.format(offloads=offloads, program=_program())
+        elif self.is_hybrid:
+            base = _HYBRID_NO_TARGET_HELP.format(program=_program())
+        else:
+            base = _NO_TARGET_HELP
         return f"{base}\n\nAdapters tried:\n{adapters}"
 
     def describe(self) -> str:
@@ -240,7 +337,17 @@ class GpuTopology:
         lines = [f"Topology: {self.kind}"]
         lines += [f"  {a}" for a in self.adapters]
 
-        if self.is_hybrid:
+        if self.render_offloads:
+            # The hybrid note would name the GPU this process runs on as the
+            # one that "owns the display", which is exactly backwards here.
+            lines.append("")
+            lines += [f"  {o}" for o in self.render_offloads]
+            lines += textwrap.wrap(
+                "Desktop Duplication through that GPU is refused; set "
+                f"{_program()} to the GPU the display is connected to in "
+                "Settings > System > Display > Graphics.",
+                width=76, initial_indent="  ", subsequent_indent="  ")
+        elif self.is_hybrid:
             note = _HYBRID_NOTE.format(
                 capture=self.capture_adapters[0].description,
                 others=", ".join(a.description for a in self.render_only_adapters),
@@ -256,9 +363,31 @@ class GpuTopology:
         return "\n".join(lines)
 
 
-def classify(adapters: Sequence[AdapterInfo]) -> GpuTopology:
+def classify(adapters: Sequence[AdapterInfo],
+             render_offloads: Sequence[RenderOffload] = ()) -> GpuTopology:
     """Build a GpuTopology from already-read adapter descriptions."""
-    return GpuTopology(adapters=tuple(adapters))
+    return GpuTopology(adapters=tuple(adapters), render_offloads=tuple(render_offloads))
+
+
+def _wired_displays() -> dict:
+    """GDI's view: display device name -> (adapter description, DeviceID), for
+    the adapters attached to the desktop. Empty if GDI cannot be asked."""
+    from rapidshot._libs.user32 import DISPLAY_DEVICE, DISPLAY_DEVICE_ACTIVE
+    from rapidshot.util.io import _user32
+
+    wired = {}
+    if _user32 is None:
+        return wired
+    i = 0
+    while True:
+        device = DISPLAY_DEVICE()
+        device.cb = ctypes.sizeof(device)
+        if not _user32.EnumDisplayDevicesW(None, i, ctypes.byref(device), 0):
+            break
+        if device.StateFlags & DISPLAY_DEVICE_ACTIVE:
+            wired[device.DeviceName] = (device.DeviceString, device.DeviceID)
+        i += 1
+    return wired
 
 
 def probe_topology() -> GpuTopology:
@@ -267,10 +396,15 @@ def probe_topology() -> GpuTopology:
     Returns:
         GpuTopology. An empty one if DXGI could not be reached at all.
     """
-    from rapidshot._libs.dxgi import DXGI_ADAPTER_DESC1, DXGI_ADAPTER_FLAG_SOFTWARE
+    from rapidshot._libs.dxgi import (
+        DXGI_ADAPTER_DESC1,
+        DXGI_ADAPTER_FLAG_SOFTWARE,
+        DXGI_OUTPUT_DESC,
+    )
     from rapidshot.util.io import enum_dxgi_adapters, enum_dxgi_outputs
 
     adapters: List[AdapterInfo] = []
+    listed: List[Tuple[str, AdapterInfo]] = []
     try:
         p_adapters = enum_dxgi_adapters()
     except Exception as exc:  # DXGI unreachable — report it as "no adapters"
@@ -287,24 +421,38 @@ def probe_topology() -> GpuTopology:
             adapters.append(AdapterInfo(index=index, description="<unreadable>", error=str(exc)))
             continue
 
+        names: List[str] = []
         try:
-            output_count = len(enum_dxgi_outputs(p_adapter))
+            outputs = enum_dxgi_outputs(p_adapter)
+            output_count = len(outputs)
+            for p_output in outputs:
+                out_desc = DXGI_OUTPUT_DESC()
+                try:
+                    p_output.GetDesc(ctypes.byref(out_desc))
+                    names.append(out_desc.DeviceName)
+                except Exception:  # a name is only needed for the comparison
+                    pass
         except Exception as exc:
             logger.warning(f"Could not enumerate outputs on adapter {index}: {exc}")
             output_count = 0
             error = str(exc)
 
-        adapters.append(
-            AdapterInfo(
-                index=index,
-                description=desc.Description,
-                vendor_id=desc.VendorId,
-                device_id=desc.DeviceId,
-                dedicated_video_memory=desc.DedicatedVideoMemory,
-                is_software=bool(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE),
-                output_count=output_count,
-                error=error,
-            )
+        info = AdapterInfo(
+            index=index,
+            description=desc.Description,
+            vendor_id=desc.VendorId,
+            device_id=desc.DeviceId,
+            dedicated_video_memory=desc.DedicatedVideoMemory,
+            is_software=bool(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE),
+            output_count=output_count,
+            error=error,
         )
+        adapters.append(info)
+        listed += [(name, info) for name in names]
 
-    return classify(adapters)
+    try:
+        offloads = find_render_offloads(listed, _wired_displays())
+    except Exception as exc:  # a diagnostic must not stop the probe
+        logger.debug(f"Could not compare GDI and DXGI display owners: {exc}")
+        offloads = ()
+    return classify(adapters, offloads)

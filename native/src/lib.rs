@@ -1,8 +1,12 @@
-//! Native GPU interop shim for Rapidshot (Stage 6).
+//! Native GPU interop shim for Rapidshot (Stage 6), and since 0.4.0 the Python
+//! binding over `rapidshot-core`, where the implementation lives.
 //!
 //! Scope discipline matters here. Profiling showed the DXGI capture loop costs
-//! ~0.003 ms/frame in Python binding overhead, so it stays in Python. What
-//! Python *cannot* do is hand a D3D11 texture to DirectML: ONNX Runtime's
+//! ~0.003 ms/frame in Python binding overhead, so speed was never a reason to
+//! move it, and the Python `Duplicator` is still the default. 0.4.0 adds a
+//! native one (`DesktopDuplicator`, opt-in) for a different reason: the Rust
+//! remote-support helper captures through `rapidshot-core`, and one
+//! implementation is better than two that drift. What Python *cannot* do is hand a D3D11 texture to DirectML: ONNX Runtime's
 //! `OrtDmlApi::CreateGPUAllocationFromD3DResource` has no Python binding, and
 //! the `data_ptr()` of a DML `OrtValue` is a host-side opaque handle that cannot
 //! be synthesised from a texture. That single gap is what this crate exists to
@@ -18,14 +22,11 @@
 //! The diagnostics here (`probe_*`) exist because each answered a question that
 //! changed the design, and would otherwise have to be rediscovered.
 
-mod capture_order;
-mod converter12;
-mod cross_adapter;
-mod luma;
-mod preprocess;
-mod preprocess12;
-mod swizzle;
-mod wgc;
+mod py_duplicator;
+mod py_kernels;
+
+// The implementation lives in `rapidshot-core`; this crate is the binding.
+use rapidshot_core::{converter12, cross_adapter, preprocess, preprocess12, wgc};
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -902,7 +903,9 @@ impl GpuConverter12 {
             }
             // The conventional array form of a 4:2:0 frame (OpenCV, FFmpeg):
             // the Y plane's H rows, then H/2 rows of interleaved chroma.
-            converter12::OutputFormat::Nv12 | converter12::OutputFormat::P010 => {
+            converter12::OutputFormat::Nv12
+            | converter12::OutputFormat::P010
+            | converter12::OutputFormat::Nv12Texture => {
                 vec![h * 3 / 2, w]
             }
             _ => vec![n, 3, h, w],
@@ -929,7 +932,7 @@ impl GpuConverter12 {
             converter12::OutputFormat::Fp32Nchw | converter12::OutputFormat::Fp32Nhwc => "float32",
             converter12::OutputFormat::Fp16Nchw | converter12::OutputFormat::Fp16Nhwc => "float16",
             converter12::OutputFormat::Bgra8Nhwc => "uint8",
-            converter12::OutputFormat::Nv12 => "uint8",
+            converter12::OutputFormat::Nv12 | converter12::OutputFormat::Nv12Texture => "uint8",
             converter12::OutputFormat::P010 => "uint16",
         })
     }
@@ -959,6 +962,7 @@ impl GpuConverter12 {
             .map_err(|_| PyRuntimeError::new_err("converter lock poisoned"))?;
         Ok(match inner.format {
             converter12::OutputFormat::Nv12 => Some("nv12"),
+            converter12::OutputFormat::Nv12Texture => Some("nv12_texture"),
             converter12::OutputFormat::P010 => Some("p010"),
             _ => None,
         })
@@ -2142,14 +2146,11 @@ fn _rapidshot_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(get_device_pointer, m)?)?;
     m.add_function(wrap_pyfunction!(probe_d3d12_sharing, m)?)?;
     m.add_function(wrap_pyfunction!(probe_shareable_buffers, m)?)?;
-    m.add_function(wrap_pyfunction!(cross_adapter::probe_cross_adapter, m)?)?;
-    m.add_function(wrap_pyfunction!(
-        cross_adapter::probe_cross_adapter_buffer,
-        m
-    )?)?;
+    m.add_function(wrap_pyfunction!(py_kernels::probe_cross_adapter, m)?)?;
+    m.add_function(wrap_pyfunction!(py_kernels::probe_cross_adapter_buffer, m)?)?;
     m.add_function(wrap_pyfunction!(probe_onnxruntime, m)?)?;
-    m.add_function(wrap_pyfunction!(luma::bgra_to_gray_into, m)?)?;
-    m.add_function(wrap_pyfunction!(swizzle::bgra_swizzle_into, m)?)?;
+    m.add_function(wrap_pyfunction!(py_kernels::bgra_to_gray_into, m)?)?;
+    m.add_function(wrap_pyfunction!(py_kernels::bgra_swizzle_into, m)?)?;
     m.add_function(wrap_pyfunction!(build_info, m)?)?;
     m.add_function(wrap_pyfunction!(wgc_is_supported, m)?)?;
     m.add_function(wrap_pyfunction!(wgc_item_size, m)?)?;
@@ -2161,6 +2162,7 @@ fn _rapidshot_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<TestTexture>()?;
     m.add_class::<CrossAdapterTransfer>()?;
     m.add_class::<WgcSession>()?;
+    py_duplicator::register(m)?;
     Ok(())
 }
 #[cfg(test)]

@@ -123,7 +123,7 @@ def sample(frames=5):
     return any(flags), sum(means) / len(means)
 
 
-def test_display_affinity_sets_the_protected_flag(excluded_window):
+def test_display_affinity_sets_the_protected_flag(excluded_window, desktop_duplication):
     """`Frame.protected_content` must follow the real OS state, both ways.
 
     Checked against a baseline in the same run rather than asserting True in

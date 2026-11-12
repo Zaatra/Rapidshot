@@ -649,8 +649,30 @@ def test_float_output_can_opt_in_to_scrgb_and_uint8_cannot(ext):
 @pytest.mark.parametrize("fmt", [10, 24])
 def test_yuv_from_linear_hdr_input_is_refused_even_when_allowed(ext, fmt):
     """The 10-bit case used to go through the Y'CbCr matrix with no error."""
-    with pytest.raises(ValueError, match="NV12/P010 cannot encode"):
+    with pytest.raises(ValueError, match="NV12/P010 cannot encode as it is"):
         GpuConverter(hdr_frame(fmt), (8, 4), pixel_format="nv12", allow_linear=True)
+
+
+@pytest.mark.parametrize("fmt", [10, 24])
+@pytest.mark.parametrize("tone_map,native_name", [("auto", "max_rgb"), ("clip", "clip")])
+def test_nv12_from_an_hdr_desktop_is_tone_mapped_for_an_encoder(ext, fmt, tone_map, native_name):
+    conv = GpuConverter(hdr_frame(fmt), (8, 4), pixel_format="nv12", tone_map=tone_map)
+    conv.process(hdr_frame(fmt))
+    conv.process(frame())
+    first, second = conv._impl.calls[-2:]
+    assert (first["tone_map"], first["sdr_white"]) == (native_name, 3.0)
+    assert "tone_map" not in second, "an SDR frame is used as it is"
+
+
+def test_p010_takes_no_tone_map_because_hdr10_belongs_there(ext):
+    with pytest.raises(ValueError, match="HDR10"):
+        GpuConverter(frame(), (8, 4), pixel_format="p010", tone_map="clip")
+
+
+def test_an_extension_without_the_nv12_tone_map_is_refused(ext, monkeypatch):
+    monkeypatch.setattr(native, "extension_version", lambda: "0.3.1")
+    with pytest.raises(RuntimeError, match="requires rapidshot-native >= 0.4.0"):
+        GpuConverter(frame(), (8, 4), pixel_format="nv12", tone_map="clip")
 
 
 def test_sdr_frames_and_10bit_sdr_desktops_convert_as_before(ext):
@@ -707,7 +729,7 @@ def test_sdr_white_reaches_the_gpu_as_grab_quantises_it(nits):
     ({"tone_map": "AUTO"}, "tone_map must be one of"),
     ({"output_color_space": "bt2020-pq"}, "HDR10 output"),
     ({"tone_map": "auto", "allow_linear": True}, "choose one"),
-    ({"tone_map": "clip", "pixel_format": "nv12"}, "not available with pixel_format"),
+    ({"tone_map": "clip", "pixel_format": "p010"}, "not available with pixel_format"),
 ])
 def test_tone_map_arguments_that_cannot_both_hold_are_refused(ext, kwargs, match):
     with pytest.raises(ValueError, match=match):

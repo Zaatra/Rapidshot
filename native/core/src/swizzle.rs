@@ -21,8 +21,11 @@
 //! GRAY was the slowest mode and got fixed first (see `luma.rs`), but it was
 //! never the most used one. The absolute saving available here is larger.
 
-use pyo3::exceptions::PyValueError;
-use pyo3::prelude::*;
+/// An argument error, worded for the caller; the binding raises it as
+/// `ValueError`.
+fn err(message: impl Into<String>) -> String {
+    message.into()
+}
 
 /// Which reordering to apply. Mirrors the strings `NumpyProcessor` already uses.
 #[derive(Copy, Clone)]
@@ -36,12 +39,12 @@ enum Mode {
 }
 
 impl Mode {
-    fn parse(name: &str) -> PyResult<Self> {
+    fn parse(name: &str) -> Result<Self, String> {
         match name {
             "RGB" => Ok(Mode::Rgb),
             "BGR" => Ok(Mode::Bgr),
             "RGBA" => Ok(Mode::Rgba),
-            other => Err(PyValueError::new_err(format!(
+            other => Err(err(format!(
                 "unsupported mode {other:?}; expected RGB, BGR or RGBA"
             ))),
         }
@@ -311,12 +314,8 @@ fn swizzle_image(
 /// bytes, and `dst_ptr` to `dst_pitch * (height - 1) + width * channels`
 /// writable bytes. The explicit lengths are what the validation below checks
 /// that requirement against.
-#[pyfunction]
-#[pyo3(signature = (src_ptr, src_len, dst_ptr, dst_len, width, height, mode,
-                    pitch=None, dst_pitch=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn bgra_swizzle_into(
-    py: Python<'_>,
     src_ptr: usize,
     src_len: usize,
     dst_ptr: usize,
@@ -326,37 +325,33 @@ pub fn bgra_swizzle_into(
     mode: &str,
     pitch: Option<usize>,
     dst_pitch: Option<usize>,
-) -> PyResult<()> {
+) -> Result<(), String> {
     let mode = Mode::parse(mode)?;
     let channels = mode.channels();
 
     if width == 0 || height == 0 {
-        return Err(PyValueError::new_err(
-            "width and height must both be non-zero",
-        ));
+        return Err(err("width and height must both be non-zero"));
     }
     if src_ptr == 0 || dst_ptr == 0 {
-        return Err(PyValueError::new_err(
-            "source and destination must not be null",
-        ));
+        return Err(err("source and destination must not be null"));
     }
 
     let src_row = width
         .checked_mul(4)
-        .ok_or_else(|| PyValueError::new_err("width * 4 overflows"))?;
+        .ok_or_else(|| err("width * 4 overflows"))?;
     let dst_row = width
         .checked_mul(channels)
-        .ok_or_else(|| PyValueError::new_err("width * channels overflows"))?;
+        .ok_or_else(|| err("width * channels overflows"))?;
     let pitch = pitch.unwrap_or(src_row);
     let dst_pitch = dst_pitch.unwrap_or(dst_row);
 
     if pitch < src_row {
-        return Err(PyValueError::new_err(format!(
+        return Err(err(format!(
             "pitch {pitch} is smaller than a {width}px BGRA row ({src_row} bytes)"
         )));
     }
     if dst_pitch < dst_row {
-        return Err(PyValueError::new_err(format!(
+        return Err(err(format!(
             "dst_pitch {dst_pitch} is smaller than a {width}px row ({dst_row} bytes)"
         )));
     }
@@ -367,33 +362,31 @@ pub fn bgra_swizzle_into(
     let need_src = pitch
         .checked_mul(height - 1)
         .and_then(|v| v.checked_add(src_row))
-        .ok_or_else(|| PyValueError::new_err("source extent overflows"))?;
+        .ok_or_else(|| err("source extent overflows"))?;
     let need_dst = dst_pitch
         .checked_mul(height - 1)
         .and_then(|v| v.checked_add(dst_row))
-        .ok_or_else(|| PyValueError::new_err("destination extent overflows"))?;
+        .ok_or_else(|| err("destination extent overflows"))?;
 
     if src_len < need_src {
-        return Err(PyValueError::new_err(format!(
+        return Err(err(format!(
             "source buffer is {src_len} bytes; {width}x{height} at pitch {pitch} \
              needs {need_src}"
         )));
     }
     if dst_len < need_dst {
-        return Err(PyValueError::new_err(format!(
+        return Err(err(format!(
             "destination buffer is {dst_len} bytes; {width}x{height}x{channels} \
              needs {need_dst}"
         )));
     }
 
-    // Pure memory traffic touching no Python objects, so the interpreter should
-    // not be held for it. See the note in `luma.rs`: `detach` is PyO3 0.29's
-    // name for what used to be `allow_threads`.
-    py.detach(|| {
+    // Run by the binding with the GIL released; see `luma.rs`.
+    {
         let src = unsafe { std::slice::from_raw_parts(src_ptr as *const u8, need_src) };
         let dst = unsafe { std::slice::from_raw_parts_mut(dst_ptr as *mut u8, need_dst) };
         swizzle_image(src, dst, width, height, pitch, dst_pitch, mode);
-    });
+    }
 
     Ok(())
 }

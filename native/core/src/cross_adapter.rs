@@ -23,9 +23,7 @@
 //! hardware. The buffer path works either way; the capability is reported so
 //! the difference is visible.
 
-use pyo3::exceptions::PyRuntimeError;
-use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use crate::report::Report;
 
 use std::cell::Cell;
 
@@ -377,29 +375,34 @@ fn cross_adapter_buffer_desc(size: u64) -> D3D12_RESOURCE_DESC {
 ///     iterations: timed copies. The reported figure is the minimum, which is
 ///         the least noise-contaminated estimate of the real cost — see the
 ///         benchmark noise note in ROADMAP.md § 2.
-#[pyfunction]
-#[pyo3(signature = (width = 1920, height = 1080, iterations = 50))]
+/// Why a probe could not run at all; the binding raises `Value` as
+/// `ValueError` and `Runtime` as `RuntimeError`, as the probes always did.
+#[derive(Debug)]
+pub enum ProbeError {
+    Value(String),
+    Runtime(String),
+}
+
 pub fn probe_cross_adapter(
-    py: Python<'_>,
     width: u32,
     height: u32,
     iterations: usize,
-) -> PyResult<Py<PyDict>> {
-    let out = PyDict::new(py);
+) -> Result<Report, ProbeError> {
+    let mut out = Report::default();
 
     let adapters = enumerate_adapters()
-        .map_err(|e| PyRuntimeError::new_err(format!("could not enumerate adapters: {e}")))?;
+        .map_err(|e| ProbeError::Runtime(format!("could not enumerate adapters: {e}")))?;
 
-    let listing = PyList::empty(py);
+    let mut listing = Vec::new();
     for a in &adapters {
-        let entry = PyDict::new(py);
-        entry.set_item("index", a.index)?;
-        entry.set_item("description", &a.description)?;
-        entry.set_item("software", a.is_software)?;
-        entry.set_item("outputs", a.output_count)?;
-        listing.append(entry)?;
+        let mut entry = Report::default();
+        entry.set("index", a.index);
+        entry.set("description", &a.description);
+        entry.set("software", a.is_software);
+        entry.set("outputs", a.output_count);
+        listing.push(entry);
     }
-    out.set_item("adapters", listing)?;
+    out.set("adapters", listing);
 
     // Source = the adapter capture is bound to: it drives a display. Fall back
     // to the first hardware adapter so the probe still says something on a
@@ -410,9 +413,9 @@ pub fn probe_cross_adapter(
         .or_else(|| adapters.iter().find(|a| !a.is_software))
         .or_else(|| adapters.first());
     let Some(source) = source else {
-        out.set_item("supported", false)?;
-        out.set_item("reason", "no DXGI adapters")?;
-        return Ok(out.into());
+        out.set("supported", false);
+        out.set("reason", "no DXGI adapters");
+        return Ok(out);
     };
     // Destination = any other adapter. A hardware one is the real case; WARP is
     // the only second adapter on a single-GPU machine and still exercises the
@@ -422,40 +425,40 @@ pub fn probe_cross_adapter(
         .find(|a| a.index != source.index && !a.is_software)
         .or_else(|| adapters.iter().find(|a| a.index != source.index));
     let Some(dest) = dest else {
-        out.set_item("supported", false)?;
-        out.set_item("reason", "only one adapter on this system")?;
-        return Ok(out.into());
+        out.set("supported", false);
+        out.set("reason", "only one adapter on this system");
+        return Ok(out);
     };
 
-    out.set_item("source", &source.description)?;
-    out.set_item("destination", &dest.description)?;
-    out.set_item("destination_is_software", dest.is_software)?;
+    out.set("source", &source.description);
+    out.set("destination", &dest.description);
+    out.set("destination_is_software", dest.is_software);
     // A WARP destination proves the mechanism but says nothing about the cost
     // of a real iGPU->dGPU transfer.
-    out.set_item("representative", !dest.is_software)?;
+    out.set("representative", !dest.is_software);
 
     let source_device = make_device(&source.adapter)
-        .map_err(|e| PyRuntimeError::new_err(format!("D3D12 device on source failed: {e}")))?;
+        .map_err(|e| ProbeError::Runtime(format!("D3D12 device on source failed: {e}")))?;
     let dest_device = match make_device(&dest.adapter) {
         Ok(d) => d,
         Err(e) => {
-            out.set_item("supported", false)?;
-            out.set_item("reason", format!("D3D12 device on destination failed: {e}"))?;
-            return Ok(out.into());
+            out.set("supported", false);
+            out.set("reason", format!("D3D12 device on destination failed: {e}"));
+            return Ok(out);
         }
     };
 
-    out.set_item(
+    out.set(
         "source_row_major_texture",
         row_major_texture_supported(&source_device),
-    )?;
-    out.set_item(
+    );
+    out.set(
         "destination_row_major_texture",
         row_major_texture_supported(&dest_device),
-    )?;
+    );
 
     match run_probe(
-        &out,
+        &mut out,
         &source_device,
         &dest_device,
         width,
@@ -464,16 +467,16 @@ pub fn probe_cross_adapter(
     ) {
         Ok(()) => {}
         Err(e) => {
-            out.set_item("supported", false)?;
-            out.set_item("reason", format!("{e}"))?;
+            out.set("supported", false);
+            out.set("reason", format!("{e}"));
         }
     }
 
-    Ok(out.into())
+    Ok(out)
 }
 
 fn run_probe(
-    out: &Bound<'_, PyDict>,
+    out: &mut Report,
     source_device: &ID3D12Device,
     dest_device: &ID3D12Device,
     width: u32,
@@ -515,7 +518,7 @@ fn run_probe(
     let mut source_heap: Option<ID3D12Heap> = None;
     unsafe { source_device.CreateHeap(&heap_desc, &mut source_heap)? };
     let source_heap = source_heap.expect("CreateHeap reported success");
-    let _ = out.set_item("heap_bytes", total_bytes);
+    out.set("heap_bytes", total_bytes);
 
     // Share the *heap*, not the resource: cross-adapter placement is a heap
     // property, and each device then places its own resource over it.
@@ -529,11 +532,11 @@ fn run_probe(
     }
     match opened {
         Ok(()) => {
-            let _ = out.set_item("opened_on_destination", dest_heap.is_some());
+            out.set("opened_on_destination", dest_heap.is_some());
         }
         Err(e) => {
-            let _ = out.set_item("opened_on_destination", false);
-            let _ = out.set_item("open_error", format!("{e}"));
+            out.set("opened_on_destination", false);
+            out.set("open_error", format!("{e}"));
             return Err(e);
         }
     }
@@ -567,9 +570,9 @@ fn run_probe(
                 &mut shared_dst,
             )
         };
-        let _ = out.set_item("placed_on_destination", placed.is_ok());
+        out.set("placed_on_destination", placed.is_ok());
         if let Err(e) = placed {
-            let _ = out.set_item("place_error", format!("{e}"));
+            out.set("place_error", format!("{e}"));
         }
     }
 
@@ -644,13 +647,13 @@ fn run_probe(
     let min = timings_ms.first().copied().unwrap_or(0.0);
     let median = timings_ms.get(timings_ms.len() / 2).copied().unwrap_or(0.0);
 
-    let _ = out.set_item("supported", true);
-    let _ = out.set_item("iterations", timings_ms.len());
-    let _ = out.set_item("copy_ms_min", min);
-    let _ = out.set_item("copy_ms_median", median);
+    out.set("supported", true);
+    out.set("iterations", timings_ms.len());
+    out.set("copy_ms_min", min);
+    out.set("copy_ms_median", median);
     if min > 0.0 {
         let mb = total_bytes as f64 / 1_048_576.0;
-        let _ = out.set_item("throughput_mb_s", mb / (min / 1000.0));
+        out.set("throughput_mb_s", mb / (min / 1000.0));
     }
     Ok(())
 }
@@ -2129,46 +2132,41 @@ fn make_readback_buffer(device: &ID3D12Device, size: u64) -> windows::core::Resu
 /// deciding whether to convert before or after the transfer needs this shape
 /// measured too. Same heap mechanism, `CopyBufferRegion` instead of
 /// `CopyTextureRegion`.
-#[pyfunction]
-#[pyo3(signature = (size_bytes, iterations = 50))]
 pub fn probe_cross_adapter_buffer(
-    py: Python<'_>,
     size_bytes: u64,
     iterations: usize,
-) -> PyResult<Py<PyDict>> {
-    let out = PyDict::new(py);
+) -> Result<Report, ProbeError> {
+    let mut out = Report::default();
     if size_bytes == 0 {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "size_bytes must be non-zero",
-        ));
+        return Err(ProbeError::Value("size_bytes must be non-zero".to_owned()));
     }
 
     let adapters = enumerate_adapters()
-        .map_err(|e| PyRuntimeError::new_err(format!("could not enumerate adapters: {e}")))?;
+        .map_err(|e| ProbeError::Runtime(format!("could not enumerate adapters: {e}")))?;
     let source = adapters
         .iter()
         .find(|a| a.drives_display() && !a.is_software)
         .or_else(|| adapters.iter().find(|a| !a.is_software))
         .or_else(|| adapters.first());
     let Some(source) = source else {
-        out.set_item("supported", false)?;
-        out.set_item("reason", "no DXGI adapters")?;
-        return Ok(out.into());
+        out.set("supported", false);
+        out.set("reason", "no DXGI adapters");
+        return Ok(out);
     };
     let dest = adapters
         .iter()
         .find(|a| a.index != source.index && !a.is_software)
         .or_else(|| adapters.iter().find(|a| a.index != source.index));
     let Some(dest) = dest else {
-        out.set_item("supported", false)?;
-        out.set_item("reason", "only one adapter on this system")?;
-        return Ok(out.into());
+        out.set("supported", false);
+        out.set("reason", "only one adapter on this system");
+        return Ok(out);
     };
 
-    out.set_item("source", &source.description)?;
-    out.set_item("destination", &dest.description)?;
-    out.set_item("representative", !dest.is_software)?;
-    out.set_item("size_bytes", size_bytes)?;
+    out.set("source", &source.description);
+    out.set("destination", &dest.description);
+    out.set("representative", !dest.is_software);
+    out.set("size_bytes", size_bytes);
 
     let run = || -> windows::core::Result<(f64, f64)> {
         let src_device = make_device(&source.adapter)?;
@@ -2237,20 +2235,20 @@ pub fn probe_cross_adapter_buffer(
 
     match run() {
         Ok((min, median)) => {
-            out.set_item("supported", true)?;
-            out.set_item("copy_ms_min", min)?;
-            out.set_item("copy_ms_median", median)?;
+            out.set("supported", true);
+            out.set("copy_ms_min", min);
+            out.set("copy_ms_median", median);
             if min > 0.0 {
                 let mb = size_bytes as f64 / 1_048_576.0;
-                out.set_item("throughput_mb_s", mb / (min / 1000.0))?;
+                out.set("throughput_mb_s", mb / (min / 1000.0));
             }
         }
         Err(e) => {
-            out.set_item("supported", false)?;
-            out.set_item("reason", format!("{e}"))?;
+            out.set("supported", false);
+            out.set("reason", format!("{e}"));
         }
     }
-    Ok(out.into())
+    Ok(out)
 }
 
 /// Move an already-converted tensor across adapters — ordering **B** from
@@ -2293,6 +2291,14 @@ pub struct TensorTransfer {
 
 impl TensorTransfer {
     pub fn new(converter: &crate::converter12::Converter12) -> windows::core::Result<Self> {
+        // The transfer copies a buffer byte for byte; a texture's planes are
+        // laid out by the driver, so there is no such copy to make.
+        if converter.format.is_texture() {
+            return Err(windows::core::Error::new(
+                windows::Win32::Foundation::E_INVALIDARG,
+                "a converter writing an NV12 texture cannot be transferred across                  adapters; transfer an Nv12 buffer converter instead",
+            ));
+        }
         let size_bytes = converter.output_byte_size();
         let src_device = converter.device().clone();
         let src_luid = unsafe { src_device.GetAdapterLuid() };

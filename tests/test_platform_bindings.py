@@ -101,11 +101,13 @@ def test_duplication_get_desc_declares_its_parameter():
     """Declared bare, it was callable and would have written through nothing."""
     from rapidshot._libs.dxgi import DXGI_OUTDUPL_DESC, IDXGIOutputDuplication
 
-    # A comtypes STDMETHOD entry is (restype, name, argtypes, ...).
+    # A comtypes STDMETHOD entry is (restype, name, argtypes, ...). comtypes
+    # 1.5 keeps argtypes as a tuple where 1.4 kept a list; the declaration is
+    # the same either way, so compare the types, not the container.
     get_desc = next(m for m in IDXGIOutputDuplication._methods_
                     if m[1] == "GetDesc")
 
-    assert get_desc[2] == [ctypes.POINTER(DXGI_OUTDUPL_DESC)], (
+    assert list(get_desc[2]) == [ctypes.POINTER(DXGI_OUTDUPL_DESC)], (
         f"GetDesc declares {get_desc[2]}; DXGI writes a DXGI_OUTDUPL_DESC "
         "through that argument")
 

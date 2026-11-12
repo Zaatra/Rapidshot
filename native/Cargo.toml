@@ -8,7 +8,7 @@ name = "rapidshot-native"
 # 0.2.1 changes no extension code: the wheel also carries latency_source.exe
 # (src/bin/latency_source.rs), the controlled test source `rapidshot benchmark`
 # times every capture library against, so a tester needs no Rust toolchain.
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 # `as_chunks` (used by the scalar kernels in luma.rs / swizzle.rs)
 # stabilised in 1.88. Clippy since 1.98 rejects the `chunks_exact`
@@ -26,6 +26,10 @@ crate-type = ["cdylib"]
 # matching the project's requires-python = ">=3.9", instead of one wheel per
 # minor version. Python 3.8 is end-of-life and PyO3 has dropped it.
 pyo3 = { version = "0.29", features = ["abi3-py39", "extension-module"] }
+# Everything that is not Python: capture, conversion, transfer. The Rust
+# remote-support helper links this same crate, so the binding holds no logic
+# a second consumer would have to repeat.
+rapidshot-core = { path = "core" }
 
 [dependencies.windows]
 version = "0.62"
@@ -56,6 +60,13 @@ features = [
     "Win32_UI_HiDpi",
     "Win32_Graphics_Gdi",
 ]
+
+[workspace]
+members = [".", "core"]
+# Plain `cargo clippy` / `cargo test` in native/ (what release-native.yml runs)
+# must cover the core crate too, or its lints and tests would silently stop
+# running when the code moved there.
+default-members = [".", "core"]
 
 [profile.release]
 opt-level = 3

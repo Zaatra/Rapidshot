@@ -5,82 +5,61 @@
 [![Python](https://img.shields.io/pypi/pyversions/rapidshot)](https://pypi.org/project/rapidshot/)
 [![License](https://img.shields.io/pypi/l/rapidshot)](LICENSE)
 
-**RapidShot captures the Windows desktop and turns it into model-ready GPU
-tensors without the pixels ever reaching the CPU — and still hands you a NumPy
-array when that is what you want.**
+**The Windows desktop, in Python, fresher and cheaper than anything else we
+measured: a NumPy array when you want one, a model-ready GPU tensor when you
+don't, without the pixels ever touching the CPU.**
 
 ```text
 Windows desktop → native GPU frame → fused preprocessing → Torch / CuPy / DLPack
 ```
 
-It captures through DXGI Desktop Duplication or Windows.Graphics.Capture --
-whole displays, regions or single windows -- began as a merge of several DXcam
-forks, and keeps a broadly familiar API. The capture path, the colour pipeline
-and the GPU interop have since been rewritten.
+## Measured, not claimed
 
-## Why this instead of DXcam
+Same benchmark, same build, on three PCs and four graphics configurations. Each
+library was timed by **pixel age**: how old the screen's pixels were, from
+Windows' own `Present()` of the frame, by the time they were a
+`(1, 3, 640, 640)` FP16 tensor ready for a model. Medians of five passes.
 
-If you want a screenshot as fast as possible and nothing else, use
-[DXcam](https://github.com/ra1nty/DXcam) or
-[BetterCam](https://github.com/RootKit-Org/BetterCam). They are good, they are
-smaller, and RapidShot does not win the capture-only frame-rate column in most
-cells ([Performance](#performance)).
+| PC | screen | RapidShot `GpuConverter` | DXcam | fresher by | CPU per frame, RapidShot vs DXcam |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Intel desktop, Core Ultra 5 235 | 1080p, 100 Hz | **22.4 ms** at 100.0 fps | 37.2 ms at 86.5 fps | **14.8 ms** | **0.4** vs 11.9 ms |
+| Lunar Lake laptop, Core Ultra 5 226V | 1200p, 60 Hz | **36.3 ms** at 59.5 fps | 47.4 ms at 51.2 fps | **11.0 ms** | **1.1** vs 20.3 ms |
+| RTX 4060 laptop, Optimus | 1600p, 165 Hz | **15.4 ms** at 162.7 fps | 24.2 ms at 108.2 fps | **8.8 ms** | **1.2** vs 8.9 ms |
+| RTX 4060 laptop, NVIDIA only | 1600p, 165 Hz | **13.9 ms** at 164.6 fps | 22.3 ms at 135.1 fps | **8.4 ms** | **0.9** vs 9.2 ms |
 
-RapidShot is for the case where the frame has somewhere to go. It owns the whole
-path from the duplicated surface to a `(1, 3, 640, 640)` FP16 tensor your model
-can consume, in one GPU dispatch, with no readback and no `ctypes`.
+On every one of them RapidShot's GPU path delivered the **freshest pixels, at
+the screen's full refresh rate, for 4-14% of DXcam's CPU**. And you do not need
+the GPU path to come out ahead: plain `grab()` into NumPy also beat DXcam's
+default backend on frames, pixel age and CPU on all four.
 
-## What changed in 2.7
+![Pixel age and CPU per frame on four configurations](images/benchmark-2.7.svg)
 
-Capture is no longer only "the whole display through Desktop Duplication":
+The full tables, memory included, are in [Performance](#performance), and
+[`rapidshot benchmark`](#run-it-on-your-machine) runs the same harness on your
+machine.
 
-- **Windows.** `rapidshot.create(source=rapidshot.Window.find("Notepad"))`
-  captures one window, wherever it is and whatever covers it, through
-  Windows.Graphics.Capture (WGC). Everything downstream -- `grab()`,
-  `grab_frame()`, `GpuConverter`, `TensorStream`, the hybrid-GPU transfer --
-  takes its frames unchanged.
-- **Sources, separate from backends.** `Monitor`, `Window` and `Region` name
-  what to capture; `backend="dxgi"` or `"wgc"` names how. See
-  [Sources and backends](#sources-and-backends).
-- **A planner instead of a guess.** `rapidshot.plan(..., calibrate=True)`
-  measures each backend on your machine -- pixel age, frames, CPU -- and
-  `backend="auto"` follows the result. On the development laptop the answer
-  depended on the capture size: Desktop Duplication was 2.4 ms fresher reading
-  the whole 2560x1600 display back, while for a small region the two were
-  level -- which is why the planner measures at the size you capture.
+## Why RapidShot
 
-WGC needs `rapidshot-native >= 0.3.0`. Every 2.6 call that names no `source`
-behaves exactly as before.
+- **Fresher frames.** A frame is converted where it was captured, in one GPU
+  dispatch, and handed over without a readback. The figures above are that path.
+- **Model-ready tensors in one line.** Crop, resize, colour order,
+  normalisation, FP16 and layout in a single Direct3D 12 dispatch, then
+  `to_torch()`, `to_cupy()` or `to_dlpack()`, zero-copy. No `ctypes`.
+- **Hybrid laptops handled.** Optimus-style machines capture on the integrated
+  GPU and run CUDA on the discrete one. RapidShot converts first and moves the
+  2.46 MB tensor rather than a 16 MB frame, and was verified byte-exact on a
+  real Intel UHD → RTX 4060 pair.
+- **Any source.** Whole displays, regions or single windows, through DXGI
+  Desktop Duplication or Windows.Graphics.Capture, with a planner that
+  measures which backend is fresher on *your* machine instead of guessing.
+- **Still a screenshot library.** `pip install rapidshot`, `camera.grab()`, a
+  NumPy array. No GPU knowledge, no compiler, no native extension.
+- **Correct before fast.** Every conversion is checked against an independent
+  reference before it is timed. A fast wrong answer is worthless.
 
-## What changed in 2.6
-
-Four things, each with the measurement behind it:
-
-- **Memory: `grab()` uses 58% less than RapidShot 2.5**, and `grab_frame()` 63%
-  less. Read that as *against RapidShot 2.5*, not against DXcam — the
-  cross-library figure is in [Performance](#performance), and it is a much
-  smaller gap than 58%.
-- **Fused GPU preprocessing with native FP16** — crop, resize, colour
-  conversion, normalisation and layout in a **single** D3D12 dispatch, emitting
-  `float16` as well as `float32` and `uint8`. Multi-ROI batches in one dispatch
-  too.
-- **One-call framework export** — `tensor.to_torch()`, `.to_cupy()`,
-  `.to_dlpack()`, zero-copy. This replaces roughly sixty lines of `ctypes` that
-  the 2.5 README asked you to copy.
-- **Convert-before-transfer on hybrid GPUs** — preprocess on the capture
-  adapter, then move the finished tensor rather than the whole frame: **2.46 MB
-  instead of 16.38 MB** at 2560×1600. Verified end to end on real Optimus
-  hardware (Intel UHD → RTX 4060), CUDA importing the transferred buffer — see
-  [Hybrid GPU laptops](#hybrid-gpu-laptops). Measured: **162 fps against DXcam's
-  96, pixels 10 ms younger, at under a fifth of the CPU**, and through YOLO11n
-  **70 fps against 45, detections 7.8 ms sooner** — see
-  [Desktop to model](#c-desktop-to-model).
-
-**2.6.1** adds `rapidshot benchmark`, which runs those measurements on your own
-machine — see [Run it on your machine](#run-it-on-your-machine).
-
-Upgrading from 2.5? See [Migrating from 2.5](#migrating-from-25) — the one
-breaking item is a new minimum native-extension version.
+RapidShot began as a merge of [DXcam](https://github.com/ra1nty/DXcam) forks
+and keeps a familiar API; the capture path, the colour pipeline and the GPU
+interop have since been rewritten.
 
 ## Quick start
 
@@ -111,16 +90,15 @@ for tensor in stream:
     prediction = model(tensor.to_torch())
 ```
 
-Use `TensorStream` rather than writing that loop by hand. Its docstring lists
-the four ways a hand-written version goes quietly wrong — a held frame stalls
-capture, the reused output buffer races the model, `None` means both "nothing
-changed" and "capture has died", and a rebuilt capture can land on a new
-adapter. It closes all four.
+Use `TensorStream` rather than writing that loop by hand. It closes the four
+ways a hand-written loop goes quietly wrong: a held frame stalls capture, the
+reused output buffer races the model, `None` means both "nothing changed" and
+"capture has died", and a rebuilt capture can land on a new adapter.
 
 > **On a hybrid laptop, `to_torch()` above raises `CrossAdapterRequired`.** That
-> is not a bug. On an Optimus-style machine the display — and therefore capture
-> — lives on the integrated GPU, while CUDA only sees the discrete one, so there
-> is nothing for CUDA to import until the tensor has crossed. Add one object:
+> is not a bug. On an Optimus-style machine the display, and therefore capture,
+> lives on the integrated GPU while CUDA only sees the discrete one, so there is
+> nothing for CUDA to import until the tensor has crossed. Add one object:
 > [Hybrid GPU laptops](#hybrid-gpu-laptops). `rapidshot.diagnose()` tells you
 > which kind of machine you are on before you write any of this.
 
@@ -139,7 +117,7 @@ with camera.grab_frame() as frame:            # GPU texture, no CPU copy
 ```
 
 `GpuConverter` takes the frame first: it needs the source surface to size its
-resources. Build it once outside your loop and call `process()` per frame — the
+resources. Build it once outside your loop and call `process()` per frame; the
 output buffer is reused, which is why `TensorStream` synchronises before
 overwriting it.
 
@@ -175,21 +153,22 @@ Clone if you need one to outlive the next frame.
 pip install rapidshot
 ```
 
-That is the whole library for CPU and D3D11 capture — `grab()`, `grab_frame()`,
+That is the whole library for CPU and D3D11 capture: `grab()`, `grab_frame()`,
 regions, colour conversion, dirty rects, video recording. **No toolchain, no
 compiler, no GPU requirement.**
 
-The 2.6 GPU tensor features need the prebuilt native extension:
+The GPU tensor, window capture and the hybrid-GPU transfer need the prebuilt
+native extension:
 
 ```bash
 pip install "rapidshot[native]"
 ```
 
-This installs **`rapidshot-native >= 0.3.1`**. 0.2.0 is the minimum that exports
+This installs **`rapidshot-native >= 0.3.1`**: 0.2.0 is the minimum that exports
 `GpuConverter` and `TensorTransfer`, 0.3.0 adds the Windows.Graphics.Capture
 session behind `backend="wgc"` and window capture, and 0.3.1 makes NV12/P010
-chroma left-sited, as H.264 and HEVC expect. If you somehow end up with an
-older extension, RapidShot says which version a feature needs:
+chroma left-sited, as H.264 and HEVC expect. With an older extension, RapidShot
+names the version a feature needs instead of failing obscurely:
 
 ```text
 RuntimeError: GpuConverter12 requires rapidshot-native >= 0.2.0; the installed
@@ -199,7 +178,7 @@ Upgrade the prebuilt wheel:
     pip install --upgrade 'rapidshot-native>=0.2.0'
 ```
 
-Other extras: `rapidshot[gpu_cuda12]` or `[gpu_cuda13]` for CuPy (pick one —
+Other extras: `rapidshot[gpu_cuda12]` or `[gpu_cuda13]` for CuPy (pick one;
 the `cupy-cudaNNx` wheels are mutually exclusive), `rapidshot[benchmark]` for
 the [benchmark command](#run-it-on-your-machine), and `rapidshot[all]` for
 everything that is not CUDA-version-specific.
@@ -211,16 +190,16 @@ import rapidshot
 print(rapidshot.diagnose())
 ```
 
-It reports the adapters, outputs, whether the native extension loaded and from
-where, and which optional dependencies are present — before you write any
-capture code.
+It reports the adapters, outputs, which GPU drives each display, whether the
+native extension loaded and from where, and which optional dependencies are
+present, before you write any capture code.
 
-## The 2.6 pipeline
+## The pipeline
 
 ```text
                               ┌── NumPy / OpenCV        grab()
                               │
-   DXGI ──→ D3D11 Frame ──────┼── raw GPU texture       grab_frame()
+   DXGI / WGC ──→ GPU frame ──┼── raw GPU texture       grab_frame()
                               │
                               └── GpuConverter
                                        │
@@ -234,7 +213,7 @@ capture code.
 ```
 
 On a hybrid laptop the tensor crosses adapters *after* preprocessing, so what
-moves is a small tensor rather than a full frame — see
+moves is a small tensor rather than a full frame; see
 [Hybrid GPU laptops](#hybrid-gpu-laptops).
 
 ## Capturing to NumPy
@@ -244,7 +223,7 @@ camera = rapidshot.create(output_color="BGR")          # RGB, BGR, RGBA, BGRA, G
 frame  = camera.grab(region=(0, 0, 1920, 1080))        # left, top, right, bottom
 ```
 
-`grab()` returns `None` when nothing has changed — Desktop Duplication reports
+`grab()` returns `None` when nothing has changed: Desktop Duplication reports
 only *changed* content, so an idle desktop legitimately produces no frames.
 
 Continuous capture runs on a background thread:
@@ -257,16 +236,16 @@ for _ in range(120):
 camera.stop()
 ```
 
-One Desktop Duplication camera per output -- DXGI allows one duplication per
-display per process; create several for several monitors. `rapidshot.create()`
-returns the same camera for the same output if you ask twice. WGC cameras have
-no such limit.
+One Desktop Duplication camera per output: DXGI allows one duplication per
+display per process, so create several for several monitors.
+`rapidshot.create()` returns the same camera for the same output if you ask
+twice. WGC cameras have no such limit.
 
 ### Frame buffers and who owns them
 
-`grab()` returns a `PooledBuffer` — a reused buffer, not a fresh array.
-Allocating per frame costs about 1.6 ms on a 1080p RGB frame, because first-touch
-page faults cost more than the conversion.
+`grab()` returns a `PooledBuffer`: a reused buffer, not a fresh array.
+Allocating per frame costs about 1.6 ms on a 1080p RGB frame, because
+first-touch page faults cost more than the conversion.
 
 ```python
 frame = camera.grab()
@@ -282,7 +261,7 @@ next capture. Reading it after release raises `BufferReleasedError` rather than
 returning stale pixels. To keep the data, use `frame.copy()` or
 `np.array(frame, copy=True)`.
 
-Forgetting to release is never *corrupting* — the pool will not hand out a
+Forgetting to release is never *corrupting*: the pool will not hand out a
 buffer someone is still reading. With a conversion (`RGB`, `BGR`, `RGBA`,
 `GRAY`) an exhausted pool falls back to allocating. `BGRA` converts nothing, so
 the frame you hold *is* the staging buffer and there is nothing to fall back to:
@@ -311,13 +290,13 @@ camera = rapidshot.create(source=Window.find("Notepad"))       # one window: alw
 | Process on the display's adapter | required (RapidShot tries every adapter) | not required |
 | Dirty / move rectangles, cursor shape | reported | `None` |
 | Cameras per display | one | as many as you like |
-| Frame time | DXGI's present time | acquisition time (WGC's own timestamp is not a capture time) |
+| Frame time | DXGI's present time | arrival from the compositor (WGC's own timestamp is not a capture time) |
 
 `backend="auto"` is the default. For a window it means WGC, the only backend
 that can capture one. For a display named by `source` it follows the planner's
-cached measurement, and without one it uses Desktop Duplication -- falling back
-to WGC, with a warning, only when every adapter refuses duplication. A call
-that names no `source` keeps its 2.6 behaviour.
+cached measurement, and without one it uses Desktop Duplication, falling back
+to WGC with a warning only when every adapter refuses duplication. A call that
+names no `source` keeps its 2.6 behaviour.
 
 **Which backend is better here?** Ask, and measure:
 
@@ -329,28 +308,27 @@ print(plan)
 `calibrate=True` covers the primary display with RapidShot's test source for a
 few seconds and times each backend's `grab()` at the size the source captures:
 pixel age from the source's `Present()` to your code, frames delivered, CPU per
-frame. The freshest wins; within 1 ms the one delivering more frames, and
-within 3% of those too, the cheaper one. The plan says which criterion decided,
-which adapter the consumer is on, whether frames cross adapters, and where the
+frame. The freshest wins; within 1 ms, the one delivering more frames; within
+3% of those too, the cheaper one. The plan says which criterion decided, which
+adapter the consumer is on, whether frames cross adapters and where the
 preprocessing belongs. Results are cached per machine
 (`%LOCALAPPDATA%\rapidshot\plans.json`), keyed on adapters, drivers, display
 mode, the adapter driving the display, the power source and versions, so an
 upgrade, a MUX switch or unplugging the charger is measured afresh.
 `python -m rapidshot plan --calibrate` does the same from a terminal.
 
-**What a calibration measures is the CPU path:** `grab()` into NumPy, timed
-from the test source's `Present()`. A GPU consumer takes `grab_frame()` and
-`GpuConverter` instead, which it does not time, and the plan says so in its
-reasons rather than presenting the CPU result as the answer for both.
+A calibration times the CPU path, `grab()` into NumPy. A GPU consumer uses
+`grab_frame()` and `GpuConverter` instead, which it does not time, and the plan
+says so rather than presenting the CPU result as the answer for both.
 
 **A window's lifetime is part of the capture.** Resized: the camera rebuilds at
 the new size and `camera.generation` increments. Minimised: each `grab()`
 waits its timeout and returns `None`, without spinning. Closed: capture stops,
 and `camera.last_capture_error` says the window was closed.
 
-`examples/window_to_numpy.py` and `examples/window_to_tensor.py` are both
-paths end to end -- a window into NumPy, and a window into a 640x640 FP16
-tensor without a CPU copy -- and show each of those transitions as it happens.
+`examples/window_to_numpy.py` and `examples/window_to_tensor.py` are both paths
+end to end, a window into NumPy and a window into a 640x640 FP16 tensor without
+a CPU copy, and show each of those transitions as it happens.
 
 ## GPU-resident frames
 
@@ -364,14 +342,14 @@ with camera.grab_frame() as frame:      # the context manager is the safe form
 ```
 
 **A held frame blocks capture.** DXGI will not produce the next frame while a
-reference is outstanding, so release promptly — `with` does it for you.
+reference is outstanding, so release promptly; `with` does it for you.
 
 Frames also carry the compositor's metadata: `dirty_rects` and `move_rects` in
 frame coordinates, `changed_fraction`, `accumulated_frames`, `cursor`,
-`rotation_angle`, `protected_content`, and `timestamp_qpc`. With Desktop
+`rotation_angle`, `protected_content` and `timestamp_qpc`. With Desktop
 Duplication that is the present itself; with WGC it is when the frame arrived
-from the compositor, taken on WGC's own thread -- not when you acquired it, so
-`frame.age_ms` includes the time a frame waited for you.
+from the compositor, taken on WGC's own thread, so `frame.age_ms` includes the
+time a frame waited for you.
 
 ## Model-ready tensors
 
@@ -408,17 +386,22 @@ Payload sizes at 640², which is what crosses a bus if anything has to:
 
 against 8.29 MB for a 1080p frame or 16.38 MB at 2560×1600.
 
+**Encoder input.** `pixel_format="nv12"` (8-bit) and `"p010"` (10-bit) write
+BT.709 4:2:0 for a hardware video encoder, with left-sited chroma as H.264 and
+HEVC expect, checked against a CPU reference and the published inverse
+matrices.
+
 ## Hybrid GPU laptops
 
 On an Optimus-style laptop the display is driven by the integrated GPU, so
 capture happens there, while CUDA lives on the discrete GPU. Something has to
-cross.
+cross, and RapidShot moves the converted tensor rather than the frame:
 
 ```text
-2.5 — move the frame, convert on arrival
+move the frame, convert on arrival
    2560×1600 BGRA (16.38 MB) → cross-adapter transfer → resize/RGB/normalize → model
 
-2.6 — convert first, move the result
+convert first, move the result
    2560×1600 capture → crop/resize/RGB/normalize/FP16 → 2.46 MB tensor
                      → cross-adapter transfer → model
 ```
@@ -433,33 +416,198 @@ transfer.transfer()
 This is also the answer to `CrossAdapterRequired` from the quick start: once the
 tensor is on the CUDA adapter, the consumer imports it there.
 
-**Verified on real hybrid hardware, 2026-09-20** — Intel UHD Graphics capture,
-RTX 4060 destination, 2560×1600:
+**Verified on real hybrid hardware**, Intel UHD Graphics capture and an RTX 4060
+destination at 2560×1600:
 
-- `examples/verify_cross_adapter.py` moved 5 frames Intel → RTX 4060, each
-  16,384,000 bytes, every one byte-exact against a source-side readback.
+- Frames arrive byte-exact on the other GPU, by both the waiting and the
+  asynchronous copy, and the CUDA consumer handshake prevents a stale read:
+  the 32 live cross-adapter tests all passed there on 2026-11-12.
 - The converted-tensor path was verified end to end with **CUDA importing the
-  transferred buffer** from the shared D3D12 heap on the discrete GPU
-  (`benchmarks/ai_ingestion.py --paths rapidshot-converter-xadapter --verify`),
-  max deviation **1 RGB8 level** — the documented bilinear rounding tolerance.
+  transferred buffer** from the shared D3D12 heap on the discrete GPU, max
+  deviation **1 RGB8 level**, the documented bilinear rounding tolerance.
+- Measured on that laptop: **162.7 fps, pixels 15.4 ms old, 1.2 ms of CPU per
+  frame**, against DXcam's 108.2 fps, 24.2 ms and 8.9 ms. Moving the whole
+  frame across instead manages 81.2 fps; convert first.
 
-Why that last point is stated so specifically: `TensorTransfer` used to hand the
-consumer the *source* device's shared handle. Against a WARP destination that
-still "passed" — CUDA imported the capture GPU's own memory and the path
-reported a crossing that never happened. WARP is the configuration that hid the
-bug, so a WARP result is not evidence for this path. The check above is the one
-that counts, and it needs two real GPUs.
+A WARP result is not evidence for this path. `TensorTransfer` once handed the
+consumer the *source* device's handle, and against a WARP destination that
+still "passed": CUDA imported the capture GPU's own memory and reported a
+crossing that never happened. The checks above need two real GPUs.
 
-**Measured on this laptop, 2026-09-25:** 162 fps to a CUDA tensor, pixels
-27.6 ms old at the median, 2.0 ms of CPU per frame — against DXcam's 95.6 fps,
-37.7 ms and 11.2 ms. Carried on through YOLO11n with NMS: 69.5 fps, detections
-41.4 ms after `Present()`, 12.9 ms of CPU per frame, against DXcam's 45.0 fps,
-49.2 ms and 20.9 ms. The full tables, including the full-frame transfer this
-replaces, are in [Desktop to model](#c-desktop-to-model).
+**When a hybrid laptop refuses capture altogether.** On a muxless laptop where
+Windows runs Python on the discrete GPU, DXGI lists the screen under that GPU
+and refuses every duplication with `DXGI_ERROR_UNSUPPORTED`, whichever adapter
+is tried (Microsoft KB3019314).
+RapidShot compares the GPU each display is wired to with the GPU DXGI lists it
+under; where they differ, the error, `describe()` and `diagnose()` name both
+GPUs and the interpreter to set to **Power saving** in Settings > System >
+Display > Graphics. Found on a ThinkPad E580 (Intel UHD 620 + Radeon 500).
+
+## Performance
+
+Every figure here was recorded on 11-12 November 2026 by `rapidshot benchmark
+--full` with RapidShot 2.7.1 and a pre-release build of `rapidshot-native`
+0.4.0, whose additions none of the measured paths use. Each machine's report
+is in [`benchmarks/`](benchmarks/) as Markdown and as JSON with every pass.
+
+**How it measures.** A test source draws a frame ID into the image and records
+the time of every `Present()`. Each library then turns the desktop into the
+same `(1, 3, 640, 640)` FP16 tensor, on CUDA where there is an NVIDIA GPU and
+in system memory or on the capture GPU where there is not, and each frame's
+pixel age is read off its ID against that one clock. Every path is verified to
+produce the right tensor before it is timed. *Unique frames/s* counts frames
+with a new ID, so a library cannot score by handing back the same picture
+twice, and it cannot exceed the screen's refresh rate: a value marked \* reached
+the test source's own rate in at least one pass, so it is a floor.
+
+### Screen to tensor
+
+**Intel desktop**: Core Ultra 5 235, Intel graphics only, 1920×1080 at 100 Hz
+([report](benchmarks/rapidshot-benchmark-machineA-2026-11-11.md)). No CUDA, so
+the tensor ends in system memory, or on the capture GPU through Direct3D 12 for
+`GpuConverter`.
+
+| | unique frames/s | pixel age p50 / p95 | CPU per frame |
+| --- | ---: | ---: | ---: |
+| mss | 33.3 | 42.4 / 45.4 ms | 15.8 ms |
+| DXcam (DXGI) | 86.5 | 37.2 / 42.5 ms | 11.9 ms |
+| DXcam (WGC) | 85.8 | 37.9 / 42.9 ms | 11.7 ms |
+| RapidShot `grab()` | 100.0\* | 31.1 / 32.5 ms | 9.6 ms |
+| RapidShot `grab()`, WGC | 99.0\* | 30.8 / 31.8 ms | 9.6 ms |
+| RapidShot `grab()` of a window, WGC | 98.7 | 30.8 / 32.0 ms | 9.4 ms |
+| **RapidShot `GpuConverter`** | **100.0** | **22.4 / 22.9 ms** | **0.4 ms** |
+
+**Lunar Lake laptop**: HP OmniBook X Flip 16, Core Ultra 5 226V, Arc 130V,
+1920×1200 at 60 Hz, on charger in Best performance
+([report](benchmarks/rapidshot-benchmark-lunarlake-2026-11-11.md)). No CUDA.
+
+| | unique frames/s | pixel age p50 / p95 | CPU per frame |
+| --- | ---: | ---: | ---: |
+| mss | 29.9 | 58.8 / 75.3 ms | 17.6 ms |
+| DXcam (DXGI) | 51.2 | 47.4 / 57.4 ms | 20.3 ms |
+| DXcam (WGC) | 59.8 | 46.6 / 55.6 ms | 13.5 ms |
+| RapidShot `grab()` | 59.1 | 44.3 / 45.0 ms | 10.6 ms |
+| RapidShot `grab()`, WGC | 53.4 | 44.6 / 48.9 ms | 11.4 ms |
+| RapidShot `grab()` of a window, WGC | 53.0 | 44.5 / 48.0 ms | 10.4 ms |
+| **RapidShot `GpuConverter`** | **59.5** | **36.3 / 37.1 ms** | **1.1 ms** |
+
+On this 60 Hz panel DXcam's WGC backend also kept up with the screen; its
+pixels were still 10.3 ms older than `GpuConverter`'s, at twelve times the CPU.
+
+**RTX 4060 laptop, Optimus**: Acer Predator PHN16-72, i9-14900HX; the Intel UHD
+drives the 2560×1600 165 Hz screen and CUDA runs on the RTX
+([report](benchmarks/rapidshot-benchmark-machineB-optimus-2026-11-12.md)).
+
+| | unique frames/s | pixel age p50 / p95 | CPU per frame |
+| --- | ---: | ---: | ---: |
+| mss | 33.1 | 39.2 / 41.8 ms | 13.8 ms |
+| DXcam (DXGI) | 108.2 | 24.2 / 27.3 ms | 8.9 ms |
+| DXcam (WGC) | 107.6 | 28.8 / 32.6 ms | 8.9 ms |
+| RapidShot `grab()` | 132.7 | 21.9 / 23.2 ms | 7.1 ms |
+| RapidShot `grab()`, WGC | 122.1 | 24.4 / 27.8 ms | 7.5 ms |
+| RapidShot `grab()` of a window, WGC | 122.0 | 24.3 / 27.8 ms | 7.2 ms |
+| RapidShot `grab()`, `nvidia_gpu=True` | 119.3 | 22.4 / 23.7 ms | 4.5 ms |
+| RapidShot, full frame across adapters | 81.2 | 22.2 / 24.8 ms | 4.6 ms |
+| **RapidShot `GpuConverter` + `TensorTransfer`** | **162.7**\* | **15.4 / 15.9 ms** | **1.2 ms** |
+
+**RTX 4060 laptop, NVIDIA only**: the same laptop with its MUX giving the
+screen to the RTX, so capture and CUDA share one GPU
+([report](benchmarks/rapidshot-benchmark-machineB-nvidia-only-2026-11-12.md)).
+
+| | unique frames/s | pixel age p50 / p95 | CPU per frame |
+| --- | ---: | ---: | ---: |
+| mss | 40.6 | 33.7 / 36.5 ms | 13.6 ms |
+| DXcam (DXGI) | 135.1 | 22.3 / 25.9 ms | 9.2 ms |
+| DXcam (WGC) | 135.3 | 22.7 / 26.0 ms | 9.2 ms |
+| RapidShot `grab()` | 162.0\* | 18.4 / 21.0 ms | 8.0 ms |
+| RapidShot `grab()`, WGC | 162.0 | 18.5 / 23.5 ms | 7.7 ms |
+| RapidShot `grab()` of a window, WGC | 162.5 | 18.5 / 21.6 ms | 7.5 ms |
+| RapidShot `grab()`, `nvidia_gpu=True` | 148.7 | 22.0 / 22.9 ms | 6.6 ms |
+| RapidShot direct, single adapter | 87.1 | 19.1 / 20.1 ms | 6.2 ms |
+| **RapidShot `GpuConverter`** | **164.6**\* | **13.9 / 14.4 ms** | **0.9 ms** |
+
+The *direct, single adapter* row is held back by the benchmark rather than by
+capture: to read the frame ID it converts each full 2560×1600 frame back to
+BGRA in CuPy.
+
+### Memory
+
+Working set of the capturing process with the screen in motion, and in
+brackets what capture added over the same process before its first frame:
+
+| | Intel desktop | Lunar Lake laptop | RTX laptop, Optimus | RTX laptop, NVIDIA only |
+| --- | ---: | ---: | ---: | ---: |
+| mss | 71.5 MB (+20.5) | 66.3 MB (+18.5) | 83.7 MB (+32.8) | 84.1 MB (+32.8) |
+| DXcam | 95.1 MB (+9.9) | 94.9 MB (+9.5) | 103.9 MB (+23.8) | 105.4 MB (+25.6) |
+| RapidShot `grab()` | 119.9 MB (+29.1) | 123.3 MB (+31.1) | 175.2 MB (+70.5) | 155.3 MB (+70.5) |
+| **RapidShot `grab_frame()`** | **92.5 MB (+1.7)** | **92.9 MB (+0.9)** | 105.9 MB (+1.1) | **86.2 MB (+1.6)** |
+
+The GPU path holds about what DXcam does, and capture itself adds 1-2 MB to it.
+`grab()` is the one place DXcam stays lighter: it keeps converted output buffers
+DXcam has no equivalent of, 20-70 MB more depending on the screen. No library's
+working set grew by more than 0.09 MB/s over a run.
+
+### Through a detector
+
+The same pixel-age clock carried on to *usable detections*: YOLO11n on the RTX
+4060 through ONNX Runtime's CUDA provider, NMS included, on the RTX laptop.
+Recorded on RapidShot 2.6 with the older test source (see
+[What this does not show](#what-this-does-not-show)), so compare the rows within
+a table, not the milliseconds with the tables above.
+
+| Optimus | unique frames/s | detections ready p50 | CPU per frame |
+| --- | ---: | ---: | ---: |
+| DXcam (DXGI) | 45.0 | 49.2 ms | 20.9 ms |
+| RapidShot `grab()` | 51.3 | 46.5 ms | 19.2 ms |
+| **RapidShot `GpuConverter` + `TensorTransfer`** | **69.5** | **41.4 ms** | **12.9 ms** |
+
+| NVIDIA only | unique frames/s | detections ready p50 | CPU per frame |
+| --- | ---: | ---: | ---: |
+| DXcam (DXGI) | 37.7 | 53.8 ms | 28.0 ms |
+| RapidShot `grab()` | 41.3 | 51.6 ms | 26.2 ms |
+| **RapidShot `GpuConverter`** | **50.5** | **46.9 ms** | **19.2 ms** |
+
+1.55× and 1.34× DXcam's frames through the model, detections 7-8 ms sooner,
+with a third less CPU; every path found the same scene (8.4-9.7 detections a
+frame). Full tables:
+[`section7-inference-machineB-hybrid-2.6.1.json`](benchmarks/section7-inference-machineB-hybrid-2.6.1.json),
+[`section7-inference-machineB-dgpu-2.6.0.json`](benchmarks/section7-inference-machineB-dgpu-2.6.0.json).
+
+### Run it on your machine
+
+```bash
+pip install "rapidshot[benchmark]"
+rapidshot benchmark
+```
+
+The same harness as the tables above: every installed library and every
+RapidShot path this hardware supports, verified first, then timed by pixel age.
+About five minutes; a test pattern fills the screen. With an NVIDIA GPU, add
+`cupy-cuda12x` or `cupy-cuda13x` so the tensor is finished on CUDA as above.
+`--full` adds CPU per tensor and memory (about ten minutes), and `--check` shows
+what would run without running it. It writes a Markdown report and a JSON file
+with no hostname, username or device IDs in them; please
+[open a benchmark issue](https://github.com/Zaatra/Rapidshot/issues/new?template=benchmark.md)
+with both. An AMD result would be especially welcome.
+
+### What this does not show
+
+- **Three PCs, each at one resolution, one refresh rate and one driver.** The
+  columns are different screens, so compare libraries within a machine; across
+  machines, compare the gaps. No AMD GPU has captured in these tables.
+- **Background load.** On the Intel desktop other programs used more than 15%
+  of the CPU in 10 of 35 timed cases; the other machines had none.
+- **The detector tables use the older test source**, which let up to three
+  frames queue behind `Present()`, adding a 0-3 frame offset to every path at
+  once. The ranking and the within-table comparisons hold; the absolute
+  milliseconds do not. The tables above use the newer source, which queues one.
+- **Older capture-only comparisons** (RapidShot 2.1-2.4, a call-rate loop
+  rather than pixel age) are kept as history in
+  [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md), with their methodology.
 
 ## Correctness guarantees
 
-These are the disciplines the code actually enforces, not aspirations:
+These are the disciplines the code actually enforces:
 
 - **An independent reference comes before any performance claim.** Conversion
   kernels are checked byte-for-byte against NumPy; the GPU converter against a
@@ -471,202 +619,38 @@ These are the disciplines the code actually enforces, not aspirations:
   tracking invalidates frames from a duplicator that has been rebuilt.
 - **GPU reads are ordered on the GPU.** `AcquireNextFrame` returns when the
   copy is *submitted*, not complete. Every D3D12 path that reads the capture
-  surface waits on a shared fence — without it, measured stale-frame rates ran
-  from 7/150 to 65/150 (`native/src/capture_order.rs`).
+  surface waits on a shared fence; without it, measured stale-frame rates ran
+  from 7/150 to 65/150.
 - **Producer and consumer both have a barrier.** `GpuTensor.sync()` blocks
   until CUDA work on the buffer is done, and `set_consumer_fence()` stops the
   producer overwriting a buffer a consumer is still reading.
 - **WARP is not a GPU.** A software adapter proves an API works and nothing
   about what it costs, and every table and message that uses one says so.
 
-## Performance
-
-Three different questions, deliberately separated — DXcam can win the first
-while RapidShot wins the others.
-
-### A. Capture alone
-
-RapidShot does not win this column in most cells, and says so. Full tables,
-methodology and caveats: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
-
-### B. Memory
-
-[`benchmarks/memory-baseline-machineB.json`](benchmarks/memory-baseline-machineB.json)
-— Machine B (RTX 4060 laptop, Intel UHD capture, 2560×1600 at 165 Hz), still
-desktop, 10 s after a 2 s warm-up, **three passes**, working set:
-
-| | RapidShot 2.5 | RapidShot 2.6 | vs 2.5 | DXcam |
-| --- | ---: | ---: | ---: | ---: |
-| `grab()` (RGB) | 416.0 MB | **174.8 MB** | **−58%** | 103.1 MB |
-| `grab_frame()` (GPU) | 282.1 MB | **104.4 MB** | **−63%** | 103.1 MB |
-
-Read the two comparisons separately. **Against RapidShot 2.5 the reduction is
-58% and 63%.** Against DXcam, `grab_frame()` is now **1.01×** its working set,
-where 2.5 was 2.7×; `grab()` remains **1.70×**, because it also holds converted
-output buffers DXcam has no equivalent of. Throughput was unchanged across the
-change: 165 fps for `grab_frame()`, ~100 for `grab()`, every difference inside
-the run-to-run spread.
-
-None of it came from a redesign — a lazy CuPy import (that one import was
-178.8 MB resident, paid by every caller including those with no NVIDIA GPU), a
-staging pool sized to what a converting `grab()` can actually use, and
-`pool_size_frames` defaulting to 2 instead of 4.
-
-### C. Desktop to model
-
-Pixel **age**, not call duration: a source encodes a frame ID into the image and
-records every `Present()`, so each library is timed on one clock by how old its
-pixels were when they became a `(1, 3, 640, 640)` FP16 tensor on CUDA.
-Recorded 2026-09-25 on Machine B, 2560×1600 at 165 Hz, medians across 3 passes,
-8 s per path, every path verified to produce the correct tensor before being
-timed. The hybrid detector table was recorded against **2.6.1 with the
-`rapidshot-native` 0.2.1 wheel**, the others against **2.6.0 with 0.2.0**, both
-from PyPI. The library and extension code are the same in both: 2.6.1 added the
-benchmark command and shipped its test source.
-
-**Hybrid laptop** — Intel UHD captures, RTX 4060 runs CUDA
-([`section7-ingestion-machineB-hybrid-2.6.0.json`](benchmarks/section7-ingestion-machineB-hybrid-2.6.0.json)):
-
-| | unique frames/s | pixel age p50 / p95 | CPU per frame |
-| --- | ---: | ---: | ---: |
-| mss | 29.1 | 56.5 / 64.3 ms | 19.5 ms |
-| DXcam (DXGI) | 95.6 | 37.7 / 43.4 ms | 11.2 ms |
-| DXcam (WGC) | 93.3 | 40.8 / 49.0 ms | 10.8 ms |
-| RapidShot `grab()` | 123.1 | 35.1 / 40.2 ms | 8.8 ms |
-| RapidShot `grab()`, `nvidia_gpu=True` | 125.6 | 34.8 / 38.8 ms | 5.2 ms |
-| RapidShot, full frame across adapters (2.5 path) | 80.9 | 34.9 / 37.5 ms | 5.2 ms |
-| **RapidShot 2.6, `GpuConverter` + `TensorTransfer`** | **162.2** | **27.6 / 29.9 ms** | **2.0 ms** |
-
-Converting on the capture GPU and moving only the 2.46 MB tensor gives **1.7×
-DXcam's frames, pixels 10 ms younger, at under a fifth of its CPU** — and its
-worst pass beat DXcam's best on all three columns. 162 fps is the 165 Hz panel,
-so that column is a floor. Moving the *whole frame* across adapters is still
-slower than DXcam, at 81 fps; on a hybrid laptop, convert first.
-
-**NVIDIA driving the display** — the MUX in discrete-only mode, so capture and
-CUDA share one adapter
-([`section7-ingestion-machineB-dgpu-2.6.0.json`](benchmarks/section7-ingestion-machineB-dgpu-2.6.0.json)):
-
-| | unique frames/s | pixel age p50 / p95 | CPU per frame |
-| --- | ---: | ---: | ---: |
-| mss | 40.7 | 46.0 / 52.1 ms | 14.1 ms |
-| DXcam (DXGI) | 124.0 | 35.1 / 38.5 ms | 10.1 ms |
-| DXcam (WGC) | 122.9 | 35.6 / 39.2 ms | 10.4 ms |
-| RapidShot `grab()` | 161.8 | 31.2 / 33.2 ms | 8.7 ms |
-| RapidShot `grab()`, `nvidia_gpu=True` | 151.6 | 33.9 / 35.1 ms | 6.6 ms |
-| **RapidShot 2.6, `GpuConverter`** | **164.3** | **25.9 / 26.6 ms** | **1.2 ms** |
-
-The `GpuConverter` row is two passes, not three, and it read frames as fast as
-the source presented them, so its frame rate is a floor rather than its ceiling.
-The two tables are different machine configurations; compare within one, not
-across.
-
-**Through a detector** — the same clock carried to *usable detections*: YOLO11n
-on the RTX 4060 through ONNX Runtime's CUDA provider, NMS included, with a scene
-of signage and a keyboard panning under the marker so the model has something
-to find.
-
-Hybrid laptop
-([`section7-inference-machineB-hybrid-2.6.1.json`](benchmarks/section7-inference-machineB-hybrid-2.6.1.json)):
-
-| | unique frames/s | detections ready p50 / p95 | CPU per frame |
-| --- | ---: | ---: | ---: |
-| mss | 23.6 | 62.9 / 65.7 ms | 26.3 ms |
-| DXcam (DXGI) | 45.0 | 49.2 / 52.7 ms | 20.9 ms |
-| RapidShot `grab()` | 51.3 | 46.5 / 50.7 ms | 19.2 ms |
-| RapidShot `grab()`, `nvidia_gpu=True` | 52.0 | 46.2 / 50.5 ms | 16.4 ms |
-| RapidShot, full frame across adapters (2.5 path) | 50.9 | 47.0 / 51.1 ms | 15.7 ms |
-| **RapidShot 2.6, `GpuConverter` + `TensorTransfer`** | **69.5** | **41.4 / 46.0 ms** | **12.9 ms** |
-
-1.55× DXcam's frames through the model, detections 7.8 ms sooner, 38% less CPU
-per frame — and its worst pass beat DXcam's best on all three columns. Unlike
-the capture-only table, the full-frame crossing is not behind DXcam here: it
-lands with the other full-frame paths at about 51 fps, so at this rate the
-crossing is no longer what limits it. Every path found the same scene: 8.5–9.3
-detections per frame.
-
-Discrete-only mode
-([`section7-inference-machineB-dgpu-2.6.0.json`](benchmarks/section7-inference-machineB-dgpu-2.6.0.json)):
-
-| | unique frames/s | detections ready p50 / p95 | CPU per frame |
-| --- | ---: | ---: | ---: |
-| mss | 23.7 | 67.6 / 71.0 ms | 32.1 ms |
-| DXcam (DXGI) | 37.7 | 53.8 / 57.7 ms | 28.0 ms |
-| RapidShot `grab()` | 41.3 | 51.6 / 56.2 ms | 26.2 ms |
-| **RapidShot 2.6, `GpuConverter`** | **50.5** | **46.9 / 51.2 ms** | **19.2 ms** |
-
-34% more frames through the model than DXcam, detections 6.9 ms sooner, and a
-third less CPU, with every pass ahead of DXcam's best. Every path found the
-same scene: 8.4–9.7 detections per frame.
-
-Compare within a table, not across the two. The model itself takes about 11 ms
-per frame in hybrid mode but about 18 ms in discrete-only, where the RTX 4060
-is also drawing the desktop, so the hybrid rows are faster for a reason that
-has nothing to do with capture. Three passes are consistent, not the five
-paired runs the harness itself requires before calling a difference a verdict
-([ROADMAP](ROADMAP.md) § 7.0c).
-
-### Run it on your machine
-
-```bash
-pip install "rapidshot[benchmark]"
-rapidshot benchmark
-```
-
-The same harness as the tables above: every installed library and every
-RapidShot path this hardware supports, verified first, then three 8-second
-passes timed by pixel age. About five minutes; a test pattern fills the screen.
-It writes a Markdown report and a JSON file with no hostname, username or
-device IDs in them. Please
-[open a benchmark issue](https://github.com/Zaatra/Rapidshot/issues/new?template=benchmark.md)
-with both. With an NVIDIA GPU, add `cupy-cuda12x` or `cupy-cuda13x` so the
-tensor is finished on CUDA as in the tables above. Without one, the same tensor
-is finished in system memory, or on the capture GPU for `GpuConverter`, and
-reported in a table of its own. Add
-`--full` for CPU per tensor and memory as well (about ten minutes), and
-`--check` to see what would run without running it. The report also says
-whether HDR was on and whether frames can cross between your GPUs.
-
-### What none of this shows
-
-One machine, one resolution, one refresh rate, one driver. No AMD part has ever
-run these. Live capture rates depend on what the screen is doing and are not
-comparable across recordings — see `docs/BENCHMARKS.md` for why a single live
-recording is not a measurement.
-
-**The pixel ages in section C carry a test-source offset.** They were recorded
-with the test source from rapidshot-native 0.2.1 and earlier, which let up to
-three frames queue behind `Present()` -- where the pixel-age clock starts -- so
-each launch added its own 0-3 frame offset to every path at once. The ranking
-and the within-run comparisons hold; the absolute milliseconds do not. On an
-Intel desktop, GpuConverter's p50 read 42, 13, 10, 27 and 17 ms over five
-passes with that source, and 22.2-22.3 ms with 0.2.2's, which queues one frame.
-These tables are to be re-recorded with 0.2.2.
-
 ## Tested hardware
 
-Nothing in RapidShot branches on GPU vendor. This is what has actually been run,
-which is a different claim:
+Nothing in RapidShot branches on GPU vendor. This is what has actually been
+run, which is a different claim:
 
 **Verified**
 
 | Configuration | Notes |
 | --- | --- |
-| Intel iGPU, single adapter | Capture, conversion, D3D12 preprocess |
-| NVIDIA dGPU, single adapter | With and without the native extension |
-| NVIDIA dGPU driving the display (MUX) | Capture + CUDA on one adapter; this is where the byte-equal tensor export is verified |
-| Cross-adapter **frame** transfer, Intel → RTX 4060 | Byte-exact, 5 frames at 2560×1600 |
-| Cross-adapter **tensor** transfer + CUDA import | `TensorTransfer` on real Optimus, verified 2026-09-20 |
-| Hybrid, capture to YOLO11n detections | All six hybrid paths verified, then timed, 2026-09-25 |
+| Intel desktop iGPU (Core Ultra 5 235) | Full suite and five-pass benchmark, 2026-11-11 |
+| Intel Lunar Lake laptop (Arc 130V) | Full suite, rotation at 0/90/180/270°, five-pass benchmark, 2026-11-11 |
+| NVIDIA dGPU driving the display (MUX, RTX 4060) | Capture and CUDA on one GPU; full suite and benchmark, 2026-11-12 |
+| Hybrid Intel UHD → RTX 4060 (Optimus) | Capture on Intel, CUDA on the RTX; full suite, 32 live cross-adapter tests, benchmark, 2026-11-12 |
+| Cross-adapter **tensor** transfer + CUDA import | `TensorTransfer` on real Optimus, CUDA reading the transferred buffer |
+| Hybrid, capture to YOLO11n detections | All six hybrid paths verified, then timed |
 | Python 3.9 – 3.14 | CI matrix |
-| `rapidshot-native` 0.2.0 / 0.2.1 | 0.2.0 is the minimum for the 2.6 GPU features; 0.2.1 adds the benchmark's test source around the same extension |
 
-**Not verified**
+**Partly verified, or not at all**
 
-| Configuration | Why it matters |
+| Configuration | Status |
 | --- | --- |
-| Any AMD GPU | The BGRA swizzle rule is confirmed on Intel and NVIDIA and follows from the DXGI format rather than driver discretion — but it is the one rule a silent mismatch would corrupt rather than crash |
-| Hybrid with an AMD adapter | Cross-adapter capability flags are unknown; the buffer path was chosen so nothing depends on them |
+| AMD Radeon hybrid (ThinkPad E580, Intel UHD 620 + Radeon 500) | Found the refused-capture case above. Capture there runs on the Intel GPU: no screen is wired to the Radeon |
+| AMD GPU capturing | **Not run.** The BGRA swizzle rule is confirmed on Intel and NVIDIA and follows from the DXGI format, but it is the one rule a silent mismatch would corrupt rather than crash |
+| HDR panel with full Windows HDR support | **Not run yet**; see below |
 | Headless / virtual display (IDD) | Diagnostics exist; capture on one has not been run |
 
 ## Known limitations
@@ -678,98 +662,47 @@ FP16 surface rather than 8-bit sRGB:
 - **`grab()` and `start()` return sRGB**, converted the way OBS and RustDesk
   convert HDR display capture: divide by the display's SDR white level, clip,
   apply the sRGB curve. SDR content comes back as the bytes it was drawn with;
-  anything brighter than SDR white -- HDR video highlights, HDR games -- clips
-  to white. That is SDR normalisation, not tone mapping.
+  anything brighter than SDR white clips to white. That is SDR normalisation,
+  not tone mapping.
 - **`grab_frame()` says what it holds**: `frame.hdr`, `frame.sdr_white_nits`,
   `frame.pixel_format` and `frame.color_space`, which is `"scrgb"` for linear
   light. By default `GpuConverter` refuses such a frame rather than put linear
   light into a tensor shaped for sRGB. `tone_map="clip"` converts it to sRGB
-  inside the same dispatch, exactly as `grab()` does, and `tone_map="auto"`
-  does the same while keeping the hue of highlights brighter than SDR white;
-  `allow_linear=True` passes scRGB through for float output. NV12/P010 refuse
-  it regardless. The tone map is checked against an independent reference but
-  has not yet run on an HDR panel.
+  inside the same dispatch, exactly as `grab()` does; `tone_map="auto"` does
+  the same while keeping the hue of highlights brighter than SDR white; and
+  `allow_linear=True` passes scRGB through for float output. NV12 and P010
+  refuse linear light.
+- **None of this has run on an HDR panel yet.** It is checked against an
+  independent reference in the test suite; a live run on a display with full
+  HDR support is still to come, and RapidShot makes no HDR claim until it has.
 - **On platforms without full Windows HDR support the capture is clipped at
   80 nits** before RapidShot sees it, and a warning says so. On an Intel Core
-  i5-10500 (Comet Lake, UHD 630) driving a 4K HDR TV the desktop duplicated as
-  `R10G10B10A2` clipped at 1.0, so everything brighter than 80 nits --
-  including ordinary SDR white at the usual 200-240 nit setting -- came back
-  flat. [Microsoft lists Comet Lake](https://learn.microsoft.com/en-us/windows/win32/direct3darticles/high-dynamic-range#graphics-processor-gpu)
+  i5-10500 (Comet Lake, UHD 630) driving a 4K HDR TV, everything brighter than
+  80 nits, including ordinary SDR white at the usual 200-240 nit setting, came
+  back flat. [Microsoft lists Comet Lake](https://learn.microsoft.com/en-us/windows/win32/direct3darticles/high-dynamic-range#graphics-processor-gpu)
   as not providing full HDR functionality. Turn HDR off (Win+Alt+B) there for
   exact colours.
-
-The conversion is checked against an independent reference in the test suite;
-a live run on a GPU with full HDR support is still to come. SDR desktops are
-unaffected.
 
 **Task Manager overstates GPU memory for programs that create many
 converters.** Each `GpuConverter` opens the captured surface once, and Windows
 charges the process the surface's full size for every such opening without
 taking it back when the converter is closed: 15.6 MiB per converter at
-2560x1600, in Task Manager's per-process "Shared GPU memory" (or "Dedicated GPU
-memory" on a discrete GPU) and the `\GPU Process Memory(*)` performance
-counters. The memory itself is released. Adapter-wide GPU memory, available
-RAM and commit stay flat, and 2,000 openings drove the counter to about 30 GB
-without any of them moving. A program that keeps one converter per camera never
-sees it. To measure a process's GPU memory, use DXGI's
-`IDXGIAdapter3::QueryVideoMemoryInfo` -- `rapidshot.util.gpu_memory.process_gpu_memory_mb()`
-reads it for you -- or the adapter-wide counters instead.
+2560x1600, in Task Manager's per-process GPU memory and the
+`\GPU Process Memory(*)` counters. The memory itself is released: adapter-wide
+GPU memory, available RAM and commit stay flat. A program that keeps one
+converter per camera never sees it. To measure a process's GPU memory, use
+`rapidshot.util.gpu_memory.process_gpu_memory_mb()`, which reads DXGI's
+`IDXGIAdapter3::QueryVideoMemoryInfo`.
 
 **Windows.Graphics.Capture has limits of its own.** Its frames carry no dirty
 or move rectangles and no cursor shape, so those are `None` rather than
 guessed, and the cursor is not drawn into the image (as with Desktop
-Duplication). It costs one GPU copy per frame -- 0.75 ms at 2560x1600 on an
-Intel UHD -- because reading WGC's own surface is only safe while the frame is
-held, and holding it delivers older frames. The memory is that copy (W x H x 4
-bytes, or x 8 for FP16 HDR: 16.4 MB at 2560x1600 SDR) plus WGC's own pool of three
-frames the same size; RapidShot takes each frame from the pool as it arrives
-and keeps only the newest, so a consumer slower than the source still gets the
-current image. A window is captured at its frame bounds, title bar included.
-Settings this Windows build does not support -- `MinUpdateInterval` before
-Windows 11 24H2, which leaves WGC at 55 fps on a 165 Hz display -- are a
-logged warning naming what you get instead. HDR through WGC is delivered as linear FP16 and
-converted like Desktop Duplication's, and is subject to the same caveat above:
-it has not yet run on a display with full HDR support.
-
-## Migrating from 2.5
-
-- **`rapidshot-native >= 0.2.0` is now required** for the GPU tensor features.
-  `pip install --upgrade "rapidshot[native]"`. An older extension gives a named
-  error telling you this, not a missing-attribute traceback.
-- **`GpuConverter` replaces `GpuPreprocessor12`** as the recommended transform.
-  `GpuPreprocessor12` still works and is unchanged; `GpuConverter` adds
-  bilinear sampling (the old path decimates with `Load()`), FP16, NHWC, crop,
-  multi-ROI and NV12/P010. `sampling="nearest"` reproduces the old path bit for
-  bit.
-- **`to_torch()` / `to_cupy()` / `to_dlpack()` replace the `ctypes` recipe.**
-  `examples/gpu_tensor_to_cupy.py` remains as the worked explanation of what
-  they do.
-- **`pool_size_frames` now defaults to 2, from 4.** Externally visible: with
-  `BGRA` (which does no conversion) an exhausted pool returns `None` sooner.
-  Pass `pool_size_frames=4` to restore the old behaviour.
-- **Nothing was renamed or removed.**
-
-Everything else, including the bugs fixed, is in [`CHANGELOG.md`](CHANGELOG.md).
-
-## Advanced: native interop
-
-For consumers that bind GPU resources directly — DirectML, ONNX Runtime, a
-custom CUDA kernel — the underlying handles are reachable:
-
-- `GpuPreprocessor12` — the 2.3-era NCHW float32 preprocessor.
-- `converter.output_resource_address` — the `ID3D12Resource` address, which is
-  the vendor-neutral route for DirectML and ONNX Runtime. It is on the
-  converter, not the tensor, and sees the whole buffer including every batch
-  slot; `converter.output_byte_size` is its size.
-- `native.CrossAdapterTransfer` — move a whole *frame* across adapters
-  (ordering A), with `transfer_async()`, `shared_fence_handle`,
-  `set_consumer_fence()` and `wait_for_consumer()`.
-- `native.probe_d3d12_sharing()`, `probe_shareable_buffers()`,
-  `texture_sharing_info()` — capability probes.
-
-`examples/gpu_tensor_to_cupy.py` and `examples/verify_cross_adapter.py` are the
-worked, commented versions. You should not need any of this to use
-`GpuConverter`.
+Duplication). It costs one GPU copy per frame, 0.75 ms at 2560x1600 on an Intel
+UHD, because reading WGC's own surface is only safe while the frame is held,
+and holding it delivers older frames. A window is captured at its frame
+bounds, title bar included. Settings this Windows build does not support, such
+as `MinUpdateInterval` before Windows 11 24H2 (which leaves WGC at 55 fps on a
+165 Hz display), are a logged warning naming what you get instead.
 
 ## Diagnostics and troubleshooting
 
@@ -784,12 +717,56 @@ From a shell, `rapidshot diagnose` prints the same report.
 | Symptom | Cause |
 | --- | --- |
 | `grab()` returns `None` | Nothing changed on screen. This is normal, not an error. |
-| `None` forever in `BGRA` | Pool exhausted — release your frames, or raise `pool_size_frames`. |
+| `None` forever in `BGRA` | Pool exhausted: release your frames, or raise `pool_size_frames`. |
 | `AttributeError` on `GpuConverter` | Native extension older than 0.2.0. Upgrade it. |
-| `CrossAdapterRequired` | Capture is on the iGPU and CUDA is on the dGPU — the hybrid case. |
+| `CrossAdapterRequired` | Capture is on the iGPU and CUDA is on the dGPU: the hybrid case. |
+| `DXGI_ERROR_UNSUPPORTED` on every adapter of a laptop | Python is running on the discrete GPU of a muxless laptop; the error names the setting. See [Hybrid GPU laptops](#hybrid-gpu-laptops). |
 | `RapidShotProtectedContentError` | HDCP/DRM content; the OS blanks the region. |
 | Capture stops after a resolution change | Handled automatically; see `on_output_change`. |
 | Nothing captures at all | No desktop session (a CI runner, a service, an RDP session with no console). |
+
+## Advanced: native interop
+
+For consumers that bind GPU resources directly, such as DirectML, ONNX Runtime
+or a custom CUDA kernel, the underlying handles are reachable:
+
+- `converter.output_resource_address`: the `ID3D12Resource` address, the
+  vendor-neutral route for DirectML and ONNX Runtime. It is on the converter,
+  not the tensor, and covers the whole buffer including every batch slot;
+  `converter.output_byte_size` is its size.
+- `native.CrossAdapterTransfer`: move a whole *frame* across adapters, with
+  `transfer_async()`, `shared_fence_handle`, `set_consumer_fence()` and
+  `wait_for_consumer()`.
+- `native.probe_d3d12_sharing()`, `probe_shareable_buffers()`,
+  `texture_sharing_info()`: capability probes.
+- `GpuPreprocessor12`: the 2.3-era NCHW float32 preprocessor, unchanged.
+
+`examples/gpu_tensor_to_cupy.py` and `examples/verify_cross_adapter.py` are the
+worked, commented versions. You should not need any of this to use
+`GpuConverter`.
+
+## What's new
+
+- **2.7.2**: a hybrid laptop that refuses capture on every GPU now names the
+  GPU setting that fixes it; Desktop Duplication keeps its 10-bit and HDR
+  formats whatever DPI awareness the host process set; the measurements above.
+- **2.7**: window capture and Windows.Graphics.Capture, `Monitor` / `Window` /
+  `Region` sources, a measuring planner (`rapidshot.plan`), and an HDR tone map
+  in `GpuConverter`. 2.7.1 makes NV12/P010 chroma left-sited.
+- **2.6**: fused GPU preprocessing with native FP16, one-call `to_torch()` /
+  `to_cupy()` / `to_dlpack()`, convert-before-transfer on hybrid GPUs, 58% less
+  memory than 2.5 for `grab()`, and `rapidshot benchmark`.
+
+Every change, with the measurement behind it, is in
+[`CHANGELOG.md`](CHANGELOG.md).
+
+**Upgrading from 2.5:** `rapidshot-native >= 0.2.0` is required for the GPU
+tensor features (`pip install --upgrade "rapidshot[native]"`); `GpuConverter`
+replaces `GpuPreprocessor12` as the recommended transform, and
+`sampling="nearest"` reproduces the old one bit for bit; `to_torch()` /
+`to_cupy()` / `to_dlpack()` replace the `ctypes` recipe; and
+`pool_size_frames` now defaults to 2 (pass `4` for the old behaviour). Nothing
+was renamed or removed.
 
 ## Contributing
 
@@ -797,15 +774,16 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). The one rule worth stating here:
 **a correctness check against an independent reference comes before any
 performance claim.** A fast wrong answer is worthless.
 
-Plans and their reasoning are in [ROADMAP.md](ROADMAP.md); measurements and
-their methodology in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+Plans and their reasoning are in [ROADMAP.md](ROADMAP.md); older measurements
+and their methodology in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT; see [LICENSE](LICENSE).
 
 ## Acknowledgments
 
 [DXcam](https://github.com/ra1nty/DXcam) and
 [BetterCam](https://github.com/RootKit-Org/BetterCam), whose forks RapidShot
-began as a merge of.
+began as a merge of. DXcam is also the yardstick every table above is measured
+against.
