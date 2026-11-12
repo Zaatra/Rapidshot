@@ -2423,7 +2423,10 @@ mod warp_tests {
                 height,
                 Sampling::Nearest,
                 OutputFormat::Nv12,
-                YuvOptions { matrix: Matrix::Bt709, full_range: false },
+                YuvOptions {
+                    matrix: Matrix::Bt709,
+                    full_range: false,
+                },
                 1,
             )
             .expect("converter on WARP");
