@@ -660,6 +660,39 @@ def test_grab_frame_failures(pipeline, error, rebuild):
     assert cam._needs_reinit is rebuild
 
 
+def test_grab_frame_recovers_from_a_duplication_lost_on_release(pipeline):
+    """End to end with the real Duplicator: ACCESS_LOST from ReleaseFrame (an
+    HDR switch on NVIDIA) must lead grab_frame() to a rebuild and a frame,
+    not to None for ever."""
+    comtypes = pytest.importorskip("comtypes")
+    from rapidshot._libs.dxgi import DXGI_ERROR_ACCESS_LOST
+    from rapidshot.core.duplicator import Duplicator
+
+    cam, _, _, _ = pipeline(script=["frame"])
+
+    class LostOnRelease:
+        def ReleaseFrame(self):
+            raise comtypes.COMError(DXGI_ERROR_ACCESS_LOST, "The keyed mutex was abandoned.",
+                                    (None, None, None, 0, None))
+
+    real = Duplicator.__new__(Duplicator)
+    real.duplicator = LostOnRelease()
+    real.texture = None
+    real.updated = False
+    real.last_error = ""
+    real._frame_acquired = True
+    real.release_frame()                     # what Frame.release() calls
+    cam._duplicator = real
+    built = len(FakeDuplicator.built)
+
+    assert cam.grab_frame() is None          # the loss, reported
+    assert cam._needs_reinit is True
+    with cam.grab_frame() as frame:          # rebuilt, and capturing again
+        assert frame is not None
+    assert len(FakeDuplicator.built) == built + 1
+    assert cam.generation == 1
+
+
 def test_grab_frame_stops_when_recovery_fails(pipeline):
     cam, _, _, _ = pipeline()
     cam._note_recovery_needed("test")

@@ -49,6 +49,11 @@
 //!    access lost propagates from that read.
 //! 9. `release_frame` is idempotent and always clears the held flag;
 //!    `INVALID_CALL` from `ReleaseFrame` means "already released".
+//!    A rebuild-class or device-class failure there drops the duplication
+//!    like one on acquire, and every later `update_frame` returns it; so do
+//!    three `INVALID_CALL`s in a row from `AcquireNextFrame` with no frame
+//!    held. Either way the caller rebuilds instead of reading a dead
+//!    duplication as a static screen.
 //!
 //! Messages are the Python file's, except that a COM error is rendered the way
 //! windows-rs renders it ("text (0x887A0026)") rather than comtypes' tuple.
@@ -213,6 +218,13 @@ const DEVICE: [HRESULT; 4] = [
     DXGI_ERROR_DEVICE_HUNG,
     DXGI_ERROR_DRIVER_INTERNAL_ERROR,
 ];
+/// `AcquireNextFrame` refusals with `INVALID_CALL`, in a row and with no frame
+/// held, after which the duplication is treated as lost. One is DXGI's answer
+/// to "a frame is still outstanding"; with none outstanding, a run of them
+/// means the duplication was invalidated where this type did not see it. On
+/// an RTX 4060 (2026-11-12) an HDR switch whose ACCESS_LOST surfaced on
+/// `ReleaseFrame` left 360,694 of them over 48 s, and no rebuild.
+const INVALID_CALL_LIMIT: u32 = 3;
 const PROTECTED: [HRESULT; 3] = [
     DXGI_ERROR_ACCESS_DENIED,
     DXGI_ERROR_CANNOT_PROTECT_CONTENT,
@@ -356,6 +368,12 @@ pub struct Duplicator {
     texture: Option<ID3D11Texture2D>,
     frame_acquired: bool,
     log: NoteLog,
+    /// Why the duplication was dropped where no caller could be told at once
+    /// (`ReleaseFrame`, or the `INVALID_CALL` run above). `update_frame`
+    /// returns it on every call from then on, so the caller rebuilds as it
+    /// does for access lost on acquire.
+    lost: Option<DupError>,
+    invalid_call_streak: u32,
 
     pub used_duplicate_output1: bool,
     pub timeout_ms: u32,
@@ -385,6 +403,8 @@ impl Duplicator {
             texture: None,
             frame_acquired: false,
             log: NoteLog::default(),
+            lost: None,
+            invalid_call_streak: 0,
             used_duplicate_output1: false,
             timeout_ms,
             updated: false,
@@ -568,9 +588,17 @@ impl Duplicator {
     /// included; read `updated` for whether there is new content. `Ok(false)`
     /// once released.
     pub fn update_frame(&mut self) -> Result<bool, DupError> {
+        // The one case in which INVALID_CALL from AcquireNextFrame is DXGI's
+        // documented answer: the caller still holds the previous frame.
+        let frame_was_held = self.frame_acquired;
         self.updated = false;
         self.last_error.clear();
         self.frame_acquired = false;
+
+        if let Some(lost) = &self.lost {
+            self.last_error = lost.message.clone();
+            return Err(lost.clone());
+        }
 
         if self.duplication.is_none() {
             self.last_error = "update_frame called on a released duplicator".to_owned();
@@ -579,7 +607,10 @@ impl Duplicator {
         }
 
         match self.acquire_and_read() {
-            Ok(healthy) => Ok(healthy),
+            Ok(healthy) => {
+                self.invalid_call_streak = 0;
+                Ok(healthy)
+            }
             Err(e) => {
                 let code = e.code();
                 self.last_error = format!(
@@ -588,11 +619,32 @@ impl Duplicator {
                 );
                 if code == DXGI_ERROR_WAIT_TIMEOUT {
                     // Normal on a static desktop.
+                    self.invalid_call_streak = 0;
                     self.note(Level::Debug, "Frame acquisition timed out.");
                     self.updated = false;
                     return Ok(true);
                 }
                 self.note(Level::Warning, self.last_error.clone());
+                if code == DXGI_ERROR_INVALID_CALL && !frame_was_held {
+                    self.invalid_call_streak += 1;
+                    if self.invalid_call_streak >= INVALID_CALL_LIMIT {
+                        let error = DupError::new(
+                            ErrorKind::Reinit,
+                            Some(code.0),
+                            format!(
+                                "AcquireNextFrame refused {} times in a row with no frame \
+                                 held: the duplication is no longer usable, \
+                                 re-initialization needed: {e}",
+                                self.invalid_call_streak
+                            ),
+                        )
+                        .noting_desktop_switch();
+                        self.mark_lost(error.clone());
+                        return Err(error);
+                    }
+                } else {
+                    self.invalid_call_streak = 0;
+                }
                 if RECOVERABLE.contains(&code) {
                     let reason = if code == DXGI_ERROR_SESSION_DISCONNECTED {
                         "Session disconnected (RDP/fast user switch)"
@@ -892,6 +944,38 @@ impl Duplicator {
             Err(e) if e.code() == DXGI_ERROR_INVALID_CALL => {
                 self.note(Level::Debug, format!("Frame already released: {e}"))
             }
+            Err(e) if RECOVERABLE.contains(&e.code()) || DEVICE.contains(&e.code()) => {
+                // DXGI invalidated the duplication while the frame was out --
+                // an HDR switch does this on NVIDIA. Keeping the duplication
+                // left every later acquire answering INVALID_CALL. Not an
+                // error here (this is cleanup); the next update_frame is.
+                let code = e.code();
+                let device = DEVICE.contains(&code);
+                let mut error = DupError::new(
+                    if device {
+                        ErrorKind::Device
+                    } else {
+                        ErrorKind::Reinit
+                    },
+                    Some(code.0),
+                    format!(
+                        "{} on ReleaseFrame, re-initialization needed: {e}",
+                        if device {
+                            "Device error"
+                        } else {
+                            "Access lost"
+                        }
+                    ),
+                );
+                if !device {
+                    error = error.noting_desktop_switch();
+                }
+                self.note(
+                    Level::Warning,
+                    format!("{} (HRESULT: {})", error.message, format_hresult(code)),
+                );
+                self.mark_lost(error);
+            }
             Err(e) => {
                 self.note(
                     Level::Warning,
@@ -906,6 +990,13 @@ impl Duplicator {
         // Always cleared: a failed release must not be retried against the
         // same frame, and a stuck flag makes every later acquire look like a leak.
         self.frame_acquired = false;
+    }
+
+    /// Drop the duplication and have every later `update_frame` return `error`.
+    fn mark_lost(&mut self, error: DupError) {
+        self.release_duplication();
+        self.last_error = error.message.clone();
+        self.lost = Some(error);
     }
 
     /// Drop the duplication without releasing a frame: DXGI has already

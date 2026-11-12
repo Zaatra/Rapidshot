@@ -563,6 +563,120 @@ def test_release_lets_go_of_a_held_frame_first():
 
 
 # --------------------------------------------------------------------------
+# a duplication lost where update_frame() does not see it
+#
+# Found on an RTX 4060 (driver 32.0.16.2101, 2026-11-12): an HDR switch ends
+# the duplication with ACCESS_LOST ("the keyed mutex was abandoned"), and that
+# surfaced on ReleaseFrame in 2 of 3 runs. release_frame() logged it and kept
+# the dead duplication; every acquire after it answered INVALID_CALL, which
+# update_frame() reported as a configuration error, and grab_frame() returned
+# None 360,694 times in 48 s without ever rebuilding.
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("hresult,expected", [
+    (DXGI_ERROR_ACCESS_LOST, RapidShotReinitError),
+    (DXGI_ERROR_MODE_CHANGE_IN_PROGRESS, RapidShotReinitError),
+    (DXGI_ERROR_DEVICE_REMOVED, RapidShotDeviceError),
+    (DXGI_ERROR_DEVICE_HUNG, RapidShotDeviceError),
+])
+def test_a_duplication_lost_on_release_is_reported_by_the_next_acquire(hresult, expected):
+    dup = make_duplicator()
+    duplication = dup.duplicator
+    dup._frame_acquired = True
+
+    def lost():
+        raise com_error(hresult, "The keyed mutex was abandoned.")
+
+    duplication.release_frame = lost
+    dup.release_frame()                      # cleanup: must not raise
+
+    assert dup.duplicator is None, "the invalidated duplication was kept"
+    assert dup._frame_acquired is False
+    assert "on ReleaseFrame" in dup.last_error
+
+    for _ in range(3):                       # every call, until it is replaced
+        with pytest.raises(expected) as caught:
+            dup.update_frame()
+        assert caught.value.hresult == hresult
+    assert "AcquireNextFrame" not in duplication.calls, "a call went to the dead interface"
+
+
+def test_already_released_keeps_the_duplication():
+    """INVALID_CALL from ReleaseFrame is 'already released', not a loss."""
+    dup = make_duplicator()
+    duplication = dup.duplicator
+    dup._frame_acquired = True
+
+    def already():
+        raise com_error(DXGI_ERROR_INVALID_CALL)
+
+    duplication.release_frame = already
+    dup.release_frame()
+
+    assert dup.duplicator is duplication
+    assert dup.update_frame() is True        # a timeout: healthy, nothing new
+
+
+def _refuse(info):
+    raise com_error(DXGI_ERROR_INVALID_CALL)
+
+
+def test_a_run_of_invalid_calls_with_no_frame_held_means_the_duplication_is_lost():
+    dup = make_duplicator(FakeDuplication(acquire=_refuse))
+    duplication = dup.duplicator
+
+    for _ in range(duplicator_module._INVALID_CALL_LIMIT - 1):
+        with pytest.raises(RapidShotConfigError):
+            dup.update_frame()
+    with pytest.raises(RapidShotReinitError) as caught:
+        dup.update_frame()
+
+    assert caught.value.hresult == DXGI_ERROR_INVALID_CALL
+    assert dup.duplicator is None
+    acquires = duplication.calls.count("AcquireNextFrame")
+    with pytest.raises(RapidShotReinitError):
+        dup.update_frame()
+    assert duplication.calls.count("AcquireNextFrame") == acquires
+
+
+def test_invalid_call_while_a_frame_is_still_held_is_not_counted():
+    """DXGI's documented INVALID_CALL: the caller never released the last
+    frame. That is the caller's to fix; rebuilding would not."""
+    dup = make_duplicator(FakeDuplication(acquire=_refuse))
+
+    for _ in range(duplicator_module._INVALID_CALL_LIMIT + 2):
+        dup._frame_acquired = True
+        with pytest.raises(RapidShotConfigError):
+            dup.update_frame()
+
+    assert dup.duplicator is not None
+
+
+def test_the_invalid_call_run_must_be_unbroken():
+    """A timeout or a frame in between is a working duplication."""
+    script = [_refuse, _refuse, None, _refuse, _refuse, None]
+    steps = iter(script)
+    duplication = FakeDuplication()
+
+    def acquire(info):
+        step = next(steps)
+        if step is None:
+            raise com_error(DXGI_ERROR_WAIT_TIMEOUT)
+        step(info)
+
+    duplication.acquire = acquire
+    dup = make_duplicator(duplication)
+    for step in script:
+        if step is None:
+            assert dup.update_frame() is True
+        else:
+            with pytest.raises(RapidShotConfigError):
+                dup.update_frame()
+
+    assert dup.duplicator is duplication
+
+
+# --------------------------------------------------------------------------
 # get_frame (compatibility wrapper)
 # --------------------------------------------------------------------------
 

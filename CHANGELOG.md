@@ -10,6 +10,79 @@ each release can be traced back to the plan it implements.
 
 ## [Unreleased]
 
+## [2.7.4] - 2026-11-12: HDR switches no longer stop grab_frame() on NVIDIA, with rapidshot-native 0.4.1
+
+Published together with `rapidshot-native` 0.4.1, which carries the same
+duplicator fix for `RAPIDSHOT_DUPLICATOR=native` and changes nothing else.
+The install floor stays at 0.3.1: the default Python duplicator holds the fix
+on its own.
+
+### Fixed — `grab_frame()` could go dead for good after an HDR switch (NVIDIA)
+
+- **A capture lost on `ReleaseFrame` now rebuilds.** Switching HDR ends the
+  desktop duplication with `DXGI_ERROR_ACCESS_LOST` ("the keyed mutex was
+  abandoned"). On an RTX 4060 Laptop GPU (driver 32.0.16.2101, HDR TV, 2.7.3
+  with native 0.4.0) it surfaced on `ReleaseFrame` in 2 of 3 runs, where
+  `Duplicator.release_frame()` logged it and kept the dead duplication. Every
+  acquire after that answered `DXGI_ERROR_INVALID_CALL`, which `update_frame()`
+  reported as a configuration error, and `grab_frame()` returned `None`: 360,694
+  times over 48 s in the logged run, through HDR off and back on, with no
+  rebuild ever attempted. The caller saw what a static screen looks like.
+  `release_frame()` now drops the duplication on a rebuild-class or
+  device-class error, and every later `update_frame()` raises
+  `RapidShotReinitError` (or `RapidShotDeviceError`) until the camera has
+  replaced it -- the path an access loss on `AcquireNextFrame` already took,
+  and which recovered in about 0.5 s on the same machine. It still does not
+  raise from `release_frame()` itself, which runs as cleanup.
+- **Backstop:** three `INVALID_CALL`s in a row from `AcquireNextFrame` with no
+  frame held are treated the same way. One, with a frame still held, is DXGI's
+  documented answer to a caller that never released it, and is still a
+  configuration error.
+- **The native duplicator** (`RAPIDSHOT_DUPLICATOR=native`,
+  `native/core/src/duplicator.rs`) had the same fault and has the same fix,
+  in `rapidshot-native` 0.4.1. `cargo fmt --check`, `cargo clippy` and
+  `cargo test --lib` pass; the Rust type calls real DXGI, so the new branches
+  have no Rust unit test -- `tests/test_native_duplicator.py` and the NVIDIA
+  run cover them.
+- **Tests:** `tests/test_duplicator_paths.py` drives a `ReleaseFrame` that
+  fails with each rebuild- and device-class HRESULT, the `INVALID_CALL` run,
+  and the two cases that must not trip it; `tests/test_capture_paths.py` puts
+  a real `Duplicator` that lost its duplication on release into a camera and
+  checks `grab_frame()` rebuilds and returns a frame. Seven of them fail
+  without the fix. Run B of `hdr-checks/toggle_check.py` reported a 0.22 s
+  longest gap for a capture that had died; it now counts the time from the
+  last frame to the end of the run.
+- **Confirmed on the same NVIDIA laptop** with this build, HDR switched off
+  and on twice per try: 5 valid tries through the Python duplicator and 3
+  through the native one all passed. The loss surfaced on `ReleaseFrame` 7
+  times across them, and capture recovered every time, 0.50-0.56 s later;
+  the longest gap between frames was 0.95-1.12 s, as on Intel (1.0-1.1 s),
+  with the colours identical before, between and after the switches. On
+  Intel (Arc 130V) the loss always surfaced on `AcquireNextFrame`, so that
+  machine cannot reproduce the fault.
+
+### Fixed — a frame captured just before an HDR switch could be labelled with the new mode
+
+- **Windows reports an HDR switch before the duplication stops delivering
+  the old mode's frames.** On the RTX 4060 an FP16 frame came back as
+  `color_space="srgb"`, `sdr_white_nits=None` half a second before HDR went
+  off (1 frame in 9 runs): `ScreenCapture` re-reads the display's HDR state
+  about once a second and gave the new state to a surface still in the old
+  mode. A converter or `grab()` handed that frame would have treated linear
+  scRGB as sRGB. Every switch measured also ends the duplication, and the
+  rebuilt one reads the display afresh; so a flip reported while the same
+  duplication delivers the same surface format now keeps the colour that
+  surface was read with, for at most 5 s in case a switch ever leaves the
+  duplication alive. An SDR white change is not a flip and applies at once,
+  as before. Four tests in `tests/test_hdr_capture.py`; two fail without it.
+
+### Tests
+
+- `test_planner.py::test_the_key_changes_with_what_a_measurement_depends_on`
+  set the power source to `"battery"` to show the key changes with it, which
+  is no change on a laptop running on battery; it failed there. It now flips
+  to whichever source is not the current one.
+
 ## [2.7.3] - 2026-11-12: HDR desktops convert by default, with rapidshot-native 0.4.0
 
 Published together with `rapidshot-native` 0.4.0, now that both have run on

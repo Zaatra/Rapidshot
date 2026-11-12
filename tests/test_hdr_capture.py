@@ -8,6 +8,7 @@ SDR bytes as Windows composes them on an HDR desktop,
 """
 import ctypes
 import logging
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -229,6 +230,70 @@ def test_the_clip_reaches_a_user_who_never_configured_logging(monkeypatch):
         capture._color_for(hdr.DXGI_FORMAT_R10G10B10A2_UNORM)
     assert [w.category for w in seen] == [hdr.HdrClippedWarning]
     assert rapidshot.HdrClippedWarning is hdr.HdrClippedWarning
+
+
+FP16 = hdr.DXGI_FORMAT_R16G16B16A16_FLOAT
+
+
+def _switching_display(monkeypatch, readings):
+    """capture_with, but the display answers `readings` in turn and the clock
+    is the test's: returns (capture, clock) with clock["now"] to advance."""
+    capture, _ = capture_with(FP16, None, monkeypatch)
+    capture._duplicator = SimpleNamespace(texture=object(), instance_id=1)
+    answers = iter(readings)
+    monkeypatch.setattr(hdr, "display_color", lambda name: next(answers))
+    clock = {"now": 100.0}
+    monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
+    return capture, clock
+
+
+def test_a_switch_reported_before_the_surface_changes_keeps_the_frames_colour(monkeypatch):
+    """RTX 4060, 2026-11-12: Windows said "SDR" half a second before the
+    duplication stopped delivering FP16 scRGB, and that frame came back
+    labelled sRGB. The surface is still the old mode's until the duplication
+    is replaced."""
+    on, off = hdr.DisplayColor(True, 240.0), hdr.DisplayColor(False, 80.0)
+    capture, clock = _switching_display(monkeypatch, [on, off, on])
+
+    assert capture._color_for(FP16) is on
+    clock["now"] += 1.5                          # re-read: the display says off
+    assert capture._color_for(FP16) is on, "an FP16 frame of the HDR desktop relabelled SDR"
+
+    capture._duplicator = SimpleNamespace(texture=object(), instance_id=2)   # rebuilt
+    clock["now"] += 1.5
+    assert capture._color_for(FP16) is on       # a new duplication is read afresh
+
+
+def test_a_new_duplication_takes_the_displays_word(monkeypatch):
+    on, off = hdr.DisplayColor(True, 240.0), hdr.DisplayColor(False, 80.0)
+    capture, clock = _switching_display(monkeypatch, [on, off])
+
+    capture._color_for(FP16)
+    capture._duplicator = SimpleNamespace(texture=object(), instance_id=2)
+    clock["now"] += 1.5
+    assert capture._color_for(FP16) is off
+
+
+def test_a_switch_that_outlasts_the_hold_is_believed(monkeypatch):
+    on, off = hdr.DisplayColor(True, 240.0), hdr.DisplayColor(False, 80.0)
+    capture, clock = _switching_display(monkeypatch, [on] + [off] * 8)
+
+    capture._color_for(FP16)
+    seen = []
+    for _ in range(6):
+        clock["now"] += 1.5
+        seen.append(capture._color_for(FP16).hdr)
+    assert seen[0] is True and seen[-1] is False
+
+
+def test_an_sdr_white_change_applies_at_once(monkeypatch):
+    """Not a switch: the slider moves while the duplication carries on."""
+    at_240, at_480 = hdr.DisplayColor(True, 240.0), hdr.DisplayColor(True, 480.0)
+    capture, clock = _switching_display(monkeypatch, [at_240, at_480])
+
+    capture._color_for(FP16)
+    clock["now"] += 1.5
+    assert capture._color_for(FP16) is at_480
 
 
 def test_a_format_the_cpu_paths_cannot_convert_is_an_error(monkeypatch):
