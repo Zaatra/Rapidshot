@@ -10,6 +10,13 @@ each release can be traced back to the plan it implements.
 
 ## [Unreleased]
 
+## [2.7.4] - 2026-11-12: HDR switches no longer stop grab_frame() on NVIDIA, with rapidshot-native 0.4.1
+
+Published together with `rapidshot-native` 0.4.1, which carries the same
+duplicator fix for `RAPIDSHOT_DUPLICATOR=native` and changes nothing else.
+The install floor stays at 0.3.1: the default Python duplicator holds the fix
+on its own.
+
 ### Fixed — `grab_frame()` could go dead for good after an HDR switch (NVIDIA)
 
 - **A capture lost on `ReleaseFrame` now rebuilds.** Switching HDR ends the
@@ -33,7 +40,7 @@ each release can be traced back to the plan it implements.
   configuration error.
 - **The native duplicator** (`RAPIDSHOT_DUPLICATOR=native`,
   `native/core/src/duplicator.rs`) had the same fault and has the same fix,
-  for the next native release. `cargo fmt --check`, `cargo clippy` and
+  in `rapidshot-native` 0.4.1. `cargo fmt --check`, `cargo clippy` and
   `cargo test --lib` pass; the Rust type calls real DXGI, so the new branches
   have no Rust unit test -- `tests/test_native_duplicator.py` and the NVIDIA
   run cover them.

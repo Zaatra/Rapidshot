@@ -763,6 +763,9 @@ worked, commented versions. You should not need any of this to use
 
 ## What's new
 
+- **2.7.4** (with rapidshot-native 0.4.1): switching Windows HDR on or off no
+  longer leaves `grab_frame()` returning `None` for good on NVIDIA; the frame
+  captured during a switch keeps its own colour space.
 - **2.7.3** (with rapidshot-native 0.4.0): `GpuConverter` converts HDR frames
   to sRGB by default, checked on an HDR panel; NV12 for an encoder from an HDR
   desktop; a WGC camera left open at exit no longer crashes the process.
