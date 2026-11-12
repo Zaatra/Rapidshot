@@ -512,10 +512,10 @@ void CSMain(uint3 tid : SV_DispatchThreadID)
 // a multiple of four be written without a dword ever straddling two threads.
 //
 // The source is taken as gamma-encoded RGB with BT.709 primaries -- true of a
-// UNORM desktop surface. Linear scRGB (R16G16B16A16_FLOAT) is refused on the
-// Rust side, and so is a tone map: putting linear light through a Y'CbCr
-// matrix is wrong, and the right fix (tone-map to SDR, or PQ + BT.2020 for
-// HDR10) is a decision this output has not made.
+// UNORM desktop surface. Linear scRGB (R16G16B16A16_FLOAT) reaches the matrix
+// only through a tone map to sRGB (NV12, SDR); without one the Rust side
+// refuses it, because linear light through a Y'CbCr matrix is wrong. P010
+// refuses a tone map: HDR10 (PQ + BT.2020) is the decision that belongs there.
 
 #if OUTPUT == 7
 // The planes of a real NV12 texture: Y, then Cb/Cr interleaved at half
@@ -546,9 +546,11 @@ uint quantize(float v)
     return (uint)clamp(floor(v + 0.5f), 0.0f, MAXCODE);
 }
 
+// Through to_display, so a tone-mapped HDR frame reaches the matrix as sRGB;
+// with ToneMap == 0 that is the texel itself, exactly as before.
 float3 rgb_at(uint x, uint y)
 {
-    return saturate(fetch(x, y).xyz);
+    return saturate(to_display(fetch(x, y)));
 }
 
 float luma_of(float3 c)
@@ -1224,11 +1226,16 @@ impl Converter12 {
         regions: &[Crop],
     ) -> windows::core::Result<()> {
         if tone_map != ToneMap::None {
-            if self.format.is_yuv() {
+            // NV12 is 8-bit SDR for an encoder, so a tone map to sRGB is the
+            // decision it needs: the matrix then sees gamma-encoded values, as
+            // it would from an SDR desktop. P010 is where HDR10 (PQ +
+            // BT.2020) would go, and mapping it to SDR would hide that choice.
+            if self.format == OutputFormat::P010 {
                 return Err(windows::core::Error::new(
                     windows::Win32::Foundation::E_INVALIDARG,
-                    "NV12/P010 output does not tone map: encoding HDR for an encoder \
-                     (SDR, or PQ + BT.2020 for HDR10) is a decision this path has not made",
+                    "P010 output does not tone map: a 10-bit encoder input is where \
+                     HDR10 (PQ + BT.2020) belongs, a decision this path has not made. \
+                     Use NV12 for SDR",
                 ));
             }
             let white = tone_map.sdr_white();
@@ -1259,6 +1266,20 @@ impl Converter12 {
             .expect("open_texture populates the cache or returns Err");
         let (src_width, src_height) = self.cached_src_size.get();
         let src_format = self.cached_src_format.get();
+        if self.format.is_yuv()
+            && tone_map == ToneMap::None
+            && src_format == DXGI_FORMAT_R16G16B16A16_FLOAT
+        {
+            // Checked here rather than when the surface is opened, because a
+            // tone map is what makes this input right for NV12.
+            return Err(windows::core::Error::new(
+                windows::Win32::Foundation::E_INVALIDARG,
+                "captured surface is R16G16B16A16_FLOAT (HDR, linear scRGB), \
+                 which NV12/P010 output does not convert as it is. A Y'CbCr matrix \
+                 expects gamma-encoded values: pass a tone map for NV12 (SDR), or \
+                 use a float32/float16 output, which passes scRGB through.",
+            ));
+        }
         if tone_map != ToneMap::None
             && src_format != DXGI_FORMAT_R16G16B16A16_FLOAT
             && src_format != DXGI_FORMAT_R10G10B10A2_UNORM
@@ -1457,17 +1478,6 @@ impl Converter12 {
                          requests. Use grab() and convert on the CPU.",
                         desc.Format.0
                     ),
-                ));
-            }
-            if self.format.is_yuv() && desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT {
-                return Err(windows::core::Error::new(
-                    windows::Win32::Foundation::E_INVALIDARG,
-                    "captured surface is R16G16B16A16_FLOAT (HDR, linear scRGB), \
-                     which NV12/P010 output does not convert. A Y'CbCr matrix \
-                     expects gamma-encoded values, and choosing between tone \
-                     mapping to SDR and PQ + BT.2020 for HDR10 is a decision this \
-                     path has not made. Use a float32/float16 output, which passes \
-                     scRGB through.",
                 ));
             }
             self.cached_src_format.set(desc.Format);
@@ -2073,6 +2083,21 @@ mod warp_tests {
     };
     use windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC;
 
+    /// WARP's shader JIT is not safe across devices: two D3D12 WARP devices
+    /// compiling compute pipelines at once corrupt its shared JIT state, and
+    /// the process dies with an access violation on a WARP worker thread
+    /// (`D3D10Warp!FeCleanup::Pass1`, with another test inside
+    /// `ShaderJIT::~ShaderJIT`). It took about one parallel run in ten once
+    /// the duplicator tests stopped holding the machine busy -- which is what
+    /// a PC that refuses Desktop Duplication does. The tests take turns. The
+    /// library does not: on a machine with no GPU it falls back to WARP, so
+    /// two converters on two threads there could meet the same fault.
+    static WARP: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn one_warp_test_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+        WARP.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     const NAN: u16 = 0x7E00;
     const INF: u16 = 0x7C00;
     const NEG_INF: u16 = 0xFC00;
@@ -2254,6 +2279,7 @@ mod warp_tests {
     /// write NV12 from a shader, which is the refusal the output promises.
     #[test]
     fn the_nv12_texture_holds_the_nv12_buffers_bytes() {
+        let _warp = one_warp_test_at_a_time();
         let (width, height) = (16u32, 8u32);
         let bytes: Vec<u8> = (0..width * height)
             .flat_map(|i| [(i * 37) as u8, (i * 91) as u8, (i * 13) as u8, 255])
@@ -2288,6 +2314,7 @@ mod warp_tests {
 
     #[test]
     fn float_output_follows_the_reference_for_both_maps() {
+        let _warp = one_warp_test_at_a_time();
         for (tone_map, max_rgb) in [
             (ToneMap::Clip { sdr_white: WHITE }, false),
             (ToneMap::MaxRgb { sdr_white: WHITE }, true),
@@ -2323,6 +2350,7 @@ mod warp_tests {
     /// (3, 1.5, 0.375).
     #[test]
     fn bgra8_output_matches_grab_on_an_hdr_desktop() {
+        let _warp = one_warp_test_at_a_time();
         let clip: [[u8; 3]; 8] = [
             [0, 0, 0],
             [255, 255, 255],
@@ -2362,8 +2390,81 @@ mod warp_tests {
         }
     }
 
+    /// An HDR desktop into NV12 for an encoder: each pixel tone-mapped to sRGB
+    /// first, then BT.709 limited range. The expected codes are worked out
+    /// here from `reference`, in f64, never by another converter path. Two
+    /// identical rows, because NV12 needs an even height.
+    #[test]
+    fn nv12_from_an_hdr_desktop_is_the_tone_mapped_picture_through_bt709() {
+        let _warp = one_warp_test_at_a_time();
+        let row = pixels();
+        let (width, height) = (row.len() as u32, 2u32);
+        let bytes: Vec<u8> = row
+            .iter()
+            .chain(row.iter())
+            .flatten()
+            .flat_map(|half| half.to_le_bytes())
+            .collect();
+        let Some(texture) =
+            warp_surface_sized(DXGI_FORMAT_R16G16B16A16_FLOAT, width, height, &bytes)
+        else {
+            eprintln!("no shareable WARP texture on this machine; skipped");
+            return;
+        };
+        let (kr, kb) = (0.2126f64, 0.0722f64);
+        let luma = |c: [f64; 3]| kr * c[0] + (1.0 - kr - kb) * c[1] + kb * c[2];
+        for (tone_map, max_rgb) in [
+            (ToneMap::Clip { sdr_white: WHITE }, false),
+            (ToneMap::MaxRgb { sdr_white: WHITE }, true),
+        ] {
+            let converter = Converter12::new(
+                &texture,
+                width,
+                height,
+                Sampling::Nearest,
+                OutputFormat::Nv12,
+                YuvOptions { matrix: Matrix::Bt709, full_range: false },
+                1,
+            )
+            .expect("converter on WARP");
+            converter
+                .process(&texture, 1, 1.0, 0.0, 0, tone_map, &[])
+                .expect("an NV12 tone map is accepted");
+            let out = converter.read_back().expect("readback");
+            let rgb: Vec<[f64; 3]> = row.iter().map(|&p| reference(p, max_rgb)).collect();
+            for (x, c) in rgb.iter().enumerate() {
+                let expected = (16.0 + 219.0 * luma(*c)).round() as i32;
+                for y in 0..height as usize {
+                    let got = out[y * width as usize + x] as i32;
+                    assert!(
+                        (got - expected).abs() <= 1,
+                        "{tone_map:?} Y at ({x}, {y}): {got} != {expected}"
+                    );
+                }
+            }
+            let uv = &out[(width * height) as usize..];
+            for k in 0..(width / 2) as usize {
+                let cx = 2 * k;
+                let left = cx.saturating_sub(1);
+                let mut c = [0.0f64; 3];
+                for i in 0..3 {
+                    c[i] = 0.25 * rgb[left][i] + 0.5 * rgb[cx][i] + 0.25 * rgb[cx + 1][i];
+                }
+                let y = luma(c);
+                let cb = (128.0 + 224.0 * (c[2] - y) / (2.0 * (1.0 - kb))).round() as i32;
+                let cr = (128.0 + 224.0 * (c[0] - y) / (2.0 * (1.0 - kr))).round() as i32;
+                let (got_cb, got_cr) = (uv[2 * k] as i32, uv[2 * k + 1] as i32);
+                assert!(
+                    (got_cb - cb).abs() <= 1 && (got_cr - cr).abs() <= 1,
+                    "{tone_map:?} chroma {k}: ({got_cb}, {got_cr}) != ({cb}, {cr})"
+                );
+            }
+        }
+    }
+
     #[test]
     fn no_tone_map_passes_scrgb_through_unchanged() {
+        let _warp = one_warp_test_at_a_time();
         let Some(bytes) = convert(OutputFormat::Fp32Nchw, ToneMap::None) else {
             eprintln!("no shareable WARP texture on this machine; skipped");
             return;
@@ -2443,6 +2544,7 @@ mod warp_tests {
 
     #[test]
     fn every_fp16_value_converts_to_the_byte_grab_returns() {
+        let _warp = one_warp_test_at_a_time();
         every_code_matches_hdr_py(
             DXGI_FORMAT_R16G16B16A16_FLOAT,
             256,
@@ -2456,6 +2558,7 @@ mod warp_tests {
 
     #[test]
     fn every_10_bit_code_converts_to_the_byte_grab_returns() {
+        let _warp = one_warp_test_at_a_time();
         every_code_matches_hdr_py(
             DXGI_FORMAT_R10G10B10A2_UNORM,
             32,
@@ -2487,6 +2590,7 @@ mod warp_tests {
 
     #[test]
     fn a_tone_map_is_refused_where_it_cannot_be_right() {
+        let _warp = one_warp_test_at_a_time();
         let Some(sdr) = warp_surface(DXGI_FORMAT_B8G8R8A8_UNORM, 8, &[128u8; 32]) else {
             eprintln!("no shareable WARP texture on this machine; skipped");
             return;
@@ -2495,8 +2599,15 @@ mod warp_tests {
         let clip = ToneMap::Clip { sdr_white: WHITE };
         // 8-bit sRGB is never linear light.
         assert!(refusal(&sdr, OutputFormat::Fp32Nchw, clip).contains("never linear"));
-        // YUV makes no HDR decision, tone map or not.
-        assert!(refusal(&hdr, OutputFormat::Nv12, clip).contains("does not tone map"));
+        // P010 is where HDR10 would go, so it takes no tone map to SDR...
+        assert!(refusal(&hdr, OutputFormat::P010, clip).contains("does not tone map"));
+        // ...and neither YUV output takes linear light as it is.
+        for format in [OutputFormat::Nv12, OutputFormat::P010] {
+            assert!(
+                refusal(&hdr, format, ToneMap::None).contains("does not convert as it is"),
+                "{format:?}"
+            );
+        }
         // A white the shader would divide by.
         for white in [0.0, -1.0, f32::NAN, f32::INFINITY] {
             let message = refusal(

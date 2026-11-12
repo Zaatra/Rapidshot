@@ -130,6 +130,89 @@ def _desktop_refusal(hresult, detail: str = "") -> Optional[RapidShotError]:
     )
 
 
+# DuplicateOutput1 answers DXGI_ERROR_UNSUPPORTED (0x887A0004) to a thread that
+# is not per-monitor DPI aware. Measured 2026-11-11 on an Intel UHD (7d67) PC:
+# an unaware or system-aware process was refused every time, per-monitor v1
+# and v2 accepted, and so did a thread-only v2 context in an otherwise unaware
+# process. `core/output.py` asks for per-monitor awareness process-wide, but a
+# host that fixed a different awareness first (its manifest, or an earlier
+# call) keeps it, and every such process silently got the legacy path with no
+# 10-bit or HDR formats. So the call is made with the calling thread raised,
+# and the thread's own setting is put back after, exactly as rapidshot-core
+# does it. Context handles are the documented negative pseudo-handles.
+_DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE = -3
+_DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
+_DPI_AWARENESS_PER_MONITOR = 2
+_DPI_AWARENESS_NAMES = {
+    0: "DPI unaware",
+    1: "system DPI aware",
+    2: "per-monitor DPI aware",
+}
+_thread_dpi_api = None
+
+
+def _thread_dpi():
+    """user32's thread DPI calls on a private handle, or None where Windows
+    predates them (10 1607)."""
+    global _thread_dpi_api
+    if _thread_dpi_api is None:
+        try:
+            user32 = ctypes.WinDLL("user32")  # private handle; see util/io.py
+            get = user32.GetThreadDpiAwarenessContext
+            set_ = user32.SetThreadDpiAwarenessContext
+            awareness = user32.GetAwarenessFromDpiAwarenessContext
+        except (OSError, AttributeError):
+            _thread_dpi_api = False
+            return None
+        get.restype, get.argtypes = ctypes.c_void_p, []
+        set_.restype, set_.argtypes = ctypes.c_void_p, [ctypes.c_void_p]
+        awareness.restype, awareness.argtypes = ctypes.c_int, [ctypes.c_void_p]
+        _thread_dpi_api = (get, set_, awareness)
+    return _thread_dpi_api or None
+
+
+def _thread_dpi_awareness() -> int:
+    """0 unaware, 1 system, 2 per-monitor; -1 when it cannot be read."""
+    api = _thread_dpi()
+    if api is None:
+        return -1
+    get, _, awareness = api
+    return awareness(get())
+
+
+def _dpi_awareness_name(awareness: int) -> str:
+    return _DPI_AWARENESS_NAMES.get(awareness, "of unknown DPI awareness")
+
+
+class _PerMonitorDpiForThisThread:
+    """The calling thread made per-monitor DPI aware inside the ``with``, then
+    put back. A process-wide change is the host's business: it also moves
+    every coordinate the process reads."""
+
+    def __enter__(self):
+        self.before = _thread_dpi_awareness()
+        self.previous = None
+        api = _thread_dpi()
+        if api is None or self.before == _DPI_AWARENESS_PER_MONITOR:
+            return self
+        _, set_, _ = api
+        # V2 needs Windows 10 1703; V1 is the fallback before that.
+        for context in (
+            _DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            _DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE,
+        ):
+            previous = set_(ctypes.c_void_p(context))
+            if previous:
+                self.previous = previous
+                break
+        return self
+
+    def __exit__(self, *exc):
+        if self.previous is not None:
+            _thread_dpi()[1](ctypes.c_void_p(self.previous))
+        return False
+
+
 def _legacy_duplication_forced() -> bool:
     """True if the env var asks for the pre-DuplicateOutput1 code path."""
     return os.environ.get(_DUPLICATE_OUTPUT_ENV, "").strip().lower() in (
@@ -285,39 +368,59 @@ class Duplicator:
                     *DUPLICATE_OUTPUT1_FORMATS
                 )
                 duplicator = ctypes.POINTER(IDXGIOutputDuplication)()
-                try:
-                    output5.DuplicateOutput1(
-                        device.device,
-                        0,  # Flags: reserved, must be zero
-                        len(DUPLICATE_OUTPUT1_FORMATS),
-                        formats,
-                        ctypes.byref(duplicator),
+                failure = None
+                with _PerMonitorDpiForThisThread() as dpi:
+                    during = _thread_dpi_awareness()
+                    try:
+                        output5.DuplicateOutput1(
+                            device.device,
+                            0,  # Flags: reserved, must be zero
+                            len(DUPLICATE_OUTPUT1_FORMATS),
+                            formats,
+                            ctypes.byref(duplicator),
+                        )
+                    except comtypes.COMError as ce:
+                        failure = ce
+                if dpi.previous is not None:
+                    logger.info(
+                        f"This thread is {_dpi_awareness_name(dpi.before)}; it was "
+                        "made per-monitor DPI aware for DuplicateOutput1, which "
+                        "requires it, and put back afterwards."
                     )
+                if failure is None:
                     return duplicator, True
-                except comtypes.COMError as ce:
-                    hresult = ce.args[0] if ce.args else None
-                    if hresult in DXGI_PROTECTED_CONTENT_ERRORS:
-                        # A bare E_ACCESSDENIED means one of two unrelated
-                        # things, and blaming protected content for both sends
-                        # people hunting for a player window that is not there.
-                        # Ask the window station before deciding.
-                        desktop_error = _desktop_refusal(hresult)
-                        if desktop_error is not None:
-                            raise desktop_error from ce
-                        # Protected surfaces are a permanent refusal for this
-                        # output, not something the legacy path can work around.
-                        self.protected_content_detected = True
-                        raise RapidShotProtectedContentError(
-                            "Desktop duplication was denied because protected "
-                            "(HDCP/DRM) content is on screen. Close or move the "
-                            "protected player window and retry.",
-                            hresult=hresult,
-                        ) from ce
-                    logger.warning(
-                        "DuplicateOutput1 failed (HRESULT "
-                        f"{_format_hresult(hresult)}); falling back to legacy "
-                        "DuplicateOutput."
+                hresult = failure.args[0] if failure.args else None
+                if hresult in DXGI_PROTECTED_CONTENT_ERRORS:
+                    # A bare E_ACCESSDENIED means one of two unrelated
+                    # things, and blaming protected content for both sends
+                    # people hunting for a player window that is not there.
+                    # Ask the window station before deciding.
+                    desktop_error = _desktop_refusal(hresult)
+                    if desktop_error is not None:
+                        raise desktop_error from failure
+                    # Protected surfaces are a permanent refusal for this
+                    # output, not something the legacy path can work around.
+                    self.protected_content_detected = True
+                    raise RapidShotProtectedContentError(
+                        "Desktop duplication was denied because protected "
+                        "(HDCP/DRM) content is on screen. Close or move the "
+                        "protected player window and retry.",
+                        hresult=hresult,
+                    ) from failure
+                # Say whether DPI awareness can be the reason, so a refusal is
+                # not blamed on it when it is not.
+                why = ""
+                if during != _DPI_AWARENESS_PER_MONITOR:
+                    why = (
+                        f" The calling thread is {_dpi_awareness_name(during)} "
+                        "and could not be made per-monitor DPI aware, which "
+                        "DuplicateOutput1 requires."
                     )
+                logger.warning(
+                    "DuplicateOutput1 failed (HRESULT "
+                    f"{_format_hresult(hresult)}); falling back to legacy "
+                    f"DuplicateOutput, which offers no 10-bit or HDR formats.{why}"
+                )
 
         duplicator = ctypes.POINTER(IDXGIOutputDuplication)()
         output.output.DuplicateOutput(device.device, ctypes.byref(duplicator))

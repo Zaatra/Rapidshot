@@ -415,7 +415,7 @@ mod tests {
         let (x0, y0) = (4usize, 2usize);
 
         let mut src = vec![0u8; w * 4 * h];
-        for px in src.chunks_exact_mut(4) {
+        for px in src.as_chunks_mut::<4>().0 {
             px[0] = 10;
             px[1] = 20;
             px[2] = 30;

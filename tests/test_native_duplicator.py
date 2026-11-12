@@ -47,7 +47,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 @pytest.fixture(scope="module")
-def target():
+def target(desktop_duplication):
     """The primary output and its device, from an ordinary camera.
 
     The camera is released first: DXGI allows one duplication of an output per
@@ -88,7 +88,7 @@ def test_the_python_class_is_the_default(monkeypatch):
     assert capture._duplicator_class() is Duplicator
 
 
-def test_the_environment_selects_the_native_class(monkeypatch):
+def test_the_environment_selects_the_native_class(monkeypatch, desktop_duplication):
     monkeypatch.setenv(native_duplicator.NATIVE_DUPLICATOR_ENV, "native")
     assert capture._duplicator_class() is NativeDuplicator
     camera = rapidshot.create()
@@ -217,7 +217,7 @@ def test_the_native_hresults_are_the_python_constants():
     assert native_duplicator._translate(e).hresult == DXGI_ERROR_UNSUPPORTED < 0
 
 
-def test_capture_from_a_non_input_desktop_names_the_desktop_not_drm():
+def test_capture_from_a_non_input_desktop_names_the_desktop_not_drm(desktop_duplication):
     """The real refusal: a thread on a desktop that is not receiving input
     gets a bare E_ACCESSDENIED, which must read as a desktop problem."""
     script = (

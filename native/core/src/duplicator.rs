@@ -2,7 +2,9 @@
 //!
 //! A port of `rapidshot/core/duplicator.py`, kept behaviour-for-behaviour so
 //! the Python package and the Rust remote-support helper share one
-//! implementation. Each rule below was learned on real hardware; the Python
+//! implementation. One addition has no Python counterpart:
+//! `DupError::desktop_switch`, a field the Python exceptions do not carry;
+//! the class an error becomes is the same either way. Each rule below was learned on real hardware; the Python
 //! file has the measurements behind them.
 //!
 //! **What it must keep doing** (each is a test in `tests/test_native_duplicator.py`
@@ -12,7 +14,12 @@
 //!    and RGBA16F offered, so HDR and 10-bit desktops duplicate; fall back to
 //!    `DuplicateOutput` when IDXGIOutput5 is missing or DuplicateOutput1 fails
 //!    for any reason but protected content, or when `RAPIDSHOT_DUPLICATE_OUTPUT`
-//!    is `legacy`, `0` or `duplicateoutput`.
+//!    is `legacy`, `0` or `duplicateoutput`. DuplicateOutput1 answers
+//!    `DXGI_ERROR_UNSUPPORTED` to a thread that is not per-monitor DPI aware
+//!    (measured: unaware and system-aware both refused, per-monitor v1 and v2
+//!    and a thread-only v2 context all accepted), so the call is made with the
+//!    calling thread raised to per-monitor and the thread's own setting put
+//!    back afterwards. Nothing else about the process changes.
 //! 2. A bare `E_ACCESSDENIED` is a desktop refusal (lock screen, UAC, Session 0)
 //!    when `desktop::describe_desktop_access` says so, and protected content
 //!    otherwise. The DXGI-specific denials are always protected content.
@@ -21,7 +28,11 @@
 //!    duplication; device removed/reset/hung and driver internal error rebuild
 //!    the device; `INVALID_CALL`/`UNSUPPORTED` are configuration errors that
 //!    carry their HRESULT (so the caller can try the next adapter); anything
-//!    else is a plain DXGI error.
+//!    else is a plain DXGI error. Any of them but a device error also says, in
+//!    `DupError::desktop_switch`, when the input desktop was not this thread's
+//!    as it happened: lock, sign-in, UAC and Ctrl+Alt+Del end the duplication
+//!    with a different HRESULT each time, so the class alone cannot tell a
+//!    switch to follow from a fault to report.
 //! 4. A timeout is healthy (`Ok(true)`, nothing updated). A rebuild-class or
 //!    device-class failure drops the duplication before reporting, so nothing
 //!    is issued against an interface DXGI has already invalidated.
@@ -41,7 +52,14 @@
 //!
 //! Messages are the Python file's, except that a COM error is rendered the way
 //! windows-rs renders it ("text (0x887A0026)") rather than comtypes' tuple.
+//!
+//! The notes are held for the caller to drain with `take_log`, and at most
+//! `LOG_CAPACITY` of them: a frame writes two or three, so a caller that never
+//! drains -- the remote-support helper did not -- would otherwise grow without
+//! end (15,644 notes and 2.4 MB of private memory in one minute at ~100 frames
+//! a second). Past the cap the oldest go, and `take_log` says how many.
 
+use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::mem::size_of;
 
@@ -53,14 +71,124 @@ use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM,
 };
 use windows::Win32::Graphics::Dxgi::*;
+use windows::Win32::UI::HiDpi::{
+    GetAwarenessFromDpiAwarenessContext, GetThreadDpiAwarenessContext,
+    SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE,
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, DPI_AWARENESS_PER_MONITOR_AWARE,
+};
 
-use crate::desktop::describe_desktop_access;
+use crate::desktop::{describe_desktop_access, desktop_switch, DesktopSwitch};
+
+fn thread_dpi_awareness() -> i32 {
+    unsafe { GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext()) }.0
+}
+
+fn dpi_awareness_name(awareness: i32) -> &'static str {
+    match awareness {
+        0 => "DPI unaware",
+        1 => "system DPI aware",
+        2 => "per-monitor DPI aware",
+        _ => "of unknown DPI awareness",
+    }
+}
+
+/// The calling thread made per-monitor DPI aware for as long as this lives,
+/// then put back. DuplicateOutput1 refuses anything less with
+/// `DXGI_ERROR_UNSUPPORTED`, and a process-wide change is the caller's
+/// business: it also moves every coordinate the process reads.
+///
+/// So the caller must be per-monitor aware itself if it reads coordinates.
+/// Legacy `DuplicateOutput` from an unaware process makes Windows switch the
+/// whole process to per-monitor aware (and flag the exe to start aware next
+/// time); with DuplicateOutput1 accepted here, that no longer happens, and an
+/// unaware caller's `DesktopCoordinates` stay scaled while the texture is not.
+/// Measured 2026-11-11 at 125%; it turned the remote helper's stream black.
+struct PerMonitorDpiForThisThread {
+    previous: Option<DPI_AWARENESS_CONTEXT>,
+    before: i32,
+}
+
+impl PerMonitorDpiForThisThread {
+    fn enter() -> Self {
+        let before = thread_dpi_awareness();
+        if before == DPI_AWARENESS_PER_MONITOR_AWARE.0 {
+            return Self {
+                previous: None,
+                before,
+            };
+        }
+        // V2 needs Windows 10 1703; V1 is the fallback before that.
+        for context in [
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE,
+        ] {
+            let previous = unsafe { SetThreadDpiAwarenessContext(context) };
+            if !previous.is_invalid() {
+                return Self {
+                    previous: Some(previous),
+                    before,
+                };
+            }
+        }
+        Self {
+            previous: None,
+            before,
+        }
+    }
+}
+
+impl Drop for PerMonitorDpiForThisThread {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.take() {
+            unsafe { SetThreadDpiAwarenessContext(previous) };
+        }
+    }
+}
 
 /// Upper bounds on buffers sized from driver-reported fields. A corrupt frame
 /// info after a driver fault would otherwise become a multi-gigabyte
 /// allocation on the capture thread.
 pub const MAX_METADATA_BUFFER_BYTES: u32 = 16 * 1024 * 1024;
 pub const MAX_POINTER_SHAPE_BUFFER_BYTES: u32 = 16 * 1024 * 1024;
+
+/// Notes held between two `take_log` calls. The Python adapter drains after
+/// every call, which writes a handful; this only bites a caller that does not.
+pub const LOG_CAPACITY: usize = 512;
+
+/// The newest `LOG_CAPACITY` notes, and how many older ones were dropped.
+#[derive(Debug, Default)]
+struct NoteLog {
+    entries: VecDeque<(Level, String)>,
+    dropped: u64,
+}
+
+impl NoteLog {
+    fn push(&mut self, level: Level, message: String) {
+        if self.entries.len() >= LOG_CAPACITY {
+            self.entries.pop_front();
+            self.dropped += 1;
+        }
+        self.entries.push_back((level, message));
+    }
+
+    /// Oldest first. A dropped count leads, since it is about notes older
+    /// than any returned.
+    fn take(&mut self) -> Vec<(Level, String)> {
+        let mut out = Vec::with_capacity(self.entries.len() + 1);
+        if self.dropped > 0 {
+            out.push((
+                Level::Warning,
+                format!(
+                    "{} earlier notes were dropped unread; the log keeps the newest {LOG_CAPACITY}",
+                    self.dropped
+                ),
+            ));
+            self.dropped = 0;
+        }
+        out.extend(self.entries.drain(..));
+        out
+    }
+}
 
 /// Offered to DuplicateOutput1, in preference order.
 pub const DUPLICATE_OUTPUT1_FORMATS: [DXGI_FORMAT; 4] = [
@@ -119,6 +247,33 @@ pub struct DupError {
     /// As a signed 32-bit value, the way the Python constants are written.
     pub hresult: Option<i32>,
     pub message: String,
+    /// Set when the input desktop was not this thread's as the error was
+    /// reported: lock, sign-in, UAC or Ctrl+Alt+Del. Windows ends the
+    /// duplication a different way at each switch (access lost, the keyed
+    /// mutex abandoned, `INVALID_CALL`, `E_ACCESSDENIED`), so the HRESULT
+    /// cannot say it; this can. Follow the desktop or wait, rather than report
+    /// a fault. Never set on a device error, which is a fault wherever it
+    /// happens. `kind` is unchanged by it, so the Python exception is too.
+    pub desktop_switch: Option<DesktopSwitch>,
+}
+
+impl DupError {
+    fn new(kind: ErrorKind, hresult: Option<i32>, message: String) -> Self {
+        Self {
+            kind,
+            hresult,
+            message,
+            desktop_switch: None,
+        }
+    }
+
+    /// Record whether this happened because the input desktop moved away.
+    fn noting_desktop_switch(mut self) -> Self {
+        if self.kind != ErrorKind::Device && self.desktop_switch.is_none() {
+            self.desktop_switch = desktop_switch();
+        }
+        self
+    }
 }
 
 impl std::fmt::Display for DupError {
@@ -182,11 +337,11 @@ fn desktop_refusal(code: HRESULT, detail: &str) -> Option<DupError> {
     } else {
         format!("{detail} — ")
     };
-    Some(DupError {
-        kind: ErrorKind::Config,
-        hresult: Some(code.0),
-        message: format!("{prefix}Desktop duplication was denied: {reason}"),
-    })
+    Some(DupError::new(
+        ErrorKind::Config,
+        Some(code.0),
+        format!("{prefix}Desktop duplication was denied: {reason}"),
+    ))
 }
 
 /// What a pointer-shape read produced.
@@ -200,7 +355,7 @@ pub struct Duplicator {
     duplication: Option<IDXGIOutputDuplication>,
     texture: Option<ID3D11Texture2D>,
     frame_acquired: bool,
-    log: Vec<(Level, String)>,
+    log: NoteLog,
 
     pub used_duplicate_output1: bool,
     pub timeout_ms: u32,
@@ -229,7 +384,7 @@ impl Duplicator {
             duplication: None,
             texture: None,
             frame_acquired: false,
-            log: Vec::new(),
+            log: NoteLog::default(),
             used_duplicate_output1: false,
             timeout_ms,
             updated: false,
@@ -245,7 +400,9 @@ impl Duplicator {
             pointer_shape: None,
             last_error: String::new(),
         };
-        let duplication = dup.create_duplication(output, device)?;
+        let duplication = dup
+            .create_duplication(output, device)
+            .map_err(DupError::noting_desktop_switch)?;
         dup.duplication = Some(duplication);
         dup.note(
             Level::Info,
@@ -262,12 +419,14 @@ impl Duplicator {
     }
 
     fn note(&mut self, level: Level, message: impl Into<String>) {
-        self.log.push((level, message.into()));
+        self.log.push(level, message.into());
     }
 
-    /// Notes recorded since the last call, oldest first.
+    /// Notes recorded since the last call, oldest first: the newest
+    /// `LOG_CAPACITY`, led by a warning naming how many older ones were
+    /// dropped if any were. Drain it regularly; a frame writes two or three.
     pub fn take_log(&mut self) -> Vec<(Level, String)> {
-        std::mem::take(&mut self.log)
+        self.log.take()
     }
 
     /// The desktop image of the held frame, valid until `release_frame`.
@@ -305,7 +464,24 @@ impl Duplicator {
                     ),
                 ),
                 Ok(output5) => {
-                    match unsafe { output5.DuplicateOutput1(device, 0, &DUPLICATE_OUTPUT1_FORMATS) } {
+                    let dpi = PerMonitorDpiForThisThread::enter();
+                    let raised = dpi.previous.is_some();
+                    let before = dpi.before;
+                    let during = thread_dpi_awareness();
+                    let result =
+                        unsafe { output5.DuplicateOutput1(device, 0, &DUPLICATE_OUTPUT1_FORMATS) };
+                    drop(dpi);
+                    if raised {
+                        self.note(
+                            Level::Info,
+                            format!(
+                                "This thread is {}; it was made per-monitor DPI aware for \
+                                 DuplicateOutput1, which requires it, and put back afterwards.",
+                                dpi_awareness_name(before)
+                            ),
+                        );
+                    }
+                    match result {
                         Ok(duplication) => {
                             self.used_duplicate_output1 = true;
                             return Ok(duplication);
@@ -320,19 +496,31 @@ impl Duplicator {
                                     return Err(desktop);
                                 }
                                 self.protected_content_detected = true;
-                                return Err(DupError {
-                                    kind: ErrorKind::ProtectedContent,
-                                    hresult: Some(code.0),
-                                    message: "Desktop duplication was denied because protected \
-                                              (HDCP/DRM) content is on screen. Close or move the \
-                                              protected player window and retry."
+                                return Err(DupError::new(
+                                    ErrorKind::ProtectedContent,
+                                    Some(code.0),
+                                    "Desktop duplication was denied because protected \
+                                     (HDCP/DRM) content is on screen. Close or move the \
+                                     protected player window and retry."
                                         .to_owned(),
-                                });
+                                ));
                             }
+                            // Say whether DPI awareness can be the reason, so a
+                            // refusal is not blamed on it when it is not.
+                            let why = if during == DPI_AWARENESS_PER_MONITOR_AWARE.0 {
+                                String::new()
+                            } else {
+                                format!(
+                                    " The calling thread is {} and could not be made per-monitor \
+                                     DPI aware, which DuplicateOutput1 requires.",
+                                    dpi_awareness_name(during)
+                                )
+                            };
                             self.note(
                                 Level::Warning,
                                 format!(
-                                    "DuplicateOutput1 failed (HRESULT {}); falling back to legacy DuplicateOutput.",
+                                    "DuplicateOutput1 failed (HRESULT {}); falling back to legacy \
+                                     DuplicateOutput, which offers no 10-bit or HDR formats.{why}",
                                     format_hresult(code)
                                 ),
                             );
@@ -373,11 +561,7 @@ impl Duplicator {
         } else {
             (ErrorKind::Dxgi, detail)
         };
-        DupError {
-            kind,
-            hresult: Some(code.0),
-            message,
-        }
+        DupError::new(kind, Some(code.0), message)
     }
 
     /// Try to acquire the next frame. `Ok(true)` while healthy, a timeout
@@ -416,21 +600,24 @@ impl Duplicator {
                         "Access lost"
                     };
                     self.release_duplication();
-                    return Err(DupError {
-                        kind: ErrorKind::Reinit,
-                        hresult: Some(code.0),
-                        message: format!("{reason}, re-initialization needed: {e}"),
-                    });
+                    return Err(DupError::new(
+                        ErrorKind::Reinit,
+                        Some(code.0),
+                        format!("{reason}, re-initialization needed: {e}"),
+                    )
+                    .noting_desktop_switch());
                 }
                 if DEVICE.contains(&code) {
                     self.release_duplication();
-                    return Err(DupError {
-                        kind: ErrorKind::Device,
-                        hresult: Some(code.0),
-                        message: format!("Device error, re-initialization needed: {e}"),
-                    });
+                    return Err(DupError::new(
+                        ErrorKind::Device,
+                        Some(code.0),
+                        format!("Device error, re-initialization needed: {e}"),
+                    ));
                 }
-                Err(self.map_error(&e, "Unexpected DXGI error in update_frame"))
+                Err(self
+                    .map_error(&e, "Unexpected DXGI error in update_frame")
+                    .noting_desktop_switch())
             }
         }
     }
@@ -788,6 +975,46 @@ mod tests {
         }
     }
 
+    /// `Some` with the duplicator, or `None` on a machine that refuses Desktop
+    /// Duplication outright: `DXGI_ERROR_UNSUPPORTED` from the legacy call,
+    /// which needs no DPI awareness, so nothing this crate does can be the
+    /// cause. A muxless hybrid laptop with the process on its discrete GPU
+    /// answers that for every adapter (measured on a ThinkPad E580). Rust
+    /// tests cannot skip, so the test says why and returns; any other error
+    /// is still a failure.
+    fn unless_refused(result: Result<Duplicator, DupError>) -> Option<Duplicator> {
+        match result {
+            Ok(dup) => Some(dup),
+            Err(e)
+                if e.kind == ErrorKind::Config && e.hresult == Some(DXGI_ERROR_UNSUPPORTED.0) =>
+            {
+                eprintln!(
+                    "skipped: this machine refuses Desktop Duplication: {}",
+                    e.message
+                );
+                None
+            }
+            Err(e) => panic!("{e:?}"),
+        }
+    }
+
+    #[test]
+    fn only_a_refusal_skips_a_duplicating_test() {
+        let refused = DupError::new(
+            ErrorKind::Config,
+            Some(DXGI_ERROR_UNSUPPORTED.0),
+            "Failed to initialize duplicator".into(),
+        );
+        assert!(unless_refused(Err(refused)).is_none());
+        for other in [
+            DupError::new(ErrorKind::Config, Some(E_ACCESSDENIED.0), "x".into()),
+            DupError::new(ErrorKind::Dxgi, Some(DXGI_ERROR_UNSUPPORTED.0), "x".into()),
+        ] {
+            let failed = std::panic::catch_unwind(|| unless_refused(Err(other)));
+            assert!(failed.is_err(), "anything but a refusal must still fail");
+        }
+    }
+
     #[test]
     fn hresult_classes_match_the_python_sets() {
         // ABANDONED_MUTEX_EXCEPTION is -0x7785ffda in the Python bindings.
@@ -801,7 +1028,9 @@ mod tests {
     fn an_access_lost_error_is_a_rebuild_and_unsupported_carries_its_hresult() {
         let _only = exclusive();
         let (output, device) = primary();
-        let mut dup = Duplicator::new(&output, &device, 10).unwrap();
+        let Some(mut dup) = unless_refused(Duplicator::new(&output, &device, 10)) else {
+            return;
+        };
         let lost = windows::core::Error::from_hresult(DXGI_ERROR_ACCESS_LOST);
         assert_eq!(dup.map_error(&lost, "x").kind, ErrorKind::Reinit);
         let unsupported = windows::core::Error::from_hresult(DXGI_ERROR_UNSUPPORTED);
@@ -818,7 +1047,9 @@ mod tests {
     fn acquires_releases_and_stays_healthy_on_a_static_desktop() {
         let _only = exclusive();
         let (output, device) = primary();
-        let mut dup = Duplicator::new(&output, &device, 50).unwrap();
+        let Some(mut dup) = unless_refused(Duplicator::new(&output, &device, 50)) else {
+            return;
+        };
         let mut got_content = false;
         for _ in 0..40 {
             assert!(dup.update_frame().unwrap(), "{}", dup.last_error);
@@ -837,6 +1068,129 @@ mod tests {
         dup.release();
         assert!(dup.is_released());
         assert_eq!(dup.update_frame(), Ok(false));
+        dup.release();
+    }
+
+    #[test]
+    fn the_log_keeps_the_newest_notes_and_says_how_many_went() {
+        let mut log = NoteLog::default();
+        for i in 0..LOG_CAPACITY + 10 {
+            log.push(Level::Debug, format!("note {i}"));
+        }
+        assert_eq!(log.entries.len(), LOG_CAPACITY);
+        let taken = log.take();
+        assert_eq!(taken.len(), LOG_CAPACITY + 1);
+        assert_eq!(taken[0].0, Level::Warning);
+        assert!(taken[0].1.starts_with("10 earlier notes"), "{}", taken[0].1);
+        assert_eq!(taken[1].1, "note 10");
+        assert_eq!(taken[LOG_CAPACITY].1, format!("note {}", LOG_CAPACITY + 9));
+        // Drained: nothing left, and the dropped count does not repeat.
+        assert!(log.take().is_empty());
+        log.push(Level::Info, "after".into());
+        assert_eq!(log.take(), vec![(Level::Info, "after".to_owned())]);
+    }
+
+    #[test]
+    fn a_dpi_unaware_thread_gets_duplicate_output1_and_keeps_its_own_setting() {
+        use windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_UNAWARE;
+        let _only = exclusive();
+        // A thread of its own, so making it unaware cannot leak into others.
+        std::thread::spawn(|| {
+            unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_UNAWARE) };
+            assert_eq!(
+                thread_dpi_awareness(),
+                0,
+                "the test could not make itself unaware"
+            );
+            let (output, device) = primary();
+            let Some(mut dup) = unless_refused(Duplicator::new(&output, &device, 10)) else {
+                return;
+            };
+            let log = dup.take_log();
+            assert_eq!(
+                thread_dpi_awareness(),
+                0,
+                "the thread was not put back: {log:?}"
+            );
+            if !dup.used_duplicate_output1 {
+                // A machine may refuse DuplicateOutput1 for its own reasons
+                // (a basic display driver); DPI must then not be one of them.
+                let warning = log
+                    .iter()
+                    .find(|(_, m)| m.starts_with("DuplicateOutput1 failed"))
+                    .expect("a fallback without a warning");
+                assert!(
+                    !warning.1.contains("could not be made per-monitor"),
+                    "{}",
+                    warning.1
+                );
+            }
+            assert!(
+                log.iter()
+                    .any(|(_, m)| m.contains("made per-monitor DPI aware")),
+                "{log:?}"
+            );
+            dup.release();
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn a_duplicator_started_off_the_input_desktop_says_it_is_a_switch() {
+        let _only = exclusive();
+        let error = crate::desktop::tests::on_another_desktop(|name| {
+            let (output, device) = primary();
+            let e = Duplicator::new(&output, &device, 10)
+                .err()
+                .expect("duplicating from a desktop that is not the input one");
+            (name.to_owned(), e)
+        });
+        let (name, e) = error;
+        assert_eq!(
+            e.desktop_switch,
+            Some(DesktopSwitch {
+                thread_desktop: Some(name),
+                input_desktop: Some("Default".to_owned()),
+            }),
+            "{e:?}"
+        );
+        // The class is what it always was, so Python raises what it did.
+        assert_eq!(e.kind, ErrorKind::Config, "{e:?}");
+    }
+
+    #[test]
+    fn a_device_error_is_never_called_a_switch() {
+        let reinit = || DupError::new(ErrorKind::Reinit, None, "x".into());
+        let device = || DupError::new(ErrorKind::Device, None, "x".into());
+        // On the input desktop: nothing is a switch.
+        assert_eq!(reinit().noting_desktop_switch().desktop_switch, None);
+        crate::desktop::tests::on_another_desktop(move |_| {
+            assert!(reinit().noting_desktop_switch().desktop_switch.is_some());
+            assert_eq!(device().noting_desktop_switch().desktop_switch, None);
+        });
+    }
+
+    #[test]
+    fn a_caller_that_never_drains_holds_at_most_the_cap() {
+        let _only = exclusive();
+        let (output, device) = primary();
+        // 1 ms timeout: a static desktop still writes a note per call.
+        let Some(mut dup) = unless_refused(Duplicator::new(&output, &device, 1)) else {
+            return;
+        };
+        for _ in 0..LOG_CAPACITY * 3 {
+            assert!(dup.update_frame().unwrap(), "{}", dup.last_error);
+            dup.release_frame();
+        }
+        assert_eq!(dup.log.entries.len(), LOG_CAPACITY);
+        let taken = dup.take_log();
+        assert_eq!(taken.len(), LOG_CAPACITY + 1);
+        assert!(
+            taken[0].1.contains("earlier notes were dropped"),
+            "{}",
+            taken[0].1
+        );
         dup.release();
     }
 }

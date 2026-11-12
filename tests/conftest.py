@@ -86,6 +86,49 @@ def no_machine_cpu_exclusion(monkeypatch):
     monkeypatch.delenv("RAPIDSHOT_BENCH_EXCLUDE_CPUS", raising=False)
 
 
+#: Asks, in a child process, whether this machine will duplicate its primary
+#: display. A child so the probe leaves nothing behind in the suite's process:
+#: no cached camera in the factory, no change to DPI awareness.
+_DUPLICATION_PROBE = r"""
+import json, logging, sys
+sys.path.insert(0, %(root)r)
+logging.disable(logging.CRITICAL)
+import rapidshot
+try:
+    rapidshot.create(backend="dxgi").release()
+    print(json.dumps({"refused": None}))
+except BaseException as error:
+    seen, refused = error, False
+    while seen is not None:
+        refused = refused or bool(getattr(seen, "duplication_refused", False))
+        seen = seen.__cause__ or seen.__context__
+    print(json.dumps({"refused": str(error).splitlines()[0] if refused else None}))
+"""
+
+
+@pytest.fixture(scope="session")
+def desktop_duplication():
+    """Skips a test that needs Desktop Duplication on a machine that refuses it.
+
+    ``create()`` falls back to Windows.Graphics.Capture when every adapter
+    refuses to duplicate, so on such a machine a test that means to drive
+    Desktop Duplication drives WGC instead and fails for a reason that has
+    nothing to do with what it tests. A muxless hybrid laptop with Python on
+    its discrete GPU is one (measured on a ThinkPad E580: every output, every
+    device, ``DXGI_ERROR_UNSUPPORTED``). Only a refusal skips; any other
+    failure is left to the test, which reports it as it always did.
+    """
+    if sys.platform != "win32":
+        pytest.skip("Desktop Duplication is Windows only")
+    root = str(Path(__file__).resolve().parent.parent)
+    proc = subprocess.run([sys.executable, "-c", _DUPLICATION_PROBE % {"root": root}],
+                          capture_output=True, text=True, timeout=120)
+    line = next((l for l in reversed(proc.stdout.splitlines()) if l.startswith("{")), None)
+    refused = json.loads(line)["refused"] if line else None
+    if refused:
+        pytest.skip(f"this machine refuses Desktop Duplication: {refused}")
+
+
 MOTION_SOURCE = Path(__file__).resolve().parent.parent / "benchmarks" / "motion_source.py"
 #: A rectangle inside the motion window (900x700 at +200+120 on the primary
 #: display), as (left, top, right, bottom).

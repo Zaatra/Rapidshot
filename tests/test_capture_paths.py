@@ -1150,7 +1150,17 @@ def test_cleanup_failures_after_a_bad_stage_surface_still_surface_the_cause(
         attempts["duplicator"] += 1
         raise OSError("duplicator will not release")
 
+    own_stage = cam._stagesurf
+
     def stage_release(self):
+        # The same trap as above, for the stage surface: another test's camera
+        # finalised mid-test released *its* surface through this patch, which
+        # used up the "ordinary teardown" and made the next call raise -- so
+        # the cleanup's error, not the build failure, reached the caller. Seen
+        # once, on the RTX laptop in Optimus (2026-11-12), and on no other run.
+        if self is not own_stage:
+            self.width = self.height = 0
+            return
         attempts["stage"] += 1
         if attempts["stage"] > 1:           # the first is the ordinary teardown
             raise OSError("stage surface will not release")

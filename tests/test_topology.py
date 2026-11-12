@@ -5,6 +5,8 @@ hybrid Optimus laptops — are tested by describing those machines rather than b
 owning them. The one live test asserts the real machine agrees with DXGI.
 """
 
+import sys
+
 import pytest
 
 from rapidshot.util.topology import (
@@ -14,7 +16,10 @@ from rapidshot.util.topology import (
     SINGLE,
     AdapterInfo,
     GpuTopology,
+    RenderOffload,
     classify,
+    find_render_offloads,
+    pci_ids,
 )
 
 
@@ -191,6 +196,102 @@ class TestMessages:
         described = classify([igpu()]).describe()
         assert described.startswith("Topology: single")
         assert "Hybrid" not in described
+
+
+# The ThinkPad E580 measured 2026-11-11: a Radeon 500 and a UHD 620, with the
+# panel and HDMI both wired to Intel. With python.exe on the Radeon (the
+# Windows default there), DXGI lists the panel under the Radeon and Intel shows
+# no outputs -- the same picture an Optimus laptop with the display on the
+# dGPU would give -- and every duplication is refused.
+PANEL = "\\\\.\\DISPLAY1"
+UHD_620 = "PCI\\VEN_8086&DEV_5917&SUBSYS_506F17AA&REV_07"
+
+
+def radeon(outputs=1, index=0):
+    return AdapterInfo(index=index, description="Radeon 500 Series", vendor_id=0x1002,
+                       device_id=0x699F, dedicated_video_memory=2048 * 1048576,
+                       output_count=outputs)
+
+
+def uhd620(outputs=0, index=1):
+    return AdapterInfo(index=index, description="Intel(R) UHD Graphics 620",
+                       vendor_id=0x8086, device_id=0x5917,
+                       dedicated_video_memory=128 * 1048576, output_count=outputs)
+
+
+def e580():
+    adapters = [radeon(), uhd620(), warp(index=2)]
+    offloads = find_render_offloads(
+        [(PANEL, adapters[0])], {PANEL: ("Intel(R) UHD Graphics 620", UHD_620)})
+    return classify(adapters, offloads)
+
+
+class TestRenderOffload:
+    def test_pci_ids_are_read_from_a_gdi_device_id(self):
+        assert pci_ids(UHD_620) == (0x8086, 0x5917)
+        assert pci_ids("pci\\ven_10de&dev_2860") == (0x10DE, 0x2860)
+
+    def test_a_device_id_that_is_not_pci_is_not_comparable(self):
+        # An indirect display driver, a remote session: no PCI id, so no
+        # claim either way.
+        assert pci_ids("ROOT\\DISPLAY\\0000") is None
+        assert pci_ids("") is None
+
+    def test_the_e580_is_found(self):
+        assert e580().render_offloads == (RenderOffload(
+            output=PANEL, wired_to="Intel(R) UHD Graphics 620",
+            listed_under="Radeon 500 Series"),)
+
+    def test_the_same_gpu_on_both_sides_is_not_an_offload(self):
+        # This PC's real ids, read 2026-11-11: GDI and DXGI agree.
+        intel = AdapterInfo(index=0, description="Intel(R) Graphics", vendor_id=0x8086,
+                            device_id=0x7D67, output_count=2)
+        wired = {name: ("Intel(R) Graphics", "PCI\\VEN_8086&DEV_7D67&SUBSYS_8D13103C&REV_06")
+                 for name in ("\\\\.\\DISPLAY1", "\\\\.\\DISPLAY2")}
+        assert find_render_offloads([(n, intel) for n in wired], wired) == ()
+
+    def test_unknown_or_uncomparable_displays_are_left_out(self):
+        listed = [(PANEL, radeon())]
+        assert find_render_offloads(listed, {}) == ()
+        assert find_render_offloads(listed, {PANEL: ("Remote Display", "ROOT\\RDP")}) == ()
+        assert find_render_offloads([(PANEL, warp())], {PANEL: ("x", UHD_620)}) == ()
+
+    def test_the_help_names_both_gpus_and_the_setting_not_the_firmware(self):
+        help_text = e580().duplication_failure_help()
+        assert "connected to Intel(R) UHD Graphics 620" in help_text
+        assert "runs on Radeon 500 Series" in help_text
+        assert "Settings > System > Display > Graphics" in help_text
+        assert sys.executable in help_text or getattr(sys, "_base_executable", "") in help_text
+        # The advice this case used to get, and which could not have helped.
+        assert "MUX" not in help_text
+        assert "GPU mode" not in help_text
+
+    def test_the_description_does_not_say_the_rendering_gpu_owns_the_display(self):
+        described = e580().describe()
+        assert "Radeon 500 Series owns the display" not in described
+        assert "connected to Intel(R) UHD Graphics 620" in described
+
+    def test_a_hybrid_refusal_without_proof_checks_the_gpu_setting_first(self):
+        help_text = classify([igpu(), dgpu()]).duplication_failure_help()
+        assert help_text.index("Display > Graphics") < help_text.index("MUX")
+
+    def test_offload_messages_are_ascii(self):
+        topology = e580()
+        (topology.describe() + topology.duplication_failure_help()).encode("ascii")
+
+    def test_diagnose_says_where_the_display_is_connected(self, monkeypatch):
+        rapidshot = pytest.importorskip("rapidshot")
+        import rapidshot.util.topology as topology_module
+
+        monkeypatch.setattr(topology_module, "probe_topology", e580)
+        text = rapidshot.diagnose()
+        assert "Radeon 500 Series (AMD, 1 output, listed for this process, not connected)" in text
+        assert f"{PANEL}: connected to Intel(R) UHD Graphics 620" in text
+        # The old note, which told this machine its capture ran on the Radeon.
+        assert "Capture runs on the display adapter" not in text
+        assert rapidshot.capabilities()["capture"]["render_offloads"] == [
+            {"output": PANEL, "wired_to": "Intel(R) UHD Graphics 620",
+             "listed_under": "Radeon 500 Series"}]
 
 
 class TestFactoryReporting:

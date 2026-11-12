@@ -28,7 +28,7 @@ def private_cache(tmp_path, monkeypatch):
     monkeypatch.setenv("RAPIDSHOT_PLAN_CACHE", str(tmp_path / "plans.json"))
 
 
-def test_calibration_measures_both_backends_and_auto_follows_it(private_cache):
+def test_calibration_measures_both_backends_and_auto_follows_it(private_cache, desktop_duplication):
     result = rapidshot.plan(Monitor(), consumer="cpu", calibrate=True, seconds=1.5)
     print(result)
 
