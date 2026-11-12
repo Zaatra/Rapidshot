@@ -622,17 +622,25 @@ class GpuConverter:
             trained on. ``True`` passes scRGB through for float output, for a
             caller that handles linear light itself. YUV output refuses it
             regardless: a Y'CbCr matrix expects gamma-encoded values.
-        tone_map: what to do with an ``"scrgb"`` frame. ``"none"`` (default)
-            refuses it, as above. ``"clip"`` converts it to sRGB exactly as
-            :meth:`~rapidshot.ScreenCapture.grab` does: divide by the
-            display's SDR white, clip each channel, sRGB transfer function.
-            ``"auto"`` is the same for every pixel at or below SDR white, and
-            above it scales the pixel by its brightest channel instead of
-            clipping each one, so a highlight keeps its hue. Either way it
-            happens inside the same dispatch, before resizing, so bilinear
-            filtering averages linear light. SDR frames are untouched, so one
-            converter serves a display whose HDR state changes. Not available
-            with ``pixel_format`` or ``allow_linear``.
+        tone_map: what to do with an ``"scrgb"`` frame. ``"clip"`` converts
+            it to sRGB exactly as :meth:`~rapidshot.ScreenCapture.grab` does:
+            divide by the display's SDR white, clip each channel, sRGB
+            transfer function. ``"auto"`` is the same for every pixel at or
+            below SDR white, and above it scales the pixel by its brightest
+            channel instead of clipping each one, so a highlight keeps its
+            hue. Either way it happens inside the same dispatch, before
+            resizing, so bilinear filtering averages linear light. SDR frames
+            are untouched, so one converter serves a display whose HDR state
+            changes. ``"none"`` refuses an scRGB frame, as above. Not
+            available with P010 or ``allow_linear``; with ``pixel_format="nv12"``
+            it needs rapidshot-native 0.4.0.
+
+            ``None`` (default) is ``"auto"`` for tensor and ``uint8`` output,
+            and ``"none"`` where a tone map was not asked for and cannot apply
+            as it stands: with ``allow_linear=True``, with ``pixel_format``
+            (NV12 tone-maps on request only), or on a native build too old to
+            tone map. :attr:`tone_map` reports which one was chosen. In 2.7.2
+            and earlier the default was ``"none"``.
         output_color_space: what the tone map produces. ``"srgb"`` is the
             only value: HDR10 output (PQ, BT.2020) is not implemented.
 
@@ -699,11 +707,17 @@ class GpuConverter:
         full_range: bool = False,
         batch: int = 1,
         allow_linear: bool = False,
-        tone_map: str = "none",
+        tone_map: Optional[str] = None,
         output_color_space: str = "srgb",
     ) -> None:
         gpu_converter = native.require_feature("GpuConverter12")
         self._allow_linear = bool(allow_linear)
+        if tone_map is None:
+            # The default: tone map where it can apply, and nowhere it would
+            # turn a working call into a refusal. Every pair refused below
+            # names two things the caller asked for; a default asks for none.
+            tone_map = ("none" if allow_linear or pixel_format is not None
+                        or not _takes_tone_map(gpu_converter) else "auto")
         if tone_map not in _TONE_MAPS:
             raise ValueError(f"tone_map must be one of {tuple(_TONE_MAPS)}, got {tone_map!r}")
         if output_color_space not in _OUTPUT_COLOR_SPACES:
@@ -901,7 +915,8 @@ class GpuConverter:
 
     @property
     def tone_map(self) -> str:
-        """``"none"``, ``"clip"`` or ``"auto"``, as constructed."""
+        """``"none"``, ``"clip"`` or ``"auto"``: as passed, or what the
+        default resolved to for this converter."""
         return self._tone_map
 
     @property
@@ -1083,8 +1098,9 @@ class GpuConverter:
         1.0: a highlight legitimately reads above it, and float outputs pass
         that through rather than clamping, since clamping would discard what
         the format exists to carry. ``dtype="uint8"`` saturates, having no
-        choice. With ``tone_map`` set, an HDR frame is converted to sRGB
-        instead, and every output then has an SDR frame's range.
+        choice. With a tone map -- the default for tensor and ``uint8``
+        output -- an HDR frame is converted to sRGB instead, and every output
+        then has an SDR frame's range.
         """
         return self._impl.source_format
 

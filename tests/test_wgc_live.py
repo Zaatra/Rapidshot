@@ -22,6 +22,7 @@ comtypes = pytest.importorskip("comtypes", reason="COM is Windows-only")
 from rapidshot.core import wgc  # noqa: E402
 
 from test_gpu_converter import cpu_readback, nearest_reference  # noqa: E402
+from _hdr_desktop import BGRA8_REFERENCE, skip_on_an_hdr_desktop  # noqa: E402
 
 def _why_not():
     """Why WGC cannot capture here, or None. Asked once, at collection.
@@ -120,6 +121,7 @@ def test_gpu_converter_reads_a_wgc_frame_exactly():
             time.sleep(0.01)
         assert frame is not None
         with frame:
+            skip_on_an_hdr_desktop(frame, BGRA8_REFERENCE)   # `with` releases it
             converter = rapidshot.GpuConverter(frame, (64, 64), dtype="float32",
                                                sampling="nearest")
             got = converter.process(frame).numpy()
@@ -214,18 +216,23 @@ def test_a_minimised_window_blocks_instead_of_spinning(painted_window, tk_root):
         camera.release()
 
 
-def test_an_open_wgc_camera_does_not_crash_interpreter_exit():
+@pytest.mark.parametrize("grab", [True, False], ids=["after-a-grab", "no-grab"])
+def test_an_open_wgc_camera_does_not_crash_interpreter_exit(grab):
     """A WGC session closed moments before the process exits crashed it:
     WGC finishes tearing a session down on its own threads after Close()
-    returns. core/wgc.py closes open sessions in an atexit hook, and close()
-    waits for the capture device's reference count to settle (wgc.rs)."""
+    returns. core/wgc.py closes open sessions in an atexit hook, close()
+    waits for the capture device's reference count to settle (wgc.rs), and
+    GraphicsCapture.dll is pinned so comtypes' CoUninitialize cannot unload
+    it under WGC's remaining work (core/wgc.py, ``_pin_graphics_capture``)."""
     code = ("import rapidshot, time\n"
             "camera = rapidshot.create(source=rapidshot.Monitor(), backend='wgc')\n"
             "time.sleep(0.2)\n"
-            "camera.grab()\n"
-            "print('left open')\n")
+            + ("camera.grab()\n" if grab else "")
+            + "print('left open')\n")
     # Three runs, not one: before close() waited for WGC's teardown, this
-    # crashed 1 in 10 for a released camera and 8 in 10 for an open one.
+    # crashed 1 in 10 for a released camera and 8 in 10 for an open one; with
+    # the wait and no pin, on an HDR desktop, 6 in 120 after a grab and 74 in
+    # 120 with none -- the case that makes three runs a real check.
     for _ in range(3):
         result = subprocess.run([sys.executable, "-c", code], capture_output=True,
                                 text=True, timeout=60)

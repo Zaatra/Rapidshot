@@ -16,8 +16,10 @@ comparison allows one code *and* requires that at least 99% of samples match
 exactly — a systematic off-by-one (a 15 instead of a 16) fails the second
 condition while staying inside the first.
 
-**Not verified here:** an `R10G10B10A2_UNORM` source (this is an SDR desktop),
-and the `R16G16B16A16_FLOAT` refusal, which needs an HDR desktop to reach.
+**On an HDR desktop** NV12 and P010 refuse the frame unless given a tone map,
+so the conversion tests skip and :func:`test_an_hdr_frame_is_refused_without_a_tone_map`
+checks the refusal on the live surface instead. **Not verified here:** an
+`R10G10B10A2_UNORM` source, and NV12's tone map on a live HDR frame.
 """
 
 import numpy as np
@@ -25,6 +27,8 @@ import pytest
 
 import rapidshot
 from rapidshot import native
+
+from _hdr_desktop import YUV_WITHOUT_TONE_MAP, is_hdr, skip_on_an_hdr_desktop
 
 pytestmark = pytest.mark.skipif(
     not native.is_available(), reason="native extension not built"
@@ -165,6 +169,7 @@ def assert_codes_match(got, expected, shift=0, min_exact=0.99, ties=None):
 
 @pytest.mark.parametrize("sampling", ["nearest", "bilinear"])
 def test_nv12_matches_cpu_reference(live_frame, sampling):
+    skip_on_an_hdr_desktop(live_frame, YUV_WITHOUT_TONE_MAP)
     rgb = rgb_of(live_frame, OUT, OUT, sampling)
     converter = rapidshot.GpuConverter(
         live_frame, (OUT, OUT), pixel_format="nv12", sampling=sampling
@@ -175,6 +180,7 @@ def test_nv12_matches_cpu_reference(live_frame, sampling):
 
 @pytest.mark.parametrize("sampling", ["nearest", "bilinear"])
 def test_p010_matches_cpu_reference(live_frame, sampling):
+    skip_on_an_hdr_desktop(live_frame, YUV_WITHOUT_TONE_MAP)
     rgb = rgb_of(live_frame, OUT, OUT, sampling)
     converter = rapidshot.GpuConverter(
         live_frame, (OUT, OUT), pixel_format="p010", sampling=sampling
@@ -186,6 +192,7 @@ def test_p010_matches_cpu_reference(live_frame, sampling):
 def test_p010_low_six_bits_are_zero(live_frame):
     """P010 means the value in the *high* ten bits. A kernel storing the raw
     10-bit code would decode 64x too dark and still look like a P010 buffer."""
+    skip_on_an_hdr_desktop(live_frame, YUV_WITHOUT_TONE_MAP)
     got = rapidshot.GpuConverter(
         live_frame, (OUT, OUT), pixel_format="p010"
     ).process(live_frame).numpy()
@@ -197,6 +204,7 @@ def test_p010_low_six_bits_are_zero(live_frame):
 @pytest.mark.parametrize("matrix", ["bt709", "bt601"])
 @pytest.mark.parametrize("full_range", [False, True])
 def test_matrix_and_range_options_match_reference(live_frame, matrix, full_range):
+    skip_on_an_hdr_desktop(live_frame, YUV_WITHOUT_TONE_MAP)
     rgb = rgb_of(live_frame, OUT, OUT, "nearest")
     converter = rapidshot.GpuConverter(
         live_frame, (OUT, OUT), pixel_format="nv12", sampling="nearest",
@@ -226,6 +234,7 @@ def test_decodes_back_with_the_published_inverse(live_frame, matrix, pixel_forma
     range labelled full all miss by far more than the tolerance on a frame with
     colour in it.
     """
+    skip_on_an_hdr_desktop(live_frame, YUV_WITHOUT_TONE_MAP)
     rgb = rgb_of(live_frame, OUT, OUT, "nearest")
     require_colour(rgb)
     got = rapidshot.GpuConverter(
@@ -266,6 +275,7 @@ def test_chroma_is_left_sited(live_frame, pixel_format, bits):
     must match the left-sited reference and must *not* match the centre-sited
     one. Before 2.7.1 the kernel was centre-sited and fails here.
     """
+    skip_on_an_hdr_desktop(live_frame, YUV_WITHOUT_TONE_MAP)
     rgb = rgb_of(live_frame, OUT, OUT, "nearest")
     require_colour(rgb)
     left = yuv_reference(rgb, bits, siting=left_sited)[OUT:]
@@ -285,6 +295,7 @@ def test_chroma_is_left_sited(live_frame, pixel_format, bits):
 
 def test_matrices_actually_differ(live_frame):
     """A `#define` that never reached the compiler would make them identical."""
+    skip_on_an_hdr_desktop(live_frame, YUV_WITHOUT_TONE_MAP)
     rgb = rgb_of(live_frame, OUT, OUT, "nearest")
     require_colour(rgb)
     a, b = (
@@ -298,6 +309,7 @@ def test_matrices_actually_differ(live_frame):
 
 def test_nv12_and_p010_agree(live_frame):
     """Same computation at two depths: P010 is NV12 x4 within rounding."""
+    skip_on_an_hdr_desktop(live_frame, YUV_WITHOUT_TONE_MAP)
     nv12 = rapidshot.GpuConverter(
         live_frame, (OUT, OUT), pixel_format="nv12"
     ).process(live_frame).numpy().astype(np.int64)
@@ -322,6 +334,7 @@ def test_sizes_that_do_not_fill_whole_dwords(live_frame, w, h, pixel_format, bit
     sample. A packing error puts bytes in the wrong row or past the payload,
     and the shape would still be right.
     """
+    skip_on_an_hdr_desktop(live_frame, YUV_WITHOUT_TONE_MAP)
     converter = rapidshot.GpuConverter(
         live_frame, (w, h), pixel_format=pixel_format, sampling="nearest"
     )
@@ -340,6 +353,7 @@ def test_sizes_that_do_not_fill_whole_dwords(live_frame, w, h, pixel_format, bit
 
 
 def test_describes_itself(live_frame):
+    skip_on_an_hdr_desktop(live_frame, YUV_WITHOUT_TONE_MAP)
     converter = rapidshot.GpuConverter(live_frame, (OUT, OUT), pixel_format="nv12")
     assert converter.pixel_format == "nv12"
     assert converter.dtype == "uint8"
@@ -359,6 +373,7 @@ def test_describes_itself(live_frame):
 def test_payload_is_smaller_than_bgra(live_frame):
     """NV12 is 1.5 bytes/pixel against BGRA's 4 — the encoder's input and
     also the cheapest representation on a cross-adapter bus."""
+    skip_on_an_hdr_desktop(live_frame, YUV_WITHOUT_TONE_MAP)
     nv12 = rapidshot.GpuConverter(live_frame, (640, 640), pixel_format="nv12")
     bgra = rapidshot.GpuConverter(live_frame, (640, 640), dtype="uint8", layout="nhwc")
     assert nv12.output_byte_size * 8 == bgra.output_byte_size * 3
@@ -366,6 +381,7 @@ def test_payload_is_smaller_than_bgra(live_frame):
 
 def test_nv12_crosses_adapters_byte_exact(live_frame):
     """Convert-first with the encoder payload. Destination may be WARP here."""
+    skip_on_an_hdr_desktop(live_frame, YUV_WITHOUT_TONE_MAP)
     converter = rapidshot.GpuConverter(live_frame, (OUT, OUT), pixel_format="nv12")
     try:
         transfer = rapidshot.TensorTransfer(converter)
@@ -376,6 +392,18 @@ def test_nv12_crosses_adapters_byte_exact(live_frame):
     produced = converter.process(live_frame).numpy()
     transfer.transfer()
     np.testing.assert_array_equal(transfer.read_back_destination(), produced)
+
+
+@pytest.mark.parametrize("pixel_format", ["nv12", "p010"])
+def test_an_hdr_frame_is_refused_without_a_tone_map(live_frame, pixel_format):
+    """The HDR half of the skips above, on the live surface: a Y'CbCr matrix
+    expects gamma-encoded values, so linear scRGB is refused at construction
+    rather than encoded into wrong colours -- the 10-bit case once went
+    through with no error at all. The default tone map is ``"none"`` here."""
+    if not is_hdr(live_frame):
+        pytest.skip("the captured display is SDR; this is the HDR half")
+    with pytest.raises(ValueError, match="NV12/P010 cannot encode as it is"):
+        rapidshot.GpuConverter(live_frame, (OUT, OUT), pixel_format=pixel_format)
 
 
 # --------------------------------------------------------------------------

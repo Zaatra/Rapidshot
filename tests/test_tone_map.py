@@ -6,7 +6,7 @@ the shader's ``to_display()`` step for step, in float32 as the GPU computes,
 and it must reproduce the bytes :func:`hdr.to_bgra8` -- what ``grab()``
 returns -- for **every** FP16 value and every 10-bit code, at several SDR
 white levels. The transcription is pinned to the HLSL text below, and the
-Rust tests in ``native/src/converter12.rs`` (``warp_tests``) run the real
+Rust tests in ``native/core/src/converter12.rs`` (``warp_tests``) run the real
 shader on WARP against the same bytes.
 """
 from pathlib import Path
@@ -16,7 +16,10 @@ import pytest
 
 from rapidshot.core import hdr
 
-SHADER_SOURCE = Path(__file__).resolve().parents[1] / "native" / "src" / "converter12.rs"
+NATIVE_SOURCE = Path(__file__).resolve().parents[1] / "native"
+# rapidshot-core holds the implementation since the crate split; the binding
+# crate (native/src) has no shader in it.
+SHADER_SOURCE = NATIVE_SOURCE / "core" / "src" / "converter12.rs"
 WHITES_NITS = [80.0, 200.0, 240.0, 250.0, 300.0, 480.0, 1000.0]
 
 F = np.float32
@@ -113,10 +116,18 @@ def test_non_finite_and_negative_input_follow_grab():
                               [[0, 255, 0], [0, 0, 255]])
 
 
-@pytest.mark.skipif(not SHADER_SOURCE.exists(), reason="native source not in this checkout")
+@pytest.mark.skipif(not NATIVE_SOURCE.is_dir(), reason="native source not in this checkout")
 def test_the_transcription_matches_the_shader_text():
     """If the HLSL changes, this transcription must change with it -- or the
-    tests above check a formula the GPU no longer runs."""
+    tests above check a formula the GPU no longer runs.
+
+    Skipped only where there is no native source at all (an sdist). With the
+    source present and the shader not where this says, it fails: when the
+    crate split moved the file, a skip on the file itself hid that this test
+    had stopped running anywhere."""
+    assert SHADER_SOURCE.is_file(), (
+        f"{SHADER_SOURCE.relative_to(NATIVE_SOURCE.parent)} is missing; "
+        "the shader has moved, so point SHADER_SOURCE at it")
     shader = SHADER_SOURCE.read_text(encoding="utf-8")
     start = shader.index("float3 to_display(float4 texel)")
     body = shader[start:shader.index("\n}", start)]

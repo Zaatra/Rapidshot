@@ -629,10 +629,10 @@ def hdr_frame(dxgi_format=10, hdr_on=True, nits=240.0):
 
 
 @pytest.mark.parametrize("fmt", [10, 24])
-def test_a_tensor_from_linear_hdr_input_is_refused(ext, fmt):
+def test_a_tensor_from_linear_hdr_input_is_refused_without_a_tone_map(ext, fmt):
     with pytest.raises(ValueError, match="linear scRGB .* does not tone map"):
-        GpuConverter(hdr_frame(fmt), (8, 4))
-    conv = GpuConverter(frame(), (8, 4))
+        GpuConverter(hdr_frame(fmt), (8, 4), tone_map="none")
+    conv = GpuConverter(frame(), (8, 4), tone_map="none")
     with pytest.raises(ValueError, match="SDR white 240 nits"):
         conv.process(hdr_frame(fmt))
     assert conv._impl.calls == [], "nothing was dispatched"
@@ -736,9 +736,37 @@ def test_tone_map_arguments_that_cannot_both_hold_are_refused(ext, kwargs, match
         GpuConverter(frame(), (8, 4), **kwargs)
 
 
-def test_the_default_still_refuses_and_names_the_way_out(ext):
-    """Existing callers see no change: no tone map unless asked for one."""
-    conv = GpuConverter(frame(), (8, 4))
+@pytest.mark.parametrize("kwargs", [{}, {"dtype": "float16"},
+                                    {"dtype": "uint8", "layout": "nhwc"}])
+def test_the_default_tone_maps_tensor_and_uint8_output(ext, kwargs):
+    """Checked against grab() on a real HDR panel (Arc 130V, Samsung TU7100,
+    2026-11-12) before it became the default: an HDR frame comes out as sRGB
+    and an SDR frame through the same converter is untouched."""
+    conv = GpuConverter(frame(), (8, 4), **kwargs)
+    assert conv.tone_map == "auto"
+    conv.process(hdr_frame())
+    conv.process(frame())
+    first, second = conv._impl.calls[-2:]
+    assert (first["tone_map"], first["sdr_white"]) == ("max_rgb", 3.0)
+    assert "tone_map" not in second, "an SDR frame is used as it is"
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"dtype": "float16", "allow_linear": True},
+    {"pixel_format": "nv12"},
+    {"pixel_format": "p010"},
+])
+def test_the_default_is_no_tone_map_where_one_cannot_apply(ext, kwargs):
+    """A default must not turn a working call into a "choose one" or HDR10
+    refusal, nor make NV12 depend on the extension's version."""
+    conv = GpuConverter(frame(), (8, 4), **kwargs)
+    assert conv.tone_map == "none"
+    conv.process(frame())
+    assert "tone_map" not in conv._impl.calls[-1]
+
+
+def test_none_still_refuses_and_names_the_way_out(ext):
+    conv = GpuConverter(frame(), (8, 4), tone_map="none")
     assert conv.tone_map == "none"
     with pytest.raises(ValueError, match="tone_map='auto'"):
         conv.process(hdr_frame())
@@ -757,7 +785,9 @@ def test_a_native_build_without_the_tone_map_is_refused_at_construction(monkeypa
                         lambda: types.SimpleNamespace(GpuConverter12=OldImpl))
     with pytest.raises(RuntimeError, match="rapidshot-native >= 0.3.0"):
         GpuConverter(frame(), (8, 4), tone_map="auto")
-    GpuConverter(frame(), (8, 4)).process(frame())     # no tone map: still fine
+    conv = GpuConverter(frame(), (8, 4))    # the default asks for nothing it lacks
+    assert conv.tone_map == "none"
+    conv.process(frame())
 
 
 def test_a_frame_says_what_it_holds():

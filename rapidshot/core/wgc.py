@@ -224,6 +224,47 @@ def _close_open_sessions() -> None:
             pass
 
 
+# GraphicsCapture.dll stays loaded until the process ends, once a session has
+# loaded it. Closing first (above) and waiting for the teardown (wgc.rs
+# `close()`) were not enough: WGC finishes a session on its own threads, and
+# comtypes' CoUninitialize at exit unloads in-process WinRT servers, so work
+# WGC still had queued ran in an unmapped DLL. Every such crash Windows
+# recorded (Event 1000) faulted in "GraphicsCapture.dll_unloaded" at one
+# offset. On an HDR desktop (Arc 130V, 2026-11-12), 120 runs each: a camera
+# left open after one grab crashed 6 times, one left open with no grab 74;
+# with the DLL pinned, 0 and 0. Pinning only keeps mapped what is in use.
+# The native session pins it as well (wgc.rs, `pin_graphics_capture`), which
+# covers Rust callers; this covers extensions built before that.
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_kernel32.GetModuleHandleExW.argtypes = [
+    wintypes.DWORD, wintypes.LPCWSTR, ctypes.POINTER(wintypes.HMODULE)]
+_kernel32.GetModuleHandleExW.restype = wintypes.BOOL
+_GET_MODULE_HANDLE_EX_FLAG_PIN = 0x1
+_GRAPHICS_CAPTURE_DLL = "GraphicsCapture.dll"
+_graphics_capture_pinned = False
+
+
+def _pin_graphics_capture() -> bool:
+    """Keep GraphicsCapture.dll mapped until the process exits. Idempotent.
+
+    Called once a session exists, which is what has loaded the DLL. Returns
+    whether it is pinned; a failure is logged, not raised -- capture works
+    without it, and only a process exiting with WGC work in flight is at risk.
+    """
+    global _graphics_capture_pinned
+    if _graphics_capture_pinned:
+        return True
+    module = wintypes.HMODULE()
+    if _kernel32.GetModuleHandleExW(_GET_MODULE_HANDLE_EX_FLAG_PIN, _GRAPHICS_CAPTURE_DLL,
+                                    ctypes.byref(module)):
+        _graphics_capture_pinned = True
+    else:
+        logger.debug("could not pin %s (error %d); a process that exits with a WGC "
+                     "session still tearing down may crash", _GRAPHICS_CAPTURE_DLL,
+                     ctypes.get_last_error())
+    return _graphics_capture_pinned
+
+
 def _texture_from_address(address: int):
     """A comtypes ``ID3D11Texture2D`` for a texture the session owns.
 
@@ -280,6 +321,7 @@ class WgcBackend:
                 min_update_interval_us=MIN_UPDATE_INTERVAL_US, **target)
         except RuntimeError as e:
             raise RapidShotConfigError(f"Windows.Graphics.Capture refused {geometry}: {e}") from e
+        _pin_graphics_capture()
         for setting in self._session.unsupported:
             logger.warning(
                 "Windows.Graphics.Capture on this Windows build does not support the %s "

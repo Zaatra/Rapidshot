@@ -18,6 +18,7 @@ import pytest
 
 import rapidshot
 from rapidshot import native
+from _hdr_desktop import LEGACY_PREPROCESSOR, skip_on_an_hdr_desktop
 
 if not native.is_available():
     pytest.skip("native extension not built", allow_module_level=True)
@@ -45,6 +46,10 @@ def rebuilt_cameras():
     if frame_a is None:
         camera_a.release()
         pytest.skip("no frame captured — the screen must be changing")
+    # Before the preprocessor touches it: its refusal used to escape here with
+    # frame_a still held, and every later test in the session then failed to
+    # acquire a frame.
+    skip_on_an_hdr_desktop(frame_a, LEGACY_PREPROCESSOR, frame_a, camera_a)
 
     pre = native.GpuPreprocessor12(frame_a, OUT, OUT)
     pre.process(frame_a)

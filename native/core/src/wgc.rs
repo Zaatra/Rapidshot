@@ -47,7 +47,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use windows::core::{IInspectable, Interface};
+use windows::core::{w, IInspectable, Interface};
 use windows::Foundation::{TimeSpan, TypedEventHandler};
 use windows::Graphics::Capture::{
     Direct3D11CaptureFrame, Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession,
@@ -55,7 +55,9 @@ use windows::Graphics::Capture::{
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Graphics::SizeInt32;
-use windows::Win32::Foundation::{CloseHandle, E_INVALIDARG, HANDLE, HWND, RPC_E_CHANGED_MODE};
+use windows::Win32::Foundation::{
+    CloseHandle, E_INVALIDARG, HANDLE, HMODULE, HWND, RPC_E_CHANGED_MODE,
+};
 use windows::Win32::Graphics::Direct3D11::{
     ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_BIND_RENDER_TARGET,
     D3D11_BIND_SHADER_RESOURCE, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
@@ -63,6 +65,7 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::Graphics::Gdi::HMONITOR;
+use windows::Win32::System::LibraryLoader::{GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_PIN};
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject};
 use windows::Win32::System::WinRT::Direct3D11::{
@@ -161,6 +164,44 @@ pub fn ensure_winrt() -> Result<()> {
         Err(e) if e.code() == RPC_E_CHANGED_MODE => Ok(()),
         Err(e) => Err(e),
     }
+}
+
+/// Whether `GraphicsCapture.dll` is pinned in this process.
+static GRAPHICS_CAPTURE_PINNED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Keep `GraphicsCapture.dll` mapped until the process exits; returns whether
+/// it is. Called by `WgcSession::new` once capture has started, when the DLL
+/// is certainly loaded. Idempotent.
+///
+/// **WGC outlives `close()`.** It finishes a session on its own threads, and
+/// a process that unloads the DLL meanwhile -- `CoUninitialize` frees
+/// in-process WinRT servers, as comtypes does from Python's atexit -- runs
+/// that work in unmapped memory. Every such crash Windows recorded (Event
+/// 1000) faulted in `GraphicsCapture.dll_unloaded`, offset 0x1106c. On an HDR
+/// desktop (Arc 130V, 2026-11-12), 120 processes each, from Python: a session
+/// left open crashed 6 times after a frame and 74 before one; with this same
+/// call made first, 0 and 0. The wait in `close()` narrows the window; only
+/// the pin closes it, for Rust callers as for Python ones. A failure is not an
+/// error: capture works without it, and only an exit mid-teardown is at risk.
+pub fn pin_graphics_capture() -> bool {
+    use std::sync::atomic::Ordering;
+    if GRAPHICS_CAPTURE_PINNED.load(Ordering::Acquire) {
+        return true;
+    }
+    let mut module = HMODULE::default();
+    let result = unsafe {
+        GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_PIN,
+            w!("GraphicsCapture.dll"),
+            &mut module,
+        )
+    };
+    if result.is_err() {
+        return false;
+    }
+    GRAPHICS_CAPTURE_PINNED.store(true, Ordering::Release);
+    true
 }
 
 /// Whether Windows.Graphics.Capture is available at all.
@@ -445,6 +486,9 @@ impl WgcSession {
             unsupported.push("min_update_interval");
         }
         session.StartCapture()?;
+        // Before anything can close the session: from here WGC has teardown
+        // work to finish on its own threads, in this DLL.
+        pin_graphics_capture();
         // Everything WGC holds on the device now is its own; ours are taken
         // below. `dxgi` is still alive, so it is discounted.
         let wgc_device_refs = refcount(device).saturating_sub(refs_before + 1);
@@ -696,6 +740,7 @@ fn create_owned(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows::Win32::System::LibraryLoader::LoadLibraryW;
 
     #[test]
     fn formats_round_trip_to_the_dxgi_codes_the_converter_accepts() {
@@ -709,5 +754,17 @@ mod tests {
         assert_eq!(OWNED_MISC_FLAGS & 0x800, 0x800, "SHARED_NTHANDLE");
         assert_eq!(OWNED_MISC_FLAGS & 0x2, 0x2, "SHARED");
         assert_eq!(OWNED_MISC_FLAGS & 0x100, 0, "no keyed mutex");
+    }
+
+    #[test]
+    fn graphics_capture_is_pinned_once_it_is_loaded() {
+        // Loaded here as a session loads it. Where it cannot load (a Windows
+        // without WGC), there is nothing to pin and nothing to test.
+        let loaded = unsafe { LoadLibraryW(w!("GraphicsCapture.dll")) };
+        if loaded.is_err() {
+            return;
+        }
+        assert!(pin_graphics_capture());
+        assert!(pin_graphics_capture(), "idempotent");
     }
 }

@@ -7,6 +7,7 @@ WgcBackend's translation of the native session's results into the
 CaptureBackend contract.
 """
 import ctypes
+import logging
 import types
 
 import numpy as np
@@ -278,6 +279,50 @@ def test_a_window_session_targets_the_window(fake_native):
 def test_a_refused_session_is_a_config_error(fake_native):
     with pytest.raises(RapidShotConfigError, match="refused"):
         wgc.WgcBackend(output=window_geometry(-1), device=device())
+
+
+class FakeKernel32:
+    """GetModuleHandleExW, recorded; ``ok`` decides what it returns."""
+
+    def __init__(self, ok=True):
+        self.ok, self.calls = ok, []
+
+    def GetModuleHandleExW(self, flags, name, module):
+        self.calls.append((flags, name))
+        return self.ok
+
+
+@pytest.fixture
+def kernel32(monkeypatch):
+    fake = FakeKernel32()
+    monkeypatch.setattr(wgc, "_kernel32", fake)
+    monkeypatch.setattr(wgc, "_graphics_capture_pinned", False)
+    return fake
+
+
+def test_graphics_capture_is_pinned_once_a_session_exists(fake_native, kernel32):
+    """comtypes' CoUninitialize at exit unloaded GraphicsCapture.dll under
+    WGC's own teardown work, and the process crashed in the unloaded DLL; a
+    pinned DLL cannot unload. Pinned with the flag that pins, by its name."""
+    wgc.WgcBackend(output=monitor_geometry(), device=device()).release()
+    wgc.WgcBackend(output=monitor_geometry(), device=device()).release()
+    assert kernel32.calls == [(0x1, "GraphicsCapture.dll")], "once per process"
+
+
+def test_a_refused_session_pins_nothing(fake_native, kernel32):
+    with pytest.raises(RapidShotConfigError):
+        wgc.WgcBackend(output=window_geometry(-1), device=device())
+    assert kernel32.calls == []
+
+
+def test_a_failed_pin_is_logged_not_raised_and_tried_again(fake_native, kernel32, caplog):
+    kernel32.ok = False
+    with caplog.at_level(logging.DEBUG, logger=wgc.logger.name):
+        wgc.WgcBackend(output=monitor_geometry(), device=device()).release()
+    assert "could not pin GraphicsCapture.dll" in caplog.text
+    kernel32.ok = True
+    wgc.WgcBackend(output=monitor_geometry(), device=device()).release()
+    assert len(kernel32.calls) == 2 and wgc._graphics_capture_pinned
 
 
 def test_a_timeout_holds_nothing(fake_native):

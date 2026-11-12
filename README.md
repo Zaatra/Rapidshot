@@ -650,7 +650,7 @@ run, which is a different claim:
 | --- | --- |
 | AMD Radeon hybrid (ThinkPad E580, Intel UHD 620 + Radeon 500) | Found the refused-capture case above. Capture there runs on the Intel GPU: no screen is wired to the Radeon |
 | AMD GPU capturing | **Not run.** The BGRA swizzle rule is confirmed on Intel and NVIDIA and follows from the DXGI format, but it is the one rule a silent mismatch would corrupt rather than crash |
-| HDR panel with full Windows HDR support | **Not run yet**; see below |
+| HDR panel with full Windows HDR support | **One machine**: Lunar Lake (Arc 130V) on a Samsung TU7100 4K TV over HDMI 2.0, FP16 scRGB, 2026-11-12; see below. Not yet on NVIDIA or AMD, or on a 10-bit HDR surface |
 | Headless / virtual display (IDD) | Diagnostics exist; capture on one has not been run |
 
 ## Known limitations
@@ -666,15 +666,31 @@ FP16 surface rather than 8-bit sRGB:
   not tone mapping.
 - **`grab_frame()` says what it holds**: `frame.hdr`, `frame.sdr_white_nits`,
   `frame.pixel_format` and `frame.color_space`, which is `"scrgb"` for linear
-  light. By default `GpuConverter` refuses such a frame rather than put linear
-  light into a tensor shaped for sRGB. `tone_map="clip"` converts it to sRGB
-  inside the same dispatch, exactly as `grab()` does; `tone_map="auto"` does
-  the same while keeping the hue of highlights brighter than SDR white; and
-  `allow_linear=True` passes scRGB through for float output. NV12 and P010
-  refuse linear light.
-- **None of this has run on an HDR panel yet.** It is checked against an
-  independent reference in the test suite; a live run on a display with full
-  HDR support is still to come, and RapidShot makes no HDR claim until it has.
+  light. **`GpuConverter` converts it to sRGB by default** (`tone_map="auto"`),
+  inside the same dispatch: identical to `grab()` for everything up to SDR
+  white, and above it the pixel is scaled by its brightest channel rather than
+  clipped channel by channel, so a highlight keeps its hue. `tone_map="clip"`
+  is exactly what `grab()` returns; `tone_map="none"` refuses an HDR frame
+  rather than put linear light into a tensor shaped for sRGB; and
+  `allow_linear=True` passes scRGB through for float output. NV12 converts an
+  HDR frame only when given a tone map (rapidshot-native 0.4.0); P010 refuses
+  linear light.
+- **Checked on one HDR panel**: an Intel Core Ultra 5 226V (Arc 130V) driving
+  a Samsung TU7100 4K TV, HDR on, SDR white 240 nits, the desktop duplicated
+  as FP16 scRGB. On the desktop and over 45 s of HDR video with highlights to
+  3,460 nits and up to 42% of a frame above SDR white, `clip` matched `grab()`
+  on every pixel and `auto` matched the test suite's reference to within one
+  code (at least 99.9999% exact). A bright blue that `clip` turns cyan stays
+  blue under `auto`. Colours outside sRGB's gamut are clamped per channel by
+  both, as `grab()` does; there is no gamut mapping. That run was Desktop
+  Duplication at one SDR white level, through `grab_frame()`. Not yet run:
+  Windows.Graphics.Capture, NV12's tone map, `start()` across an HDR toggle,
+  other SDR white levels, NVIDIA or AMD, or a desktop that duplicates as
+  10-bit `R10G10B10A2`.
+- **Samsung TVs need "Input Signal Plus"** (Settings > General > External
+  Device Manager) on the HDMI port in use. Without it the TV offers HDMI 1.4
+  bandwidth -- 4K at 30 Hz, no HDR -- and Windows reports the display as not
+  supporting HDR.
 - **On platforms without full Windows HDR support the capture is clipped at
   80 nits** before RapidShot sees it, and a warning says so. On an Intel Core
   i5-10500 (Comet Lake, UHD 630) driving a 4K HDR TV, everything brighter than
@@ -747,6 +763,9 @@ worked, commented versions. You should not need any of this to use
 
 ## What's new
 
+- **2.7.3** (with rapidshot-native 0.4.0): `GpuConverter` converts HDR frames
+  to sRGB by default, checked on an HDR panel; NV12 for an encoder from an HDR
+  desktop; a WGC camera left open at exit no longer crashes the process.
 - **2.7.2**: a hybrid laptop that refuses capture on every GPU now names the
   GPU setting that fixes it; Desktop Duplication keeps its 10-bit and HDR
   formats whatever DPI awareness the host process set; the measurements above.
