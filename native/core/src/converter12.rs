@@ -762,7 +762,20 @@ fn compile_variant(
     })
 }
 
+/// The copy queue texture readback records on, made on first use and kept.
+/// Making a queue, allocator, list and fence per call cost 12.05 ms p50 for a
+/// 2560x1600 NV12 readback on an Intel UHD (2026-11-17), against 2.83 ms for
+/// the buffer output's readback -- more than the texture kernel saved.
+struct TextureCopy {
+    queue: ID3D12CommandQueue,
+    allocator: ID3D12CommandAllocator,
+    list: ID3D12GraphicsCommandList,
+    fence: ID3D12Fence,
+    value: u64,
+}
+
 pub struct Converter12 {
+    texture_copy: std::cell::RefCell<Option<TextureCopy>>,
     device: ID3D12Device,
     queue: ID3D12CommandQueue,
     allocator: ID3D12CommandAllocator,
@@ -1164,6 +1177,7 @@ impl Converter12 {
             list,
             fence,
             fence_value: std::cell::Cell::new(0),
+            texture_copy: std::cell::RefCell::new(None),
             fence_event,
             root_signature,
             pso,
@@ -1216,6 +1230,81 @@ impl Converter12 {
     /// positive number, and for an 8-bit surface, which is never linear.
     #[allow(clippy::too_many_arguments)]
     pub fn process(
+        &self,
+        d3d11_texture: &ID3D11Texture2D,
+        source_id: u64,
+        scale: f32,
+        bias: f32,
+        channel_order: u32,
+        tone_map: ToneMap,
+        regions: &[Crop],
+    ) -> windows::core::Result<()> {
+        self.submit_process(
+            d3d11_texture,
+            source_id,
+            scale,
+            bias,
+            channel_order,
+            tone_map,
+            regions,
+        )?;
+        self.wait_for_gpu()
+    }
+
+    /// `process`, minus the wait: the dispatch is submitted and an event is
+    /// returned that fires when the GPU has finished it, or `None` if it
+    /// already has. The caller waits on the event and closes it.
+    ///
+    /// For a binding that must not block other threads while the GPU works:
+    /// it can drop its own lock and the interpreter's before waiting. Measured
+    /// 2026-11-17 through Python: during `process` another Python thread made
+    /// 36% of its idle progress, and an encoder thread's NVENC call went from
+    /// 4.2 to 13.5 ms.
+    #[allow(clippy::too_many_arguments)]
+    pub fn process_deferred(
+        &self,
+        d3d11_texture: &ID3D11Texture2D,
+        source_id: u64,
+        scale: f32,
+        bias: f32,
+        channel_order: u32,
+        tone_map: ToneMap,
+        regions: &[Crop],
+    ) -> windows::core::Result<Option<HANDLE>> {
+        self.submit_process(
+            d3d11_texture,
+            source_id,
+            scale,
+            bias,
+            channel_order,
+            tone_map,
+            regions,
+        )?;
+        self.arm_gpu_wait()
+    }
+
+    /// Signal the queue, and return an event set when the GPU reaches the
+    /// signal -- or `None` if it already has. A fresh event per call, so two
+    /// waits never share one. The caller closes it.
+    fn arm_gpu_wait(&self) -> windows::core::Result<Option<HANDLE>> {
+        let value = self.fence_value.get() + 1;
+        self.fence_value.set(value);
+        unsafe {
+            self.queue.Signal(&self.fence, value)?;
+            if self.fence.GetCompletedValue() >= value {
+                return Ok(None);
+            }
+            let event = CreateEventW(None, false, false, None)?;
+            if let Err(error) = self.fence.SetEventOnCompletion(value, event) {
+                let _ = CloseHandle(event);
+                return Err(error);
+            }
+            Ok(Some(event))
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn submit_process(
         &self,
         d3d11_texture: &ID3D11Texture2D,
         source_id: u64,
@@ -1450,7 +1539,7 @@ impl Converter12 {
             self.queue
                 .ExecuteCommandLists(&[Some(self.list.cast::<ID3D12CommandList>()?)]);
         }
-        self.wait_for_gpu()
+        Ok(())
     }
 
     fn open_texture(
@@ -1530,7 +1619,25 @@ impl Converter12 {
         if self.format.is_texture() {
             return self.read_back_texture();
         }
-        let count = self.output_byte_size() as usize;
+        self.submit_read_back()?;
+        self.wait_for_gpu()?;
+        self.finish_read_back()
+    }
+
+    /// `read_back` in two halves around the GPU wait, as `process_deferred`:
+    /// `Ok(None)` for texture output, which has its own copy queue and must
+    /// use `read_back`; otherwise the copy is submitted and the event (or
+    /// `None` if already done) returned. Call `finish_read_back` once it
+    /// fires.
+    pub fn read_back_deferred(&self) -> windows::core::Result<Option<Option<HANDLE>>> {
+        if self.format.is_texture() {
+            return Ok(Some(self.submit_texture_read_back()?));
+        }
+        self.submit_read_back()?;
+        Ok(Some(self.arm_gpu_wait()?))
+    }
+
+    fn submit_read_back(&self) -> windows::core::Result<()> {
         unsafe {
             self.allocator.Reset()?;
             self.list.Reset(&self.allocator, None)?;
@@ -1551,8 +1658,15 @@ impl Converter12 {
             self.queue
                 .ExecuteCommandLists(&[Some(self.list.cast::<ID3D12CommandList>()?)]);
         }
-        self.wait_for_gpu()?;
+        Ok(())
+    }
 
+    /// The bytes of a completed readback copy; see `read_back_deferred`.
+    pub fn finish_read_back(&self) -> windows::core::Result<Vec<u8>> {
+        if self.format.is_texture() {
+            return self.finish_texture_read_back();
+        }
+        let count = self.output_byte_size() as usize;
         let mut out = vec![0u8; count];
         unsafe {
             let mut mapped: *mut std::ffi::c_void = std::ptr::null_mut();
@@ -1566,25 +1680,61 @@ impl Converter12 {
     /// The NV12 texture as tightly packed NV12 bytes (Y rows, then Cb/Cr rows),
     /// the same layout `Nv12` writes, so the two can be compared directly.
     fn read_back_texture(&self) -> windows::core::Result<Vec<u8>> {
+        if let Some(event) = self.submit_texture_read_back()? {
+            unsafe {
+                WaitForSingleObject(event, INFINITE);
+                let _ = CloseHandle(event);
+            }
+        }
+        self.finish_texture_read_back()
+    }
+
+    /// Record and submit the texture-to-readback copy; return an event set
+    /// when it completes, or `None` if it already has. The caller waits on the
+    /// event and closes it, then calls `finish_texture_read_back`.
+    ///
+    /// On a copy queue of its own, not the converter's compute list:
+    /// recording a copy of a planar texture on a compute list crashed the
+    /// process on an Intel driver (2026-11-03). `process` has already waited
+    /// for its dispatch, and a copy queue promotes a texture in COMMON to
+    /// COPY_SOURCE by itself and lets it decay back afterwards.
+    fn submit_texture_read_back(&self) -> windows::core::Result<Option<HANDLE>> {
         let (footprints, _) = nv12_footprints(&self.device, &self.output);
-        // On a copy queue of its own, not the converter's compute list:
-        // recording a copy of a planar texture on a compute list crashed the
-        // process on an Intel driver (2026-11-03). Readback is not the hot
-        // path, so a queue per call is fine. `process` has already waited for
-        // its dispatch, and a copy queue promotes a texture in COMMON to
-        // COPY_SOURCE by itself and lets it decay back afterwards.
+        // A direct queue measured the same (6.2-6.6 against 6.2-6.7 ms p50 for
+        // the whole 2560x1600 readback, 2026-11-17), so the copy queue stays:
+        // it is the one the Intel driver note above is known to be safe on.
         let copy = D3D12_COMMAND_LIST_TYPE_COPY;
+        let mut slot = self.texture_copy.borrow_mut();
+        if slot.is_none() {
+            unsafe {
+                let queue: ID3D12CommandQueue =
+                    self.device.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC {
+                        Type: copy,
+                        Priority: 0,
+                        Flags: D3D12_COMMAND_QUEUE_FLAG_NONE,
+                        NodeMask: 0,
+                    })?;
+                let allocator: ID3D12CommandAllocator = self.device.CreateCommandAllocator(copy)?;
+                let list: ID3D12GraphicsCommandList =
+                    self.device.CreateCommandList(0, copy, &allocator, None)?;
+                // Created recording; closed so every use starts with a Reset.
+                list.Close()?;
+                let fence: ID3D12Fence = self.device.CreateFence(0, D3D12_FENCE_FLAG_NONE)?;
+                *slot = Some(TextureCopy {
+                    queue,
+                    allocator,
+                    list,
+                    fence,
+                    value: 0,
+                });
+            }
+        }
+        let copier = slot.as_mut().expect("populated above");
         unsafe {
-            let queue: ID3D12CommandQueue =
-                self.device.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC {
-                    Type: copy,
-                    Priority: 0,
-                    Flags: D3D12_COMMAND_QUEUE_FLAG_NONE,
-                    NodeMask: 0,
-                })?;
-            let allocator: ID3D12CommandAllocator = self.device.CreateCommandAllocator(copy)?;
-            let list: ID3D12GraphicsCommandList =
-                self.device.CreateCommandList(0, copy, &allocator, None)?;
+            // Safe to reset: the previous readback was waited for before its
+            // bytes were taken, so nothing on this allocator is in flight.
+            copier.allocator.Reset()?;
+            copier.list.Reset(&copier.allocator, None)?;
             for (plane, footprint) in footprints.iter().enumerate() {
                 // Borrowed, as in `transition`: a clone into the ManuallyDrop
                 // would never be released.
@@ -1602,20 +1752,30 @@ impl Converter12 {
                         SubresourceIndex: plane as u32,
                     },
                 };
-                list.CopyTextureRegion(&dst, 0, 0, 0, &src, None);
+                copier.list.CopyTextureRegion(&dst, 0, 0, 0, &src, None);
             }
-            list.Close()?;
-            queue.ExecuteCommandLists(&[Some(list.cast::<ID3D12CommandList>()?)]);
-            let fence: ID3D12Fence = self.device.CreateFence(0, D3D12_FENCE_FLAG_NONE)?;
-            queue.Signal(&fence, 1)?;
-            if fence.GetCompletedValue() < 1 {
-                let event = CreateEventW(None, false, false, None)?;
-                fence.SetEventOnCompletion(1, event)?;
-                WaitForSingleObject(event, INFINITE);
+            copier.list.Close()?;
+            copier
+                .queue
+                .ExecuteCommandLists(&[Some(copier.list.cast::<ID3D12CommandList>()?)]);
+            copier.value += 1;
+            copier.queue.Signal(&copier.fence, copier.value)?;
+            if copier.fence.GetCompletedValue() >= copier.value {
+                return Ok(None);
+            }
+            let event = CreateEventW(None, false, false, None)?;
+            if let Err(error) = copier.fence.SetEventOnCompletion(copier.value, event) {
                 let _ = CloseHandle(event);
+                return Err(error);
             }
+            Ok(Some(event))
         }
+    }
 
+    /// The bytes of a completed texture readback, tightly packed: Y rows,
+    /// then Cb/Cr rows. One copy per plane where the row pitch is the width.
+    fn finish_texture_read_back(&self) -> windows::core::Result<Vec<u8>> {
+        let (footprints, _) = nv12_footprints(&self.device, &self.output);
         let width = self.out_width as usize;
         let height = self.out_height as usize;
         let mut out = Vec::with_capacity(width * height * 3 / 2);
@@ -1627,9 +1787,16 @@ impl Converter12 {
             // pairs of two), half as many rows.
             for (footprint, rows) in [(footprints[0], height), (footprints[1], height / 2)] {
                 let pitch = footprint.Footprint.RowPitch as usize;
-                for row in 0..rows {
-                    let start = base.add(footprint.Offset as usize + row * pitch);
-                    out.extend_from_slice(std::slice::from_raw_parts(start, width));
+                let start = base.add(footprint.Offset as usize);
+                if pitch == width {
+                    out.extend_from_slice(std::slice::from_raw_parts(start, width * rows));
+                } else {
+                    for row in 0..rows {
+                        out.extend_from_slice(std::slice::from_raw_parts(
+                            start.add(row * pitch),
+                            width,
+                        ));
+                    }
                 }
             }
             self.readback.Unmap(0, None);

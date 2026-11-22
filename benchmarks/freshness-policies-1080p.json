@@ -1,0 +1,3557 @@
+{
+  "seed": 826159159,
+  "repeats": 5,
+  "seconds": 6.0,
+  "width": 1920,
+  "height": 1080,
+  "medians": {
+    "inference": [
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": null,
+        "runs": 5,
+        "range": {
+          "frames_consumed": [
+            359,
+            361
+          ],
+          "consumed_fps": [
+            59.833333333333336,
+            60.166666666666664
+          ],
+          "captured_fps": [
+            230.83333333333334,
+            233.33333333333334
+          ],
+          "age_ms_p50": [
+            4.3097,
+            4.8704
+          ],
+          "age_ms_p95": [
+            7.5248,
+            7.9350000000000005
+          ],
+          "age_ms_max": [
+            9.2566,
+            12.402000000000001
+          ],
+          "older_than_previous": [
+            0,
+            0
+          ],
+          "same_as_previous": [
+            0,
+            0
+          ],
+          "reader_timeouts": [
+            0,
+            0
+          ],
+          "producer_cpu_ms_per_frame": [
+            0.8205935251798561,
+            1.0379464285714286
+          ],
+          "grab_ms_mean": [
+            0.8234891367046265,
+            0.8413248563238869
+          ],
+          "fallback_allocations": [
+            1341,
+            1354
+          ],
+          "page_faults": [
+            2043174,
+            2063159
+          ],
+          "queued_frames_peak": [
+            64,
+            64
+          ],
+          "queued_mb_mean": [
+            366.39659792877904,
+            367.57571530032465
+          ],
+          "private_mb_peak_over_start": [
+            386.55859375,
+            386.58203125
+          ]
+        },
+        "frames_consumed": 360,
+        "consumed_fps": 60.0,
+        "captured_fps": 231.66666666666666,
+        "age_ms_p50": 4.716200000000001,
+        "age_ms_p95": 7.8089,
+        "age_ms_max": 9.601600000000001,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.970216606498195,
+        "grab_ms_mean": 0.8381869999967811,
+        "fallback_allocations": 1345,
+        "page_faults": 2049323,
+        "queued_frames_peak": 64,
+        "queued_mb_mean": 367.11343344155847,
+        "private_mb_peak_over_start": 386.5625,
+        "stream_stats": {
+          "frames_captured": 1390,
+          "frames_consumed": 360,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 966,
+          "frames_expired": 0,
+          "capture_drops": 52
+        }
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": null,
+        "runs": 5,
+        "range": {
+          "frames_consumed": [
+            363,
+            364
+          ],
+          "consumed_fps": [
+            60.5,
+            60.666666666666664
+          ],
+          "captured_fps": [
+            230.0,
+            232.33333333333334
+          ],
+          "age_ms_p50": [
+            4.242500000000001,
+            4.6295
+          ],
+          "age_ms_p95": [
+            7.4069,
+            7.7365
+          ],
+          "age_ms_max": [
+            8.6098,
+            9.0472
+          ],
+          "older_than_previous": [
+            0,
+            0
+          ],
+          "same_as_previous": [
+            0,
+            0
+          ],
+          "reader_timeouts": [
+            0,
+            0
+          ],
+          "producer_cpu_ms_per_frame": [
+            0.42963096960926195,
+            0.6100867678958786
+          ],
+          "grab_ms_mean": [
+            0.4267767004209422,
+            0.45228731884784845
+          ],
+          "fallback_allocations": [
+            0,
+            0
+          ],
+          "page_faults": [
+            3053,
+            3060
+          ],
+          "queued_frames_peak": [
+            1,
+            1
+          ],
+          "queued_mb_mean": [
+            5.0719266110751295,
+            5.208375608766233
+          ],
+          "private_mb_peak_over_start": [
+            0.1015625,
+            0.10546875
+          ]
+        },
+        "frames_consumed": 363,
+        "consumed_fps": 60.5,
+        "captured_fps": 230.5,
+        "age_ms_p50": 4.4793,
+        "age_ms_p95": 7.5566,
+        "age_ms_max": 8.926,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.46154538904899134,
+        "grab_ms_mean": 0.4372103746485433,
+        "fallback_allocations": 0,
+        "page_faults": 3054,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 5.129241943359375,
+        "private_mb_peak_over_start": 0.1015625,
+        "stream_stats": {
+          "frames_captured": 1383,
+          "frames_consumed": 363,
+          "stale_frames_replaced": 1019,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 58
+        }
+      }
+    ],
+    "bursty": [
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": null,
+        "runs": 5,
+        "range": {
+          "frames_consumed": [
+            712,
+            717
+          ],
+          "consumed_fps": [
+            118.66666666666667,
+            119.5
+          ],
+          "captured_fps": [
+            118.83333333333333,
+            119.66666666666667
+          ],
+          "age_ms_p50": [
+            5.2655,
+            6.732
+          ],
+          "age_ms_p95": [
+            300.58160000000004,
+            312.7765
+          ],
+          "age_ms_max": [
+            429.8428,
+            457.1911
+          ],
+          "older_than_previous": [
+            114,
+            116
+          ],
+          "same_as_previous": [
+            0,
+            0
+          ],
+          "reader_timeouts": [
+            0,
+            0
+          ],
+          "producer_cpu_ms_per_frame": [
+            0.7012622720897616,
+            0.8729050279329609
+          ],
+          "grab_ms_mean": [
+            0.6978791086446734,
+            0.725380167584298
+          ],
+          "fallback_allocations": [
+            190,
+            197
+          ],
+          "page_faults": [
+            292234,
+            302881
+          ],
+          "queued_frames_peak": [
+            29,
+            30
+          ],
+          "queued_mb_mean": [
+            25.14446041126943,
+            25.91293414022021
+          ],
+          "private_mb_peak_over_start": [
+            166.5703125,
+            172.515625
+          ]
+        },
+        "frames_consumed": 715,
+        "consumed_fps": 119.16666666666667,
+        "captured_fps": 119.33333333333333,
+        "age_ms_p50": 6.2028,
+        "age_ms_p95": 306.5159,
+        "age_ms_max": 436.58790000000005,
+        "older_than_previous": 115,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.7834261838440112,
+        "grab_ms_mean": 0.7055856942524782,
+        "fallback_allocations": 192,
+        "page_faults": 295274,
+        "queued_frames_peak": 30,
+        "queued_mb_mean": 25.348455255681817,
+        "private_mb_peak_over_start": 166.578125,
+        "stream_stats": {
+          "frames_captured": 716,
+          "frames_consumed": 715,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 4
+        }
+      },
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": 20,
+        "runs": 5,
+        "range": {
+          "frames_consumed": [
+            596,
+            601
+          ],
+          "consumed_fps": [
+            99.33333333333333,
+            100.16666666666667
+          ],
+          "captured_fps": [
+            117.66666666666667,
+            119.16666666666667
+          ],
+          "age_ms_p50": [
+            4.2366,
+            4.580900000000001
+          ],
+          "age_ms_p95": [
+            8.417300000000001,
+            8.808300000000001
+          ],
+          "age_ms_max": [
+            12.8215,
+            24.8255
+          ],
+          "older_than_previous": [
+            0,
+            4
+          ],
+          "same_as_previous": [
+            0,
+            0
+          ],
+          "reader_timeouts": [
+            0,
+            0
+          ],
+          "producer_cpu_ms_per_frame": [
+            0.7032348804500703,
+            0.7878151260504201
+          ],
+          "grab_ms_mean": [
+            0.6527943741072133,
+            0.6808946778665286
+          ],
+          "fallback_allocations": [
+            112,
+            116
+          ],
+          "page_faults": [
+            173518,
+            179605
+          ],
+          "queued_frames_peak": [
+            29,
+            30
+          ],
+          "queued_mb_mean": [
+            15.085797991071427,
+            16.237449645996094
+          ],
+          "private_mb_peak_over_start": [
+            166.5703125,
+            172.51953125
+          ]
+        },
+        "frames_consumed": 599,
+        "consumed_fps": 99.83333333333333,
+        "captured_fps": 118.83333333333333,
+        "age_ms_p50": 4.444500000000001,
+        "age_ms_p95": 8.6127,
+        "age_ms_max": 23.357000000000003,
+        "older_than_previous": 3,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.7211538461538461,
+        "grab_ms_mean": 0.6684325779110172,
+        "fallback_allocations": 115,
+        "page_faults": 178082,
+        "queued_frames_peak": 30,
+        "queued_mb_mean": 15.76908091806995,
+        "private_mb_peak_over_start": 166.578125,
+        "stream_stats": {
+          "frames_captured": 713,
+          "frames_consumed": 599,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 113,
+          "capture_drops": 7
+        }
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": null,
+        "runs": 5,
+        "range": {
+          "frames_consumed": [
+            595,
+            600
+          ],
+          "consumed_fps": [
+            99.16666666666667,
+            100.0
+          ],
+          "captured_fps": [
+            118.66666666666667,
+            119.5
+          ],
+          "age_ms_p50": [
+            3.1734,
+            5.2151000000000005
+          ],
+          "age_ms_p95": [
+            7.9830000000000005,
+            8.609200000000001
+          ],
+          "age_ms_max": [
+            9.8071,
+            12.7161
+          ],
+          "older_than_previous": [
+            0,
+            0
+          ],
+          "same_as_previous": [
+            0,
+            0
+          ],
+          "reader_timeouts": [
+            0,
+            0
+          ],
+          "producer_cpu_ms_per_frame": [
+            0.4794281729428173,
+            0.5892108938547486
+          ],
+          "grab_ms_mean": [
+            0.4928356241283477,
+            0.5589668061255649
+          ],
+          "fallback_allocations": [
+            0,
+            0
+          ],
+          "page_faults": [
+            3051,
+            3085
+          ],
+          "queued_frames_peak": [
+            1,
+            1
+          ],
+          "queued_mb_mean": [
+            0.9529074238989637,
+            1.0143853222150259
+          ],
+          "private_mb_peak_over_start": [
+            0.09765625,
+            0.1015625
+          ]
+        },
+        "frames_consumed": 597,
+        "consumed_fps": 99.5,
+        "captured_fps": 119.0,
+        "age_ms_p50": 4.7633,
+        "age_ms_p95": 8.4855,
+        "age_ms_max": 11.819600000000001,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.5470938375350141,
+        "grab_ms_mean": 0.5487744413321249,
+        "fallback_allocations": 0,
+        "page_faults": 3052,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 1.0016106939935066,
+        "private_mb_peak_over_start": 0.1015625,
+        "stream_stats": {
+          "frames_captured": 714,
+          "frames_consumed": 597,
+          "stale_frames_replaced": 116,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 6
+        }
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": 20,
+        "runs": 5,
+        "range": {
+          "frames_consumed": [
+            593,
+            600
+          ],
+          "consumed_fps": [
+            98.83333333333333,
+            100.0
+          ],
+          "captured_fps": [
+            118.0,
+            119.5
+          ],
+          "age_ms_p50": [
+            3.4673000000000003,
+            5.2854
+          ],
+          "age_ms_p95": [
+            8.090300000000001,
+            8.6297
+          ],
+          "age_ms_max": [
+            9.1791,
+            14.9786
+          ],
+          "older_than_previous": [
+            0,
+            0
+          ],
+          "same_as_previous": [
+            0,
+            0
+          ],
+          "reader_timeouts": [
+            0,
+            0
+          ],
+          "producer_cpu_ms_per_frame": [
+            0.5463286713286714,
+            0.7032348804500703
+          ],
+          "grab_ms_mean": [
+            0.5150173426675162,
+            0.5997588563436116
+          ],
+          "fallback_allocations": [
+            0,
+            0
+          ],
+          "page_faults": [
+            3052,
+            3056
+          ],
+          "queued_frames_peak": [
+            1,
+            1
+          ],
+          "queued_mb_mean": [
+            0.9529074238989637,
+            1.0297547967940415
+          ],
+          "private_mb_peak_over_start": [
+            0.1015625,
+            0.10546875
+          ]
+        },
+        "frames_consumed": 599,
+        "consumed_fps": 99.83333333333333,
+        "captured_fps": 118.66666666666667,
+        "age_ms_p50": 4.266500000000001,
+        "age_ms_p95": 8.347,
+        "age_ms_max": 13.568800000000001,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.63197350069735,
+        "grab_ms_mean": 0.5448980309397158,
+        "fallback_allocations": 0,
+        "page_faults": 3053,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 1.0042190551757812,
+        "private_mb_peak_over_start": 0.10546875,
+        "stream_stats": {
+          "frames_captured": 712,
+          "frames_consumed": 599,
+          "stale_frames_replaced": 114,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 8
+        }
+      }
+    ],
+    "capture-stall": [
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": null,
+        "runs": 5,
+        "range": {
+          "frames_consumed": [
+            289,
+            291
+          ],
+          "consumed_fps": [
+            48.166666666666664,
+            48.5
+          ],
+          "captured_fps": [
+            107.16666666666667,
+            107.83333333333333
+          ],
+          "age_ms_p50": [
+            8.9657,
+            10.132200000000001
+          ],
+          "age_ms_p95": [
+            242.2178,
+            267.5595
+          ],
+          "age_ms_max": [
+            497.24760000000003,
+            515.0586000000001
+          ],
+          "older_than_previous": [
+            27,
+            28
+          ],
+          "same_as_previous": [
+            0,
+            0
+          ],
+          "reader_timeouts": [
+            0,
+            0
+          ],
+          "producer_cpu_ms_per_frame": [
+            0.9477060653188181,
+            1.3786764705882353
+          ],
+          "grab_ms_mean": [
+            0.960098133753315,
+            1.1643947368301673
+          ],
+          "fallback_allocations": [
+            613,
+            623
+          ],
+          "page_faults": [
+            935643,
+            950928
+          ],
+          "queued_frames_peak": [
+            64,
+            64
+          ],
+          "queued_mb_mean": [
+            342.39019349563955,
+            343.01313920454544
+          ],
+          "private_mb_peak_over_start": [
+            386.55859375,
+            386.56640625
+          ]
+        },
+        "frames_consumed": 289,
+        "consumed_fps": 48.166666666666664,
+        "captured_fps": 107.66666666666667,
+        "age_ms_p50": 9.4861,
+        "age_ms_p95": 263.4434,
+        "age_ms_max": 512.3058,
+        "older_than_previous": 27,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 1.2577399380804954,
+        "grab_ms_mean": 1.0784877897848162,
+        "fallback_allocations": 620,
+        "page_faults": 946318,
+        "queued_frames_peak": 64,
+        "queued_mb_mean": 342.72036069399354,
+        "private_mb_peak_over_start": 386.56640625,
+        "stream_stats": {
+          "frames_captured": 646,
+          "frames_consumed": 289,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 292,
+          "frames_expired": 0,
+          "capture_drops": 76
+        }
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": null,
+        "runs": 5,
+        "range": {
+          "frames_consumed": [
+            264,
+            266
+          ],
+          "consumed_fps": [
+            44.0,
+            44.333333333333336
+          ],
+          "captured_fps": [
+            106.83333333333333,
+            108.33333333333333
+          ],
+          "age_ms_p50": [
+            8.2661,
+            9.0967
+          ],
+          "age_ms_p95": [
+            14.005700000000001,
+            14.863100000000001
+          ],
+          "age_ms_max": [
+            16.267300000000002,
+            20.706400000000002
+          ],
+          "older_than_previous": [
+            0,
+            0
+          ],
+          "same_as_previous": [
+            0,
+            0
+          ],
+          "reader_timeouts": [
+            0,
+            0
+          ],
+          "producer_cpu_ms_per_frame": [
+            0.5362714508580343,
+            0.7763975155279503
+          ],
+          "grab_ms_mean": [
+            0.5351099378780452,
+            0.629224223616548
+          ],
+          "fallback_allocations": [
+            0,
+            0
+          ],
+          "page_faults": [
+            3052,
+            3053
+          ],
+          "queued_frames_peak": [
+            1,
+            1
+          ],
+          "queued_mb_mean": [
+            4.175946124188312,
+            4.349561305861399
+          ],
+          "private_mb_peak_over_start": [
+            0.09765625,
+            0.10546875
+          ]
+        },
+        "frames_consumed": 264,
+        "consumed_fps": 44.0,
+        "captured_fps": 107.33333333333333,
+        "age_ms_p50": 8.5615,
+        "age_ms_p95": 14.2574,
+        "age_ms_max": 17.0438,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.6793478260869565,
+        "grab_ms_mean": 0.561075507019342,
+        "fallback_allocations": 0,
+        "page_faults": 3053,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 4.303452882124352,
+        "private_mb_peak_over_start": 0.1015625,
+        "stream_stats": {
+          "frames_captured": 644,
+          "frames_consumed": 264,
+          "stale_frames_replaced": 379,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 77
+        }
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": 50,
+        "runs": 5,
+        "range": {
+          "frames_consumed": [
+            264,
+            265
+          ],
+          "consumed_fps": [
+            44.0,
+            44.166666666666664
+          ],
+          "captured_fps": [
+            106.33333333333333,
+            107.5
+          ],
+          "age_ms_p50": [
+            7.806100000000001,
+            9.062100000000001
+          ],
+          "age_ms_p95": [
+            13.7872,
+            15.2543
+          ],
+          "age_ms_max": [
+            16.4238,
+            19.6419
+          ],
+          "older_than_previous": [
+            0,
+            0
+          ],
+          "same_as_previous": [
+            0,
+            0
+          ],
+          "reader_timeouts": [
+            0,
+            0
+          ],
+          "producer_cpu_ms_per_frame": [
+            0.5095108695652174,
+            0.6782945736434108
+          ],
+          "grab_ms_mean": [
+            0.5349273010813905,
+            0.6027979623619234
+          ],
+          "fallback_allocations": [
+            0,
+            0
+          ],
+          "page_faults": [
+            3052,
+            3104
+          ],
+          "queued_frames_peak": [
+            1,
+            1
+          ],
+          "queued_mb_mean": [
+            4.1651276109132125,
+            4.349561305861399
+          ],
+          "private_mb_peak_over_start": [
+            0.1015625,
+            0.19140625
+          ]
+        },
+        "frames_consumed": 265,
+        "consumed_fps": 44.166666666666664,
+        "captured_fps": 106.83333333333333,
+        "age_ms_p50": 8.766,
+        "age_ms_p95": 14.7454,
+        "age_ms_max": 17.7807,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.6113067292644757,
+        "grab_ms_mean": 0.57805430361428,
+        "fallback_allocations": 0,
+        "page_faults": 3053,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 4.226605509229275,
+        "private_mb_peak_over_start": 0.10546875,
+        "stream_stats": {
+          "frames_captured": 641,
+          "frames_consumed": 265,
+          "stale_frames_replaced": 376,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 80
+        }
+      }
+    ],
+    "idle": [
+      {
+        "policy": "latest",
+        "max_age_ms": null,
+        "runs": 5,
+        "range": {
+          "frames_consumed": [
+            12,
+            12
+          ],
+          "consumed_fps": [
+            2.0,
+            2.0
+          ],
+          "captured_fps": [
+            2.0,
+            2.0
+          ],
+          "age_ms_p50": [
+            9.134500000000001,
+            10.2768
+          ],
+          "age_ms_p95": [
+            14.360700000000001,
+            16.3686
+          ],
+          "age_ms_max": [
+            14.360700000000001,
+            16.3686
+          ],
+          "older_than_previous": [
+            0,
+            0
+          ],
+          "same_as_previous": [
+            0,
+            0
+          ],
+          "reader_timeouts": [
+            0,
+            0
+          ],
+          "producer_cpu_ms_per_frame": [
+            1.3020833333333333,
+            6.510416666666667
+          ],
+          "grab_ms_mean": [
+            0.9117833331705091,
+            1.0782833334512059
+          ],
+          "fallback_allocations": [
+            0,
+            0
+          ],
+          "page_faults": [
+            3052,
+            3054
+          ],
+          "queued_frames_peak": [
+            0,
+            0
+          ],
+          "queued_mb_mean": [
+            0.0,
+            0.0
+          ],
+          "private_mb_peak_over_start": [
+            0.1015625,
+            0.10546875
+          ]
+        },
+        "frames_consumed": 12,
+        "consumed_fps": 2.0,
+        "captured_fps": 2.0,
+        "age_ms_p50": 9.5538,
+        "age_ms_p95": 15.338500000000002,
+        "age_ms_max": 15.338500000000002,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 3.90625,
+        "grab_ms_mean": 0.91970000001614,
+        "fallback_allocations": 0,
+        "page_faults": 3053,
+        "queued_frames_peak": 0,
+        "queued_mb_mean": 0.0,
+        "private_mb_peak_over_start": 0.10546875,
+        "stream_stats": {
+          "frames_captured": 12,
+          "frames_consumed": 12,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 0
+        }
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": 20,
+        "runs": 5,
+        "range": {
+          "frames_consumed": [
+            12,
+            12
+          ],
+          "consumed_fps": [
+            2.0,
+            2.0
+          ],
+          "captured_fps": [
+            2.0,
+            2.0
+          ],
+          "age_ms_p50": [
+            7.671200000000001,
+            11.214
+          ],
+          "age_ms_p95": [
+            14.5492,
+            17.3534
+          ],
+          "age_ms_max": [
+            14.5492,
+            17.3534
+          ],
+          "older_than_previous": [
+            0,
+            0
+          ],
+          "same_as_previous": [
+            0,
+            0
+          ],
+          "reader_timeouts": [
+            0,
+            0
+          ],
+          "producer_cpu_ms_per_frame": [
+            0.0,
+            3.90625
+          ],
+          "grab_ms_mean": [
+            0.8544749998691259,
+            1.0082083333600167
+          ],
+          "fallback_allocations": [
+            0,
+            0
+          ],
+          "page_faults": [
+            3052,
+            3055
+          ],
+          "queued_frames_peak": [
+            0,
+            0
+          ],
+          "queued_mb_mean": [
+            0.0,
+            0.0
+          ],
+          "private_mb_peak_over_start": [
+            0.1015625,
+            0.10546875
+          ]
+        },
+        "frames_consumed": 12,
+        "consumed_fps": 2.0,
+        "captured_fps": 2.0,
+        "age_ms_p50": 9.6762,
+        "age_ms_p95": 15.960600000000001,
+        "age_ms_max": 15.960600000000001,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 1.3020833333333333,
+        "grab_ms_mean": 0.8945999998862438,
+        "fallback_allocations": 0,
+        "page_faults": 3053,
+        "queued_frames_peak": 0,
+        "queued_mb_mean": 0.0,
+        "private_mb_peak_over_start": 0.1015625,
+        "stream_stats": {
+          "frames_captured": 12,
+          "frames_consumed": 12,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 0
+        }
+      }
+    ],
+    "recording": [
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": null,
+        "runs": 5,
+        "range": {
+          "frames_consumed": [
+            177,
+            177
+          ],
+          "consumed_fps": [
+            29.5,
+            29.5
+          ],
+          "captured_fps": [
+            59.666666666666664,
+            60.166666666666664
+          ],
+          "age_ms_p50": [
+            1061.7508,
+            1064.6314
+          ],
+          "age_ms_p95": [
+            1076.7644,
+            1105.1695
+          ],
+          "age_ms_max": [
+            1083.1301,
+            1111.9542000000001
+          ],
+          "older_than_previous": [
+            0,
+            0
+          ],
+          "same_as_previous": [
+            0,
+            0
+          ],
+          "reader_timeouts": [
+            0,
+            0
+          ],
+          "producer_cpu_ms_per_frame": [
+            1.3888888888888888,
+            1.7458100558659218
+          ],
+          "grab_ms_mean": [
+            1.4038458333238346,
+            1.568849030492927
+          ],
+          "fallback_allocations": [
+            336,
+            339
+          ],
+          "page_faults": [
+            514311,
+            518905
+          ],
+          "queued_frames_peak": [
+            64,
+            64
+          ],
+          "queued_mb_mean": [
+            310.0216238839286,
+            310.93077820616884
+          ],
+          "private_mb_peak_over_start": [
+            380.609375,
+            386.55859375
+          ]
+        },
+        "frames_consumed": 177,
+        "consumed_fps": 29.5,
+        "captured_fps": 60.0,
+        "age_ms_p50": 1063.1229,
+        "age_ms_p95": 1077.6896000000002,
+        "age_ms_max": 1084.2368000000001,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 1.6059027777777777,
+        "grab_ms_mean": 1.5194722991383511,
+        "fallback_allocations": 338,
+        "page_faults": 517356,
+        "queued_frames_peak": 64,
+        "queued_mb_mean": 310.5556033435881,
+        "private_mb_peak_over_start": 386.48828125,
+        "stream_stats": {
+          "frames_captured": 360,
+          "frames_consumed": 177,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 119,
+          "frames_expired": 0,
+          "capture_drops": 0
+        }
+      },
+      {
+        "policy": "block",
+        "max_age_ms": null,
+        "runs": 5,
+        "range": {
+          "frames_consumed": [
+            177,
+            178
+          ],
+          "consumed_fps": [
+            29.5,
+            29.666666666666668
+          ],
+          "captured_fps": [
+            40.166666666666664,
+            40.333333333333336
+          ],
+          "age_ms_p50": [
+            1494.8063,
+            1534.3911
+          ],
+          "age_ms_p95": [
+            2172.2106,
+            2189.7074000000002
+          ],
+          "age_ms_max": [
+            2177.266,
+            2198.6582000000003
+          ],
+          "older_than_previous": [
+            0,
+            0
+          ],
+          "same_as_previous": [
+            0,
+            0
+          ],
+          "reader_timeouts": [
+            0,
+            0
+          ],
+          "producer_cpu_ms_per_frame": [
+            1.162190082644628,
+            1.4263485477178424
+          ],
+          "grab_ms_mean": [
+            1.319287190063951,
+            1.661610373437166
+          ],
+          "fallback_allocations": [
+            222,
+            224
+          ],
+          "page_faults": [
+            340901,
+            343941
+          ],
+          "queued_frames_peak": [
+            64,
+            64
+          ],
+          "queued_mb_mean": [
+            308.2661473473837,
+            311.0714934593023
+          ],
+          "private_mb_peak_over_start": [
+            374.66015625,
+            374.671875
+          ]
+        },
+        "frames_consumed": 177,
+        "consumed_fps": 29.5,
+        "captured_fps": 40.166666666666664,
+        "age_ms_p50": 1513.4169000000002,
+        "age_ms_p95": 2179.9043,
+        "age_ms_max": 2182.7009000000003,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 1.3615145228215768,
+        "grab_ms_mean": 1.5950087136688922,
+        "fallback_allocations": 223,
+        "page_faults": 342383,
+        "queued_frames_peak": 64,
+        "queued_mb_mean": 310.45308695211037,
+        "private_mb_peak_over_start": 374.66796875,
+        "stream_stats": {
+          "frames_captured": 241,
+          "frames_consumed": 177,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 118
+        }
+      }
+    ]
+  },
+  "runs": {
+    "bursty|latest|None": [
+      {
+        "policy": "latest",
+        "max_age_ms": null,
+        "frames_consumed": 597,
+        "consumed_fps": 99.5,
+        "captured_fps": 118.66666666666667,
+        "age_ms_p50": 5.0815,
+        "age_ms_p95": 8.5348,
+        "age_ms_max": 11.819600000000001,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.5705758426966292,
+        "grab_ms_mean": 0.5001612359600065,
+        "fallback_allocations": 0,
+        "page_faults": 3085,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 1.0016106939935066,
+        "private_mb_peak_over_start": 0.1015625,
+        "stream_stats": {
+          "frames_captured": 712,
+          "frames_duplicated": 0,
+          "frames_consumed": 597,
+          "stale_frames_replaced": 114,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 8,
+          "age_ms_last": 5.8497,
+          "age_ms_mean": 5.0896489112227785,
+          "policy": "latest",
+          "max_age_ms": null
+        },
+        "run": 1,
+        "order": 1
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": null,
+        "frames_consumed": 600,
+        "consumed_fps": 100.0,
+        "captured_fps": 119.5,
+        "age_ms_p50": 5.2151000000000005,
+        "age_ms_p95": 8.609200000000001,
+        "age_ms_max": 12.7161,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.4794281729428173,
+        "grab_ms_mean": 0.5589668061255649,
+        "fallback_allocations": 0,
+        "page_faults": 3052,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 1.0143853222150259,
+        "private_mb_peak_over_start": 0.1015625,
+        "stream_stats": {
+          "frames_captured": 717,
+          "frames_duplicated": 0,
+          "frames_consumed": 600,
+          "stale_frames_replaced": 116,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 4,
+          "age_ms_last": 2.2865,
+          "age_ms_mean": 5.118293833333335,
+          "policy": "latest",
+          "max_age_ms": null
+        },
+        "run": 4,
+        "order": 22
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": null,
+        "frames_consumed": 599,
+        "consumed_fps": 99.83333333333333,
+        "captured_fps": 119.33333333333333,
+        "age_ms_p50": 3.1734,
+        "age_ms_p95": 8.4603,
+        "age_ms_max": 11.8725,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.5892108938547486,
+        "grab_ms_mean": 0.5487744413321249,
+        "fallback_allocations": 0,
+        "page_faults": 3052,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 0.9529074238989637,
+        "private_mb_peak_over_start": 0.1015625,
+        "stream_stats": {
+          "frames_captured": 716,
+          "frames_duplicated": 0,
+          "frames_consumed": 599,
+          "stale_frames_replaced": 116,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 5,
+          "age_ms_last": 2.5996,
+          "age_ms_mean": 3.786114357262106,
+          "policy": "latest",
+          "max_age_ms": null
+        },
+        "run": 5,
+        "order": 29
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": null,
+        "frames_consumed": 595,
+        "consumed_fps": 99.16666666666667,
+        "captured_fps": 118.83333333333333,
+        "age_ms_p50": 3.5033000000000003,
+        "age_ms_p95": 7.9830000000000005,
+        "age_ms_max": 9.8071,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.5040322580645161,
+        "grab_ms_mean": 0.4928356241283477,
+        "fallback_allocations": 0,
+        "page_faults": 3053,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 1.0016106939935066,
+        "private_mb_peak_over_start": 0.1015625,
+        "stream_stats": {
+          "frames_captured": 713,
+          "frames_duplicated": 0,
+          "frames_consumed": 595,
+          "stale_frames_replaced": 117,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 7,
+          "age_ms_last": 6.6352,
+          "age_ms_mean": 3.8386268907563044,
+          "policy": "latest",
+          "max_age_ms": null
+        },
+        "run": 2,
+        "order": 57
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": null,
+        "frames_consumed": 597,
+        "consumed_fps": 99.5,
+        "captured_fps": 119.0,
+        "age_ms_p50": 4.7633,
+        "age_ms_p95": 8.4855,
+        "age_ms_max": 10.030000000000001,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.5470938375350141,
+        "grab_ms_mean": 0.5581809523888495,
+        "fallback_allocations": 0,
+        "page_faults": 3051,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 1.0016106939935066,
+        "private_mb_peak_over_start": 0.09765625,
+        "stream_stats": {
+          "frames_captured": 714,
+          "frames_duplicated": 0,
+          "frames_consumed": 597,
+          "stale_frames_replaced": 116,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 6,
+          "age_ms_last": 9.2407,
+          "age_ms_mean": 4.870849078726971,
+          "policy": "latest",
+          "max_age_ms": null
+        },
+        "run": 3,
+        "order": 59
+      }
+    ],
+    "recording|block|None": [
+      {
+        "policy": "block",
+        "max_age_ms": null,
+        "frames_consumed": 178,
+        "consumed_fps": 29.666666666666668,
+        "captured_fps": 40.333333333333336,
+        "age_ms_p50": 1524.5346000000002,
+        "age_ms_p95": 2172.2106,
+        "age_ms_max": 2177.266,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 1.162190082644628,
+        "grab_ms_mean": 1.319287190063951,
+        "fallback_allocations": 224,
+        "page_faults": 343941,
+        "queued_frames_peak": 64,
+        "queued_mb_mean": 310.2697628060567,
+        "private_mb_peak_over_start": 374.671875,
+        "stream_stats": {
+          "frames_captured": 242,
+          "frames_duplicated": 0,
+          "frames_consumed": 178,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 118,
+          "age_ms_last": 2163.6623,
+          "age_ms_mean": 1389.1526325842694,
+          "policy": "block",
+          "max_age_ms": null
+        },
+        "run": 2,
+        "order": 2
+      },
+      {
+        "policy": "block",
+        "max_age_ms": null,
+        "frames_consumed": 177,
+        "consumed_fps": 29.5,
+        "captured_fps": 40.166666666666664,
+        "age_ms_p50": 1494.8063,
+        "age_ms_p95": 2179.9043,
+        "age_ms_max": 2182.7009000000003,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 1.4263485477178424,
+        "grab_ms_mean": 1.661610373437166,
+        "fallback_allocations": 222,
+        "page_faults": 340901,
+        "queued_frames_peak": 64,
+        "queued_mb_mean": 308.2661473473837,
+        "private_mb_peak_over_start": 374.6640625,
+        "stream_stats": {
+          "frames_captured": 241,
+          "frames_duplicated": 0,
+          "frames_consumed": 177,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 118,
+          "age_ms_last": 2182.3743,
+          "age_ms_mean": 1377.2167915254227,
+          "policy": "block",
+          "max_age_ms": null
+        },
+        "run": 5,
+        "order": 4
+      },
+      {
+        "policy": "block",
+        "max_age_ms": null,
+        "frames_consumed": 177,
+        "consumed_fps": 29.5,
+        "captured_fps": 40.166666666666664,
+        "age_ms_p50": 1508.24,
+        "age_ms_p95": 2189.7074000000002,
+        "age_ms_max": 2198.6582000000003,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 1.3615145228215768,
+        "grab_ms_mean": 1.3735224066177916,
+        "fallback_allocations": 223,
+        "page_faults": 342383,
+        "queued_frames_peak": 64,
+        "queued_mb_mean": 310.51962209302326,
+        "private_mb_peak_over_start": 374.66796875,
+        "stream_stats": {
+          "frames_captured": 241,
+          "frames_duplicated": 0,
+          "frames_consumed": 177,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 118,
+          "age_ms_last": 2171.0692,
+          "age_ms_mean": 1389.6237892655367,
+          "policy": "block",
+          "max_age_ms": null
+        },
+        "run": 1,
+        "order": 15
+      },
+      {
+        "policy": "block",
+        "max_age_ms": null,
+        "frames_consumed": 177,
+        "consumed_fps": 29.5,
+        "captured_fps": 40.166666666666664,
+        "age_ms_p50": 1534.3911,
+        "age_ms_p95": 2174.9709000000003,
+        "age_ms_max": 2180.4665,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 1.3615145228215768,
+        "grab_ms_mean": 1.6117995850760822,
+        "fallback_allocations": 224,
+        "page_faults": 343896,
+        "queued_frames_peak": 64,
+        "queued_mb_mean": 311.0714934593023,
+        "private_mb_peak_over_start": 374.671875,
+        "stream_stats": {
+          "frames_captured": 241,
+          "frames_duplicated": 0,
+          "frames_consumed": 177,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 119,
+          "age_ms_last": 2165.581,
+          "age_ms_mean": 1402.4916649717516,
+          "policy": "block",
+          "max_age_ms": null
+        },
+        "run": 3,
+        "order": 49
+      },
+      {
+        "policy": "block",
+        "max_age_ms": null,
+        "frames_consumed": 177,
+        "consumed_fps": 29.5,
+        "captured_fps": 40.166666666666664,
+        "age_ms_p50": 1513.4169000000002,
+        "age_ms_p95": 2180.2552,
+        "age_ms_max": 2185.3740000000003,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 1.4263485477178424,
+        "grab_ms_mean": 1.5950087136688922,
+        "fallback_allocations": 223,
+        "page_faults": 342347,
+        "queued_frames_peak": 64,
+        "queued_mb_mean": 310.45308695211037,
+        "private_mb_peak_over_start": 374.66015625,
+        "stream_stats": {
+          "frames_captured": 241,
+          "frames_duplicated": 0,
+          "frames_consumed": 177,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 118,
+          "age_ms_last": 2182.3005000000003,
+          "age_ms_mean": 1389.6219627118644,
+          "policy": "block",
+          "max_age_ms": null
+        },
+        "run": 4,
+        "order": 61
+      }
+    ],
+    "bursty|drop_oldest|None": [
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": null,
+        "frames_consumed": 712,
+        "consumed_fps": 118.66666666666667,
+        "captured_fps": 118.83333333333333,
+        "age_ms_p50": 6.2064,
+        "age_ms_p95": 308.7507,
+        "age_ms_max": 441.01430000000005,
+        "older_than_previous": 115,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.7012622720897616,
+        "grab_ms_mean": 0.7055856942524782,
+        "fallback_allocations": 192,
+        "page_faults": 295274,
+        "queued_frames_peak": 30,
+        "queued_mb_mean": 25.28278568248057,
+        "private_mb_peak_over_start": 166.5703125,
+        "stream_stats": {
+          "frames_captured": 713,
+          "frames_duplicated": 0,
+          "frames_consumed": 712,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 8,
+          "age_ms_last": 4.7498000000000005,
+          "age_ms_mean": 41.21011362359555,
+          "policy": "drop_oldest",
+          "max_age_ms": null
+        },
+        "run": 3,
+        "order": 3
+      },
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": null,
+        "frames_consumed": 715,
+        "consumed_fps": 119.16666666666667,
+        "captured_fps": 119.33333333333333,
+        "age_ms_p50": 6.2028,
+        "age_ms_p95": 300.58160000000004,
+        "age_ms_max": 429.8428,
+        "older_than_previous": 116,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.8510824022346368,
+        "grab_ms_mean": 0.7146445530886607,
+        "fallback_allocations": 190,
+        "page_faults": 292234,
+        "queued_frames_peak": 29,
+        "queued_mb_mean": 25.348455255681817,
+        "private_mb_peak_over_start": 166.578125,
+        "stream_stats": {
+          "frames_captured": 716,
+          "frames_duplicated": 0,
+          "frames_consumed": 715,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 4,
+          "age_ms_last": 6.3752,
+          "age_ms_mean": 40.57072111888113,
+          "policy": "drop_oldest",
+          "max_age_ms": null
+        },
+        "run": 2,
+        "order": 20
+      },
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": null,
+        "frames_consumed": 715,
+        "consumed_fps": 119.16666666666667,
+        "captured_fps": 119.33333333333333,
+        "age_ms_p50": 6.732,
+        "age_ms_p95": 302.572,
+        "age_ms_max": 436.58790000000005,
+        "older_than_previous": 114,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.8729050279329609,
+        "grab_ms_mean": 0.725380167584298,
+        "fallback_allocations": 191,
+        "page_faults": 293756,
+        "queued_frames_peak": 30,
+        "queued_mb_mean": 25.14446041126943,
+        "private_mb_peak_over_start": 166.578125,
+        "stream_stats": {
+          "frames_captured": 716,
+          "frames_duplicated": 0,
+          "frames_consumed": 715,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 4,
+          "age_ms_last": 6.839,
+          "age_ms_mean": 40.84365062937065,
+          "policy": "drop_oldest",
+          "max_age_ms": null
+        },
+        "run": 5,
+        "order": 32
+      },
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": null,
+        "frames_consumed": 714,
+        "consumed_fps": 119.0,
+        "captured_fps": 119.16666666666667,
+        "age_ms_p50": 5.3581,
+        "age_ms_p95": 312.7765,
+        "age_ms_max": 457.1911,
+        "older_than_previous": 114,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.7648601398601399,
+        "grab_ms_mean": 0.6981875524469762,
+        "fallback_allocations": 197,
+        "page_faults": 302881,
+        "queued_frames_peak": 30,
+        "queued_mb_mean": 25.91293414022021,
+        "private_mb_peak_over_start": 172.51171875,
+        "stream_stats": {
+          "frames_captured": 715,
+          "frames_duplicated": 0,
+          "frames_consumed": 714,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 6,
+          "age_ms_last": 2.7719,
+          "age_ms_mean": 41.264572969187704,
+          "policy": "drop_oldest",
+          "max_age_ms": null
+        },
+        "run": 1,
+        "order": 54
+      },
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": null,
+        "frames_consumed": 717,
+        "consumed_fps": 119.5,
+        "captured_fps": 119.66666666666667,
+        "age_ms_p50": 5.2655,
+        "age_ms_p95": 306.5159,
+        "age_ms_max": 433.38550000000004,
+        "older_than_previous": 115,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.7834261838440112,
+        "grab_ms_mean": 0.6978791086446734,
+        "fallback_allocations": 194,
+        "page_faults": 298319,
+        "queued_frames_peak": 30,
+        "queued_mb_mean": 25.841555905032465,
+        "private_mb_peak_over_start": 172.515625,
+        "stream_stats": {
+          "frames_captured": 718,
+          "frames_duplicated": 0,
+          "frames_consumed": 717,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 3,
+          "age_ms_last": 2.2434000000000003,
+          "age_ms_mean": 40.82509721059975,
+          "policy": "drop_oldest",
+          "max_age_ms": null
+        },
+        "run": 4,
+        "order": 60
+      }
+    ],
+    "capture-stall|drop_oldest|None": [
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": null,
+        "frames_consumed": 290,
+        "consumed_fps": 48.333333333333336,
+        "captured_fps": 107.66666666666667,
+        "age_ms_p50": 9.4861,
+        "age_ms_p95": 267.5595,
+        "age_ms_max": 513.6786000000001,
+        "older_than_previous": 27,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 1.3786764705882353,
+        "grab_ms_mean": 1.1643947368301673,
+        "fallback_allocations": 620,
+        "page_faults": 946318,
+        "queued_frames_peak": 64,
+        "queued_mb_mean": 342.8007610103627,
+        "private_mb_peak_over_start": 386.56640625,
+        "stream_stats": {
+          "frames_captured": 646,
+          "frames_duplicated": 0,
+          "frames_consumed": 290,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 292,
+          "frames_expired": 0,
+          "capture_drops": 76,
+          "age_ms_last": 6.2552,
+          "age_ms_mean": 34.93688517241381,
+          "policy": "drop_oldest",
+          "max_age_ms": null
+        },
+        "run": 4,
+        "order": 5
+      },
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": null,
+        "frames_consumed": 289,
+        "consumed_fps": 48.166666666666664,
+        "captured_fps": 107.83333333333333,
+        "age_ms_p50": 9.7689,
+        "age_ms_p95": 264.04200000000003,
+        "age_ms_max": 515.0586000000001,
+        "older_than_previous": 28,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 1.304095826893354,
+        "grab_ms_mean": 1.0784877897848162,
+        "fallback_allocations": 623,
+        "page_faults": 950928,
+        "queued_frames_peak": 64,
+        "queued_mb_mean": 343.01313920454544,
+        "private_mb_peak_over_start": 386.55859375,
+        "stream_stats": {
+          "frames_captured": 647,
+          "frames_duplicated": 0,
+          "frames_consumed": 289,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 294,
+          "frames_expired": 0,
+          "capture_drops": 74,
+          "age_ms_last": 10.8138,
+          "age_ms_mean": 35.21250207612455,
+          "policy": "drop_oldest",
+          "max_age_ms": null
+        },
+        "run": 3,
+        "order": 11
+      },
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": null,
+        "frames_consumed": 289,
+        "consumed_fps": 48.166666666666664,
+        "captured_fps": 107.33333333333333,
+        "age_ms_p50": 10.132200000000001,
+        "age_ms_p95": 263.4434,
+        "age_ms_max": 499.03290000000004,
+        "older_than_previous": 27,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 1.0675465838509317,
+        "grab_ms_mean": 1.0839496894350982,
+        "fallback_allocations": 617,
+        "page_faults": 941878,
+        "queued_frames_peak": 64,
+        "queued_mb_mean": 342.50874099336136,
+        "private_mb_peak_over_start": 386.56640625,
+        "stream_stats": {
+          "frames_captured": 644,
+          "frames_duplicated": 0,
+          "frames_consumed": 289,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 291,
+          "frames_expired": 0,
+          "capture_drops": 76,
+          "age_ms_last": 5.5262,
+          "age_ms_mean": 34.356345674740474,
+          "policy": "drop_oldest",
+          "max_age_ms": null
+        },
+        "run": 5,
+        "order": 25
+      },
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": null,
+        "frames_consumed": 289,
+        "consumed_fps": 48.166666666666664,
+        "captured_fps": 107.66666666666667,
+        "age_ms_p50": 9.3594,
+        "age_ms_p95": 249.62560000000002,
+        "age_ms_max": 497.24760000000003,
+        "older_than_previous": 27,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 1.2577399380804954,
+        "grab_ms_mean": 1.031309907137611,
+        "fallback_allocations": 621,
+        "page_faults": 947867,
+        "queued_frames_peak": 64,
+        "queued_mb_mean": 342.72036069399354,
+        "private_mb_peak_over_start": 386.56640625,
+        "stream_stats": {
+          "frames_captured": 646,
+          "frames_duplicated": 0,
+          "frames_consumed": 289,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 293,
+          "frames_expired": 0,
+          "capture_drops": 74,
+          "age_ms_last": 13.1699,
+          "age_ms_mean": 33.0933266435986,
+          "policy": "drop_oldest",
+          "max_age_ms": null
+        },
+        "run": 1,
+        "order": 35
+      },
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": null,
+        "frames_consumed": 291,
+        "consumed_fps": 48.5,
+        "captured_fps": 107.16666666666667,
+        "age_ms_p50": 8.9657,
+        "age_ms_p95": 242.2178,
+        "age_ms_max": 512.3058,
+        "older_than_previous": 27,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.9477060653188181,
+        "grab_ms_mean": 0.960098133753315,
+        "fallback_allocations": 613,
+        "page_faults": 935643,
+        "queued_frames_peak": 64,
+        "queued_mb_mean": 342.39019349563955,
+        "private_mb_peak_over_start": 386.56640625,
+        "stream_stats": {
+          "frames_captured": 643,
+          "frames_duplicated": 0,
+          "frames_consumed": 291,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 288,
+          "frames_expired": 0,
+          "capture_drops": 79,
+          "age_ms_last": 12.5349,
+          "age_ms_mean": 32.653687628866,
+          "policy": "drop_oldest",
+          "max_age_ms": null
+        },
+        "run": 2,
+        "order": 45
+      }
+    ],
+    "bursty|latest|20": [
+      {
+        "policy": "latest",
+        "max_age_ms": 20,
+        "frames_consumed": 599,
+        "consumed_fps": 99.83333333333333,
+        "captured_fps": 118.5,
+        "age_ms_p50": 3.4673000000000003,
+        "age_ms_p95": 8.626800000000001,
+        "age_ms_max": 14.6456,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.7032348804500703,
+        "grab_ms_mean": 0.5448980309397158,
+        "fallback_allocations": 0,
+        "page_faults": 3056,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 1.0042190551757812,
+        "private_mb_peak_over_start": 0.10546875,
+        "stream_stats": {
+          "frames_captured": 711,
+          "frames_duplicated": 0,
+          "frames_consumed": 599,
+          "stale_frames_replaced": 111,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 9,
+          "age_ms_last": 7.961,
+          "age_ms_mean": 3.9984651085141882,
+          "policy": "latest",
+          "max_age_ms": 20.0
+        },
+        "run": 5,
+        "order": 6
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": 20,
+        "frames_consumed": 600,
+        "consumed_fps": 100.0,
+        "captured_fps": 119.5,
+        "age_ms_p50": 4.917400000000001,
+        "age_ms_p95": 8.347,
+        "age_ms_max": 11.535300000000001,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.63197350069735,
+        "grab_ms_mean": 0.5997588563436116,
+        "fallback_allocations": 0,
+        "page_faults": 3056,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 1.0170200892857142,
+        "private_mb_peak_over_start": 0.10546875,
+        "stream_stats": {
+          "frames_captured": 717,
+          "frames_duplicated": 0,
+          "frames_consumed": 600,
+          "stale_frames_replaced": 116,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 3,
+          "age_ms_last": 5.7153,
+          "age_ms_mean": 4.917333999999996,
+          "policy": "latest",
+          "max_age_ms": 20.0
+        },
+        "run": 1,
+        "order": 12
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": 20,
+        "frames_consumed": 597,
+        "consumed_fps": 99.5,
+        "captured_fps": 118.66666666666667,
+        "age_ms_p50": 3.4778000000000002,
+        "age_ms_p95": 8.090300000000001,
+        "age_ms_max": 13.568800000000001,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.702247191011236,
+        "grab_ms_mean": 0.5688155898903123,
+        "fallback_allocations": 0,
+        "page_faults": 3053,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 1.0297547967940415,
+        "private_mb_peak_over_start": 0.10546875,
+        "stream_stats": {
+          "frames_captured": 712,
+          "frames_duplicated": 0,
+          "frames_consumed": 597,
+          "stale_frames_replaced": 115,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 8,
+          "age_ms_last": 0.4924,
+          "age_ms_mean": 4.055922613065328,
+          "policy": "latest",
+          "max_age_ms": 20.0
+        },
+        "run": 4,
+        "order": 14
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": 20,
+        "frames_consumed": 600,
+        "consumed_fps": 100.0,
+        "captured_fps": 119.16666666666667,
+        "age_ms_p50": 5.2854,
+        "age_ms_p95": 8.257,
+        "age_ms_max": 9.1791,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.5463286713286714,
+        "grab_ms_mean": 0.5150173426675162,
+        "fallback_allocations": 0,
+        "page_faults": 3053,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 0.9707919034090909,
+        "private_mb_peak_over_start": 0.10546875,
+        "stream_stats": {
+          "frames_captured": 715,
+          "frames_duplicated": 0,
+          "frames_consumed": 600,
+          "stale_frames_replaced": 114,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 6,
+          "age_ms_last": 3.2334,
+          "age_ms_mean": 5.032653166666666,
+          "policy": "latest",
+          "max_age_ms": 20.0
+        },
+        "run": 2,
+        "order": 24
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": 20,
+        "frames_consumed": 593,
+        "consumed_fps": 98.83333333333333,
+        "captured_fps": 118.0,
+        "age_ms_p50": 4.266500000000001,
+        "age_ms_p95": 8.6297,
+        "age_ms_max": 14.9786,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.5737994350282486,
+        "grab_ms_mean": 0.531586723166013,
+        "fallback_allocations": 0,
+        "page_faults": 3052,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 0.9529074238989637,
+        "private_mb_peak_over_start": 0.1015625,
+        "stream_stats": {
+          "frames_captured": 708,
+          "frames_duplicated": 0,
+          "frames_consumed": 593,
+          "stale_frames_replaced": 114,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 12,
+          "age_ms_last": 5.9439,
+          "age_ms_mean": 4.514913996627318,
+          "policy": "latest",
+          "max_age_ms": 20.0
+        },
+        "run": 3,
+        "order": 47
+      }
+    ],
+    "idle|latest|20": [
+      {
+        "policy": "latest",
+        "max_age_ms": 20,
+        "frames_consumed": 12,
+        "consumed_fps": 2.0,
+        "captured_fps": 2.0,
+        "age_ms_p50": 7.671200000000001,
+        "age_ms_p95": 14.634300000000001,
+        "age_ms_max": 14.634300000000001,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.0,
+        "grab_ms_mean": 0.9021249999629314,
+        "fallback_allocations": 0,
+        "page_faults": 3053,
+        "queued_frames_peak": 0,
+        "queued_mb_mean": 0.0,
+        "private_mb_peak_over_start": 0.10546875,
+        "stream_stats": {
+          "frames_captured": 12,
+          "frames_duplicated": 0,
+          "frames_consumed": 12,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 0,
+          "age_ms_last": 1.2099,
+          "age_ms_mean": 7.620583333333335,
+          "policy": "latest",
+          "max_age_ms": 20.0
+        },
+        "run": 1,
+        "order": 7
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": 20,
+        "frames_consumed": 12,
+        "consumed_fps": 2.0,
+        "captured_fps": 2.0,
+        "age_ms_p50": 11.214,
+        "age_ms_p95": 17.3534,
+        "age_ms_max": 17.3534,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 3.90625,
+        "grab_ms_mean": 0.8754083332860318,
+        "fallback_allocations": 0,
+        "page_faults": 3052,
+        "queued_frames_peak": 0,
+        "queued_mb_mean": 0.0,
+        "private_mb_peak_over_start": 0.1015625,
+        "stream_stats": {
+          "frames_captured": 12,
+          "frames_duplicated": 0,
+          "frames_consumed": 12,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 0,
+          "age_ms_last": 14.1378,
+          "age_ms_mean": 11.1119,
+          "policy": "latest",
+          "max_age_ms": 20.0
+        },
+        "run": 3,
+        "order": 21
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": 20,
+        "frames_consumed": 12,
+        "consumed_fps": 2.0,
+        "captured_fps": 2.0,
+        "age_ms_p50": 9.6762,
+        "age_ms_p95": 15.9776,
+        "age_ms_max": 15.9776,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 3.90625,
+        "grab_ms_mean": 0.8544749998691259,
+        "fallback_allocations": 0,
+        "page_faults": 3053,
+        "queued_frames_peak": 0,
+        "queued_mb_mean": 0.0,
+        "private_mb_peak_over_start": 0.1015625,
+        "stream_stats": {
+          "frames_captured": 12,
+          "frames_duplicated": 0,
+          "frames_consumed": 12,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 0,
+          "age_ms_last": 10.330200000000001,
+          "age_ms_mean": 8.502533333333334,
+          "policy": "latest",
+          "max_age_ms": 20.0
+        },
+        "run": 2,
+        "order": 31
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": 20,
+        "frames_consumed": 12,
+        "consumed_fps": 2.0,
+        "captured_fps": 2.0,
+        "age_ms_p50": 10.200700000000001,
+        "age_ms_p95": 15.960600000000001,
+        "age_ms_max": 15.960600000000001,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 1.3020833333333333,
+        "grab_ms_mean": 1.0082083333600167,
+        "fallback_allocations": 0,
+        "page_faults": 3053,
+        "queued_frames_peak": 0,
+        "queued_mb_mean": 0.0,
+        "private_mb_peak_over_start": 0.1015625,
+        "stream_stats": {
+          "frames_captured": 12,
+          "frames_duplicated": 0,
+          "frames_consumed": 12,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 0,
+          "age_ms_last": 11.070300000000001,
+          "age_ms_mean": 8.818475,
+          "policy": "latest",
+          "max_age_ms": 20.0
+        },
+        "run": 4,
+        "order": 34
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": 20,
+        "frames_consumed": 12,
+        "consumed_fps": 2.0,
+        "captured_fps": 2.0,
+        "age_ms_p50": 8.8347,
+        "age_ms_p95": 14.5492,
+        "age_ms_max": 14.5492,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 1.3020833333333333,
+        "grab_ms_mean": 0.8945999998862438,
+        "fallback_allocations": 0,
+        "page_faults": 3055,
+        "queued_frames_peak": 0,
+        "queued_mb_mean": 0.0,
+        "private_mb_peak_over_start": 0.10546875,
+        "stream_stats": {
+          "frames_captured": 12,
+          "frames_duplicated": 0,
+          "frames_consumed": 12,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 0,
+          "age_ms_last": 11.642800000000001,
+          "age_ms_mean": 8.045266666666668,
+          "policy": "latest",
+          "max_age_ms": 20.0
+        },
+        "run": 5,
+        "order": 44
+      }
+    ],
+    "idle|latest|None": [
+      {
+        "policy": "latest",
+        "max_age_ms": null,
+        "frames_consumed": 12,
+        "consumed_fps": 2.0,
+        "captured_fps": 2.0,
+        "age_ms_p50": 9.134500000000001,
+        "age_ms_p95": 15.338500000000002,
+        "age_ms_max": 15.338500000000002,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 6.510416666666667,
+        "grab_ms_mean": 1.0782833334512059,
+        "fallback_allocations": 0,
+        "page_faults": 3053,
+        "queued_frames_peak": 0,
+        "queued_mb_mean": 0.0,
+        "private_mb_peak_over_start": 0.10546875,
+        "stream_stats": {
+          "frames_captured": 12,
+          "frames_duplicated": 0,
+          "frames_consumed": 12,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 0,
+          "age_ms_last": 12.095600000000001,
+          "age_ms_mean": 8.401191666666668,
+          "policy": "latest",
+          "max_age_ms": null
+        },
+        "run": 1,
+        "order": 8
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": null,
+        "frames_consumed": 12,
+        "consumed_fps": 2.0,
+        "captured_fps": 2.0,
+        "age_ms_p50": 9.4061,
+        "age_ms_p95": 14.835500000000001,
+        "age_ms_max": 14.835500000000001,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 2.6041666666666665,
+        "grab_ms_mean": 0.9164333333349836,
+        "fallback_allocations": 0,
+        "page_faults": 3052,
+        "queued_frames_peak": 0,
+        "queued_mb_mean": 0.0,
+        "private_mb_peak_over_start": 0.1015625,
+        "stream_stats": {
+          "frames_captured": 12,
+          "frames_duplicated": 0,
+          "frames_consumed": 12,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 0,
+          "age_ms_last": 7.1616,
+          "age_ms_mean": 8.363266666666666,
+          "policy": "latest",
+          "max_age_ms": null
+        },
+        "run": 3,
+        "order": 9
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": null,
+        "frames_consumed": 12,
+        "consumed_fps": 2.0,
+        "captured_fps": 2.0,
+        "age_ms_p50": 10.2768,
+        "age_ms_p95": 14.360700000000001,
+        "age_ms_max": 14.360700000000001,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 1.3020833333333333,
+        "grab_ms_mean": 0.9117833331705091,
+        "fallback_allocations": 0,
+        "page_faults": 3053,
+        "queued_frames_peak": 0,
+        "queued_mb_mean": 0.0,
+        "private_mb_peak_over_start": 0.10546875,
+        "stream_stats": {
+          "frames_captured": 12,
+          "frames_duplicated": 0,
+          "frames_consumed": 12,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 0,
+          "age_ms_last": 10.2768,
+          "age_ms_mean": 8.01085,
+          "policy": "latest",
+          "max_age_ms": null
+        },
+        "run": 2,
+        "order": 10
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": null,
+        "frames_consumed": 12,
+        "consumed_fps": 2.0,
+        "captured_fps": 2.0,
+        "age_ms_p50": 9.5538,
+        "age_ms_p95": 15.936100000000001,
+        "age_ms_max": 15.936100000000001,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 3.90625,
+        "grab_ms_mean": 0.91970000001614,
+        "fallback_allocations": 0,
+        "page_faults": 3054,
+        "queued_frames_peak": 0,
+        "queued_mb_mean": 0.0,
+        "private_mb_peak_over_start": 0.10546875,
+        "stream_stats": {
+          "frames_captured": 12,
+          "frames_duplicated": 0,
+          "frames_consumed": 12,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 0,
+          "age_ms_last": 13.2941,
+          "age_ms_mean": 9.805166666666668,
+          "policy": "latest",
+          "max_age_ms": null
+        },
+        "run": 5,
+        "order": 13
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": null,
+        "frames_consumed": 12,
+        "consumed_fps": 2.0,
+        "captured_fps": 2.0,
+        "age_ms_p50": 10.155700000000001,
+        "age_ms_p95": 16.3686,
+        "age_ms_max": 16.3686,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 5.208333333333333,
+        "grab_ms_mean": 1.0235916665806144,
+        "fallback_allocations": 0,
+        "page_faults": 3052,
+        "queued_frames_peak": 0,
+        "queued_mb_mean": 0.0,
+        "private_mb_peak_over_start": 0.1015625,
+        "stream_stats": {
+          "frames_captured": 12,
+          "frames_duplicated": 0,
+          "frames_consumed": 12,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 0,
+          "age_ms_last": 8.2067,
+          "age_ms_mean": 9.28175,
+          "policy": "latest",
+          "max_age_ms": null
+        },
+        "run": 4,
+        "order": 53
+      }
+    ],
+    "inference|latest|None": [
+      {
+        "policy": "latest",
+        "max_age_ms": null,
+        "frames_consumed": 363,
+        "consumed_fps": 60.5,
+        "captured_fps": 230.33333333333334,
+        "age_ms_p50": 4.539000000000001,
+        "age_ms_p95": 7.577100000000001,
+        "age_ms_max": 8.6098,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.42963096960926195,
+        "grab_ms_mean": 0.4267767004209422,
+        "fallback_allocations": 0,
+        "page_faults": 3055,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 5.0719266110751295,
+        "private_mb_peak_over_start": 0.1015625,
+        "stream_stats": {
+          "frames_captured": 1382,
+          "frames_duplicated": 0,
+          "frames_consumed": 363,
+          "stale_frames_replaced": 1018,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 61,
+          "age_ms_last": 4.7919,
+          "age_ms_mean": 4.486051239669422,
+          "policy": "latest",
+          "max_age_ms": null
+        },
+        "run": 1,
+        "order": 16
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": null,
+        "frames_consumed": 363,
+        "consumed_fps": 60.5,
+        "captured_fps": 230.0,
+        "age_ms_p50": 4.2592,
+        "age_ms_p95": 7.7365,
+        "age_ms_max": 8.926,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.49818840579710144,
+        "grab_ms_mean": 0.45228731884784845,
+        "fallback_allocations": 0,
+        "page_faults": 3060,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 5.208375608766233,
+        "private_mb_peak_over_start": 0.1015625,
+        "stream_stats": {
+          "frames_captured": 1380,
+          "frames_duplicated": 0,
+          "frames_consumed": 363,
+          "stale_frames_replaced": 1016,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 61,
+          "age_ms_last": 4.4898,
+          "age_ms_mean": 4.494691184573007,
+          "policy": "latest",
+          "max_age_ms": null
+        },
+        "run": 4,
+        "order": 19
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": null,
+        "frames_consumed": 364,
+        "consumed_fps": 60.666666666666664,
+        "captured_fps": 231.33333333333334,
+        "age_ms_p50": 4.4793,
+        "age_ms_p95": 7.5566,
+        "age_ms_max": 9.0379,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.46154538904899134,
+        "grab_ms_mean": 0.4372103746485433,
+        "fallback_allocations": 0,
+        "page_faults": 3053,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 5.087296085654145,
+        "private_mb_peak_over_start": 0.10546875,
+        "stream_stats": {
+          "frames_captured": 1388,
+          "frames_duplicated": 0,
+          "frames_consumed": 364,
+          "stale_frames_replaced": 1023,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 55,
+          "age_ms_last": 4.1121,
+          "age_ms_mean": 4.546660439560443,
+          "policy": "latest",
+          "max_age_ms": null
+        },
+        "run": 3,
+        "order": 26
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": null,
+        "frames_consumed": 363,
+        "consumed_fps": 60.5,
+        "captured_fps": 232.33333333333334,
+        "age_ms_p50": 4.6295,
+        "age_ms_p95": 7.502800000000001,
+        "age_ms_max": 9.0472,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.4371413199426112,
+        "grab_ms_mean": 0.44987618365793575,
+        "fallback_allocations": 0,
+        "page_faults": 3053,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 5.1621474228896105,
+        "private_mb_peak_over_start": 0.1015625,
+        "stream_stats": {
+          "frames_captured": 1394,
+          "frames_duplicated": 0,
+          "frames_consumed": 363,
+          "stale_frames_replaced": 1030,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 50,
+          "age_ms_last": 4.3259,
+          "age_ms_mean": 4.511798898071629,
+          "policy": "latest",
+          "max_age_ms": null
+        },
+        "run": 5,
+        "order": 51
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": null,
+        "frames_consumed": 363,
+        "consumed_fps": 60.5,
+        "captured_fps": 230.5,
+        "age_ms_p50": 4.242500000000001,
+        "age_ms_p95": 7.4069,
+        "age_ms_max": 8.8466,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.6100867678958786,
+        "grab_ms_mean": 0.4342704989029608,
+        "fallback_allocations": 0,
+        "page_faults": 3054,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 5.129241943359375,
+        "private_mb_peak_over_start": 0.10546875,
+        "stream_stats": {
+          "frames_captured": 1383,
+          "frames_duplicated": 0,
+          "frames_consumed": 363,
+          "stale_frames_replaced": 1019,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 58,
+          "age_ms_last": 5.2182,
+          "age_ms_mean": 4.354719834710743,
+          "policy": "latest",
+          "max_age_ms": null
+        },
+        "run": 2,
+        "order": 55
+      }
+    ],
+    "capture-stall|latest|50": [
+      {
+        "policy": "latest",
+        "max_age_ms": 50,
+        "frames_consumed": 265,
+        "consumed_fps": 44.166666666666664,
+        "captured_fps": 107.5,
+        "age_ms_p50": 7.806100000000001,
+        "age_ms_p95": 13.7872,
+        "age_ms_max": 17.7807,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.6782945736434108,
+        "grab_ms_mean": 0.5825747286719487,
+        "fallback_allocations": 0,
+        "page_faults": 3054,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 4.1651276109132125,
+        "private_mb_peak_over_start": 0.10546875,
+        "stream_stats": {
+          "frames_captured": 645,
+          "frames_duplicated": 0,
+          "frames_consumed": 265,
+          "stale_frames_replaced": 379,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 77,
+          "age_ms_last": 6.5658,
+          "age_ms_mean": 7.934115849056602,
+          "policy": "latest",
+          "max_age_ms": 50.0
+        },
+        "run": 1,
+        "order": 17
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": 50,
+        "frames_consumed": 264,
+        "consumed_fps": 44.0,
+        "captured_fps": 106.83333333333333,
+        "age_ms_p50": 8.766,
+        "age_ms_p95": 14.6341,
+        "age_ms_max": 16.4238,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.5362714508580343,
+        "grab_ms_mean": 0.5349273010813905,
+        "fallback_allocations": 0,
+        "page_faults": 3053,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 4.349561305861399,
+        "private_mb_peak_over_start": 0.10546875,
+        "stream_stats": {
+          "frames_captured": 641,
+          "frames_duplicated": 0,
+          "frames_consumed": 264,
+          "stale_frames_replaced": 376,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 80,
+          "age_ms_last": 16.1969,
+          "age_ms_mean": 8.694534090909093,
+          "policy": "latest",
+          "max_age_ms": 50.0
+        },
+        "run": 4,
+        "order": 28
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": 50,
+        "frames_consumed": 264,
+        "consumed_fps": 44.0,
+        "captured_fps": 106.5,
+        "age_ms_p50": 8.8019,
+        "age_ms_p95": 15.2543,
+        "age_ms_max": 16.662200000000002,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.6113067292644757,
+        "grab_ms_mean": 0.57805430361428,
+        "fallback_allocations": 0,
+        "page_faults": 3053,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 4.226605509229275,
+        "private_mb_peak_over_start": 0.10546875,
+        "stream_stats": {
+          "frames_captured": 639,
+          "frames_duplicated": 0,
+          "frames_consumed": 264,
+          "stale_frames_replaced": 374,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 82,
+          "age_ms_last": 11.4756,
+          "age_ms_mean": 8.753384090909092,
+          "policy": "latest",
+          "max_age_ms": 50.0
+        },
+        "run": 5,
+        "order": 33
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": 50,
+        "frames_consumed": 265,
+        "consumed_fps": 44.166666666666664,
+        "captured_fps": 106.33333333333333,
+        "age_ms_p50": 9.062100000000001,
+        "age_ms_p95": 15.0477,
+        "age_ms_max": 19.6419,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.6612460815047022,
+        "grab_ms_mean": 0.6027979623619234,
+        "fallback_allocations": 0,
+        "page_faults": 3052,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 4.1651276109132125,
+        "private_mb_peak_over_start": 0.1015625,
+        "stream_stats": {
+          "frames_captured": 638,
+          "frames_duplicated": 0,
+          "frames_consumed": 265,
+          "stale_frames_replaced": 372,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 83,
+          "age_ms_last": 5.705500000000001,
+          "age_ms_mean": 9.064178867924536,
+          "policy": "latest",
+          "max_age_ms": 50.0
+        },
+        "run": 3,
+        "order": 41
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": 50,
+        "frames_consumed": 265,
+        "consumed_fps": 44.166666666666664,
+        "captured_fps": 107.33333333333333,
+        "age_ms_p50": 8.6609,
+        "age_ms_p95": 14.7454,
+        "age_ms_max": 19.5163,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.5095108695652174,
+        "grab_ms_mean": 0.5632805900520297,
+        "fallback_allocations": 0,
+        "page_faults": 3104,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 4.2727139329663215,
+        "private_mb_peak_over_start": 0.19140625,
+        "stream_stats": {
+          "frames_captured": 644,
+          "frames_duplicated": 0,
+          "frames_consumed": 265,
+          "stale_frames_replaced": 378,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 76,
+          "age_ms_last": 12.257100000000001,
+          "age_ms_mean": 8.674951320754719,
+          "policy": "latest",
+          "max_age_ms": 50.0
+        },
+        "run": 2,
+        "order": 43
+      }
+    ],
+    "capture-stall|latest|None": [
+      {
+        "policy": "latest",
+        "max_age_ms": null,
+        "frames_consumed": 265,
+        "consumed_fps": 44.166666666666664,
+        "captured_fps": 107.33333333333333,
+        "age_ms_p50": 8.5615,
+        "age_ms_p95": 14.2574,
+        "age_ms_max": 18.355600000000003,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.6793478260869565,
+        "grab_ms_mean": 0.5351099378780452,
+        "fallback_allocations": 0,
+        "page_faults": 3052,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 4.195866560071243,
+        "private_mb_peak_over_start": 0.1015625,
+        "stream_stats": {
+          "frames_captured": 644,
+          "frames_duplicated": 0,
+          "frames_consumed": 265,
+          "stale_frames_replaced": 378,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 77,
+          "age_ms_last": 2.4352,
+          "age_ms_mean": 8.512486792452833,
+          "policy": "latest",
+          "max_age_ms": null
+        },
+        "run": 3,
+        "order": 18
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": null,
+        "frames_consumed": 266,
+        "consumed_fps": 44.333333333333336,
+        "captured_fps": 108.33333333333333,
+        "age_ms_p50": 8.2729,
+        "age_ms_p95": 14.005700000000001,
+        "age_ms_max": 20.706400000000002,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.625,
+        "grab_ms_mean": 0.6112536922983753,
+        "fallback_allocations": 0,
+        "page_faults": 3053,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 4.349561305861399,
+        "private_mb_peak_over_start": 0.10546875,
+        "stream_stats": {
+          "frames_captured": 650,
+          "frames_duplicated": 0,
+          "frames_consumed": 266,
+          "stale_frames_replaced": 383,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 72,
+          "age_ms_last": 5.487,
+          "age_ms_mean": 8.309993609022552,
+          "policy": "latest",
+          "max_age_ms": null
+        },
+        "run": 4,
+        "order": 39
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": null,
+        "frames_consumed": 264,
+        "consumed_fps": 44.0,
+        "captured_fps": 107.5,
+        "age_ms_p50": 9.0967,
+        "age_ms_p95": 14.863100000000001,
+        "age_ms_max": 16.398600000000002,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.7025193798449613,
+        "grab_ms_mean": 0.551566356584807,
+        "fallback_allocations": 0,
+        "page_faults": 3052,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 4.175946124188312,
+        "private_mb_peak_over_start": 0.1015625,
+        "stream_stats": {
+          "frames_captured": 645,
+          "frames_duplicated": 0,
+          "frames_consumed": 264,
+          "stale_frames_replaced": 380,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 75,
+          "age_ms_last": 8.3362,
+          "age_ms_mean": 9.196864393939396,
+          "policy": "latest",
+          "max_age_ms": null
+        },
+        "run": 5,
+        "order": 48
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": null,
+        "frames_consumed": 264,
+        "consumed_fps": 44.0,
+        "captured_fps": 107.33333333333333,
+        "age_ms_p50": 8.7204,
+        "age_ms_p95": 14.7216,
+        "age_ms_max": 17.0438,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.7763975155279503,
+        "grab_ms_mean": 0.629224223616548,
+        "fallback_allocations": 0,
+        "page_faults": 3053,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 4.303452882124352,
+        "private_mb_peak_over_start": 0.09765625,
+        "stream_stats": {
+          "frames_captured": 644,
+          "frames_duplicated": 0,
+          "frames_consumed": 264,
+          "stale_frames_replaced": 379,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 77,
+          "age_ms_last": 10.8317,
+          "age_ms_mean": 8.755846969696975,
+          "policy": "latest",
+          "max_age_ms": null
+        },
+        "run": 1,
+        "order": 50
+      },
+      {
+        "policy": "latest",
+        "max_age_ms": null,
+        "frames_consumed": 264,
+        "consumed_fps": 44.0,
+        "captured_fps": 106.83333333333333,
+        "age_ms_p50": 8.2661,
+        "age_ms_p95": 14.1292,
+        "age_ms_max": 16.267300000000002,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.5362714508580343,
+        "grab_ms_mean": 0.561075507019342,
+        "fallback_allocations": 0,
+        "page_faults": 3053,
+        "queued_frames_peak": 1,
+        "queued_mb_mean": 4.334191831282384,
+        "private_mb_peak_over_start": 0.09765625,
+        "stream_stats": {
+          "frames_captured": 641,
+          "frames_duplicated": 0,
+          "frames_consumed": 264,
+          "stale_frames_replaced": 376,
+          "consumer_drops": 0,
+          "frames_expired": 0,
+          "capture_drops": 80,
+          "age_ms_last": 11.2217,
+          "age_ms_mean": 8.302526515151515,
+          "policy": "latest",
+          "max_age_ms": null
+        },
+        "run": 2,
+        "order": 63
+      }
+    ],
+    "bursty|drop_oldest|20": [
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": 20,
+        "frames_consumed": 601,
+        "consumed_fps": 100.16666666666667,
+        "captured_fps": 119.16666666666667,
+        "age_ms_p50": 4.2366,
+        "age_ms_p95": 8.417300000000001,
+        "age_ms_max": 17.925700000000003,
+        "older_than_previous": 1,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.7211538461538461,
+        "grab_ms_mean": 0.6750478321817456,
+        "fallback_allocations": 113,
+        "page_faults": 175038,
+        "queued_frames_peak": 30,
+        "queued_mb_mean": 15.825448965097403,
+        "private_mb_peak_over_start": 172.515625,
+        "stream_stats": {
+          "frames_captured": 715,
+          "frames_duplicated": 0,
+          "frames_consumed": 601,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 113,
+          "capture_drops": 5,
+          "age_ms_last": 6.319500000000001,
+          "age_ms_mean": 4.683099334442592,
+          "policy": "drop_oldest",
+          "max_age_ms": 20.0
+        },
+        "run": 2,
+        "order": 23
+      },
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": 20,
+        "frames_consumed": 597,
+        "consumed_fps": 99.5,
+        "captured_fps": 119.0,
+        "age_ms_p50": 4.580900000000001,
+        "age_ms_p95": 8.6127,
+        "age_ms_max": 12.8215,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.7878151260504201,
+        "grab_ms_mean": 0.6808946778665286,
+        "fallback_allocations": 116,
+        "page_faults": 179605,
+        "queued_frames_peak": 30,
+        "queued_mb_mean": 15.584647223121761,
+        "private_mb_peak_over_start": 172.51953125,
+        "stream_stats": {
+          "frames_captured": 714,
+          "frames_duplicated": 0,
+          "frames_consumed": 597,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 116,
+          "capture_drops": 6,
+          "age_ms_last": 6.7415,
+          "age_ms_mean": 4.675062981574542,
+          "policy": "drop_oldest",
+          "max_age_ms": 20.0
+        },
+        "run": 5,
+        "order": 27
+      },
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": 20,
+        "frames_consumed": 599,
+        "consumed_fps": 99.83333333333333,
+        "captured_fps": 118.83333333333333,
+        "age_ms_p50": 4.496700000000001,
+        "age_ms_p95": 8.686,
+        "age_ms_max": 23.357000000000003,
+        "older_than_previous": 3,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.7231767180925667,
+        "grab_ms_mean": 0.6665244039397209,
+        "fallback_allocations": 116,
+        "page_faults": 179605,
+        "queued_frames_peak": 29,
+        "queued_mb_mean": 16.237449645996094,
+        "private_mb_peak_over_start": 166.578125,
+        "stream_stats": {
+          "frames_captured": 713,
+          "frames_duplicated": 0,
+          "frames_consumed": 599,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 113,
+          "capture_drops": 7,
+          "age_ms_last": 8.3641,
+          "age_ms_mean": 4.890565275459095,
+          "policy": "drop_oldest",
+          "max_age_ms": 20.0
+        },
+        "run": 3,
+        "order": 38
+      },
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": 20,
+        "frames_consumed": 596,
+        "consumed_fps": 99.33333333333333,
+        "captured_fps": 117.66666666666667,
+        "age_ms_p50": 4.444500000000001,
+        "age_ms_p95": 8.808300000000001,
+        "age_ms_max": 23.892400000000002,
+        "older_than_previous": 4,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.7082152974504249,
+        "grab_ms_mean": 0.6684325779110172,
+        "fallback_allocations": 115,
+        "page_faults": 178082,
+        "queued_frames_peak": 30,
+        "queued_mb_mean": 15.76908091806995,
+        "private_mb_peak_over_start": 166.5703125,
+        "stream_stats": {
+          "frames_captured": 706,
+          "frames_duplicated": 0,
+          "frames_consumed": 596,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 109,
+          "capture_drops": 14,
+          "age_ms_last": 7.1322,
+          "age_ms_mean": 4.607912080536912,
+          "policy": "drop_oldest",
+          "max_age_ms": 20.0
+        },
+        "run": 4,
+        "order": 52
+      },
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": 20,
+        "frames_consumed": 601,
+        "consumed_fps": 100.16666666666667,
+        "captured_fps": 118.5,
+        "age_ms_p50": 4.4299,
+        "age_ms_p95": 8.4642,
+        "age_ms_max": 24.8255,
+        "older_than_previous": 3,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.7032348804500703,
+        "grab_ms_mean": 0.6527943741072133,
+        "fallback_allocations": 112,
+        "page_faults": 173518,
+        "queued_frames_peak": 30,
+        "queued_mb_mean": 15.085797991071427,
+        "private_mb_peak_over_start": 166.5703125,
+        "stream_stats": {
+          "frames_captured": 711,
+          "frames_duplicated": 0,
+          "frames_consumed": 601,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 0,
+          "frames_expired": 109,
+          "capture_drops": 9,
+          "age_ms_last": 8.3702,
+          "age_ms_mean": 4.695462396006661,
+          "policy": "drop_oldest",
+          "max_age_ms": 20.0
+        },
+        "run": 1,
+        "order": 65
+      }
+    ],
+    "inference|drop_oldest|None": [
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": null,
+        "frames_consumed": 360,
+        "consumed_fps": 60.0,
+        "captured_fps": 233.33333333333334,
+        "age_ms_p50": 4.8704,
+        "age_ms_p95": 7.7683,
+        "age_ms_max": 9.9413,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 1.0379464285714286,
+        "grab_ms_mean": 0.8381869999967811,
+        "fallback_allocations": 1354,
+        "page_faults": 2063159,
+        "queued_frames_peak": 64,
+        "queued_mb_mean": 367.36118138762953,
+        "private_mb_peak_over_start": 386.5625,
+        "stream_stats": {
+          "frames_captured": 1400,
+          "frames_duplicated": 0,
+          "frames_consumed": 360,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 976,
+          "frames_expired": 0,
+          "capture_drops": 44,
+          "age_ms_last": 1.1397000000000002,
+          "age_ms_mean": 4.767333055555555,
+          "policy": "drop_oldest",
+          "max_age_ms": null
+        },
+        "run": 1,
+        "order": 30
+      },
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": null,
+        "frames_consumed": 360,
+        "consumed_fps": 60.0,
+        "captured_fps": 231.66666666666666,
+        "age_ms_p50": 4.7297,
+        "age_ms_p95": 7.837700000000001,
+        "age_ms_max": 9.601600000000001,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 1.022931654676259,
+        "grab_ms_mean": 0.8281959712221317,
+        "fallback_allocations": 1345,
+        "page_faults": 2049323,
+        "queued_frames_peak": 64,
+        "queued_mb_mean": 367.57571530032465,
+        "private_mb_peak_over_start": 386.5625,
+        "stream_stats": {
+          "frames_captured": 1390,
+          "frames_duplicated": 0,
+          "frames_consumed": 360,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 966,
+          "frames_expired": 0,
+          "capture_drops": 52,
+          "age_ms_last": 1.7263000000000002,
+          "age_ms_mean": 4.849609722222225,
+          "policy": "drop_oldest",
+          "max_age_ms": null
+        },
+        "run": 2,
+        "order": 36
+      },
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": null,
+        "frames_consumed": 360,
+        "consumed_fps": 60.0,
+        "captured_fps": 230.83333333333334,
+        "age_ms_p50": 4.716200000000001,
+        "age_ms_p95": 7.8089,
+        "age_ms_max": 9.2566,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.970216606498195,
+        "grab_ms_mean": 0.8405723465678121,
+        "fallback_allocations": 1341,
+        "page_faults": 2043174,
+        "queued_frames_peak": 64,
+        "queued_mb_mean": 367.11343344155847,
+        "private_mb_peak_over_start": 386.58203125,
+        "stream_stats": {
+          "frames_captured": 1385,
+          "frames_duplicated": 0,
+          "frames_consumed": 360,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 961,
+          "frames_expired": 0,
+          "capture_drops": 57,
+          "age_ms_last": 2.69,
+          "age_ms_mean": 4.707146666666663,
+          "policy": "drop_oldest",
+          "max_age_ms": null
+        },
+        "run": 5,
+        "order": 37
+      },
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": null,
+        "frames_consumed": 361,
+        "consumed_fps": 60.166666666666664,
+        "captured_fps": 231.66666666666666,
+        "age_ms_p50": 4.652,
+        "age_ms_p95": 7.9350000000000005,
+        "age_ms_max": 12.402000000000001,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.8205935251798561,
+        "grab_ms_mean": 0.8234891367046265,
+        "fallback_allocations": 1345,
+        "page_faults": 2049187,
+        "queued_frames_peak": 64,
+        "queued_mb_mean": 366.9131113027597,
+        "private_mb_peak_over_start": 386.5703125,
+        "stream_stats": {
+          "frames_captured": 1390,
+          "frames_duplicated": 0,
+          "frames_consumed": 361,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 965,
+          "frames_expired": 0,
+          "capture_drops": 52,
+          "age_ms_last": 5.9276,
+          "age_ms_mean": 4.82217645429363,
+          "policy": "drop_oldest",
+          "max_age_ms": null
+        },
+        "run": 4,
+        "order": 46
+      },
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": null,
+        "frames_consumed": 359,
+        "consumed_fps": 59.833333333333336,
+        "captured_fps": 232.0,
+        "age_ms_p50": 4.3097,
+        "age_ms_p95": 7.5248,
+        "age_ms_max": 9.308300000000001,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 0.9653376436781609,
+        "grab_ms_mean": 0.8413248563238869,
+        "fallback_allocations": 1346,
+        "page_faults": 2050703,
+        "queued_frames_peak": 64,
+        "queued_mb_mean": 366.39659792877904,
+        "private_mb_peak_over_start": 386.55859375,
+        "stream_stats": {
+          "frames_captured": 1392,
+          "frames_duplicated": 0,
+          "frames_consumed": 359,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 969,
+          "frames_expired": 0,
+          "capture_drops": 52,
+          "age_ms_last": 2.6256,
+          "age_ms_mean": 4.401806406685239,
+          "policy": "drop_oldest",
+          "max_age_ms": null
+        },
+        "run": 3,
+        "order": 64
+      }
+    ],
+    "recording|drop_oldest|None": [
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": null,
+        "frames_consumed": 177,
+        "consumed_fps": 29.5,
+        "captured_fps": 60.166666666666664,
+        "age_ms_p50": 1061.7508,
+        "age_ms_p95": 1076.7644,
+        "age_ms_max": 1084.5958,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 1.644736842105263,
+        "grab_ms_mean": 1.568849030492927,
+        "fallback_allocations": 339,
+        "page_faults": 518905,
+        "queued_frames_peak": 64,
+        "queued_mb_mean": 310.6631896656412,
+        "private_mb_peak_over_start": 380.609375,
+        "stream_stats": {
+          "frames_captured": 361,
+          "frames_duplicated": 0,
+          "frames_consumed": 177,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 120,
+          "frames_expired": 0,
+          "capture_drops": 0,
+          "age_ms_last": 1058.2264,
+          "age_ms_mean": 877.8305949152549,
+          "policy": "drop_oldest",
+          "max_age_ms": null
+        },
+        "run": 4,
+        "order": 40
+      },
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": null,
+        "frames_consumed": 177,
+        "consumed_fps": 29.5,
+        "captured_fps": 60.166666666666664,
+        "age_ms_p50": 1062.3231,
+        "age_ms_p95": 1076.8481000000002,
+        "age_ms_max": 1083.2246,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 1.4283240997229918,
+        "grab_ms_mean": 1.5194722991383511,
+        "fallback_allocations": 339,
+        "page_faults": 518878,
+        "queued_frames_peak": 64,
+        "queued_mb_mean": 310.22835664970927,
+        "private_mb_peak_over_start": 386.55078125,
+        "stream_stats": {
+          "frames_captured": 361,
+          "frames_duplicated": 0,
+          "frames_consumed": 177,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 120,
+          "frames_expired": 0,
+          "capture_drops": 0,
+          "age_ms_last": 1070.8509000000001,
+          "age_ms_mean": 876.7765836158189,
+          "policy": "drop_oldest",
+          "max_age_ms": null
+        },
+        "run": 1,
+        "order": 42
+      },
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": null,
+        "frames_consumed": 177,
+        "consumed_fps": 29.5,
+        "captured_fps": 60.0,
+        "age_ms_p50": 1063.6215,
+        "age_ms_p95": 1078.7078000000001,
+        "age_ms_max": 1084.2368000000001,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 1.6059027777777777,
+        "grab_ms_mean": 1.4038458333238346,
+        "fallback_allocations": 338,
+        "page_faults": 517356,
+        "queued_frames_peak": 64,
+        "queued_mb_mean": 310.5556033435881,
+        "private_mb_peak_over_start": 386.55859375,
+        "stream_stats": {
+          "frames_captured": 360,
+          "frames_duplicated": 0,
+          "frames_consumed": 177,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 119,
+          "frames_expired": 0,
+          "capture_drops": 0,
+          "age_ms_last": 1073.3220000000001,
+          "age_ms_mean": 876.6036610169494,
+          "policy": "drop_oldest",
+          "max_age_ms": null
+        },
+        "run": 2,
+        "order": 56
+      },
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": null,
+        "frames_consumed": 177,
+        "consumed_fps": 29.5,
+        "captured_fps": 60.0,
+        "age_ms_p50": 1063.1229,
+        "age_ms_p95": 1077.6896000000002,
+        "age_ms_max": 1083.1301,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 1.3888888888888888,
+        "grab_ms_mean": 1.4741249999764883,
+        "fallback_allocations": 338,
+        "page_faults": 517334,
+        "queued_frames_peak": 64,
+        "queued_mb_mean": 310.0216238839286,
+        "private_mb_peak_over_start": 386.48828125,
+        "stream_stats": {
+          "frames_captured": 360,
+          "frames_duplicated": 0,
+          "frames_consumed": 177,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 119,
+          "frames_expired": 0,
+          "capture_drops": 0,
+          "age_ms_last": 1072.4272,
+          "age_ms_mean": 875.4442248587576,
+          "policy": "drop_oldest",
+          "max_age_ms": null
+        },
+        "run": 3,
+        "order": 58
+      },
+      {
+        "policy": "drop_oldest",
+        "max_age_ms": null,
+        "frames_consumed": 177,
+        "consumed_fps": 29.5,
+        "captured_fps": 59.666666666666664,
+        "age_ms_p50": 1064.6314,
+        "age_ms_p95": 1105.1695,
+        "age_ms_max": 1111.9542000000001,
+        "older_than_previous": 0,
+        "same_as_previous": 0,
+        "reader_timeouts": 0,
+        "producer_cpu_ms_per_frame": 1.7458100558659218,
+        "grab_ms_mean": 1.5441874301582912,
+        "fallback_allocations": 336,
+        "page_faults": 514311,
+        "queued_frames_peak": 64,
+        "queued_mb_mean": 310.93077820616884,
+        "private_mb_peak_over_start": 380.609375,
+        "stream_stats": {
+          "frames_captured": 358,
+          "frames_duplicated": 0,
+          "frames_consumed": 177,
+          "stale_frames_replaced": 0,
+          "consumer_drops": 117,
+          "frames_expired": 0,
+          "capture_drops": 2,
+          "age_ms_last": 1076.7091,
+          "age_ms_mean": 882.4925836158193,
+          "policy": "drop_oldest",
+          "max_age_ms": null
+        },
+        "run": 5,
+        "order": 62
+      }
+    ]
+  }
+}

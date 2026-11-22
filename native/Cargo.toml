@@ -8,7 +8,10 @@ name = "rapidshot-native"
 # 0.2.1 changes no extension code: the wheel also carries latency_source.exe
 # (src/bin/latency_source.rs), the controlled test source `rapidshot benchmark`
 # times every capture library against, so a tester needs no Rust toolchain.
-version = "0.4.1"
+#
+# 0.5.0: GpuConverter12 releases the GIL while it waits on the GPU, and takes
+# dtype="nv12_texture" (NV12 into a texture an encoder reads).
+version = "0.5.0"
 edition = "2021"
 # `as_chunks` (used by the scalar kernels in luma.rs / swizzle.rs)
 # stabilised in 1.88. Clippy since 1.98 rejects the `chunks_exact`

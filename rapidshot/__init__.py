@@ -1131,5 +1131,5 @@ def get_version_info() -> Dict[str, Any]:
 # there for why it is not written out again here.
 from rapidshot._version import __version__
 __author__ = "Rapidshot Contributors"
-__description__ = "High-performance screencapture library for Windows using Desktop Duplication API"
+__description__ = "Windows screen and window capture for Python: NumPy frames, or model-ready FP16 GPU tensors for PyTorch, CuPy and DLPack without a CPU round trip"
 

@@ -10,6 +10,203 @@ each release can be traced back to the plan it implements.
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-11-22: Continuous capture keeps the newest frame, and NV12 goes straight to an encoder's texture, with rapidshot-native 0.5.0
+
+Published together with `rapidshot-native` 0.5.0, which the `native`,
+`benchmark` and `all` extras now require: `GpuConverter(output="texture")`
+needs it, and it is the build that stops `GpuConverter` holding the GIL
+through its GPU waits. Tag `native-v0.5.0` first (`RELEASING.md`).
+
+### Changed — continuous capture keeps only the newest frame by default
+
+- **`start()` now defaults to `policy="latest"`**, and to `"drop_oldest"`, the
+  old behaviour, only with `video_mode=True`, which repeats frames to hold a
+  rate and which `"latest"` refuses. So `start(video_mode=True)`, as the
+  examples call it, behaves exactly as before. What changes for everything
+  else: `get_latest_frame()` waits for a frame newer than the last one it
+  returned instead of handing back older queued frames, newest first, and
+  `max_buffer_len` no longer applies. The DXcam shim passes no policy, so it
+  now matches DXcam, whose `get_latest_frame()` also waits for a newer frame.
+  Code that read a backlog through `get_latest_frame()` should pass
+  `policy="drop_oldest"`, or read in order with `get_next_frame()`.
+- **Why, measured live** (below): behind a 60 fps model at 2560x1600, the old
+  default held 764 MB of queued frames, spent 21-31% more capture CPU a frame
+  allocating them, captured 15-19% fewer of the screen's frames and so
+  delivered pixels 2-3 ms older; after a 250 ms pause it handed back frames up
+  to 502 ms old, out of order.
+
+### Added — a freshness contract for continuous capture (ROADMAP § 7.4c)
+
+- **`start(policy=...)`** says what happens to frames the consumer has not
+  taken. `"latest"` (the default, above) keeps one frame and replaces it, so
+  `get_latest_frame()` never
+  returns a frame older than the last one it returned. At 240 fps into 60 fps
+  inference that is the difference between the newest frame and a stale
+  backlog. `"block"` drops nothing that was queued and holds capture back
+  instead. `policy="all"` is refused with the reason: without a bound it runs
+  out of memory behind a slow consumer, and with one it is `"block"`.
+- **`start(max_age_ms=...)`**: the readers skip any frame capture has not seen
+  on screen within this time, and wait for a fresh one. A new frame counts from
+  its capture, and each poll that finds the screen unchanged renews the newest.
+  A first version measured from the present time instead, and would have
+  refused a still screen's only frame for as long as the screen stayed still,
+  although that frame is exactly what the screen shows
+  (`test_an_idle_screen_keeps_its_frame_fresh`). The reported ages still run
+  from Windows' present time (Desktop Duplication's `LastPresentTime`, WGC's
+  arrival time).
+- **`get_next_frame()` / `get_next_frame_buffer()`** read the queue oldest
+  first, for recording with `policy="block"`.
+- **`stream_stats`** counts, separately, `frames_captured`,
+  `frames_duplicated`, `frames_consumed`, `stale_frames_replaced`,
+  `consumer_drops`, `frames_expired` and `capture_drops` (screen updates
+  Windows merged into a later frame: DXGI's `AccumulatedFrames`, WGC's skipped
+  count), plus `age_ms_last` and `age_ms_mean` for the frames handed out.
+- **`"drop_oldest"`, kept for `video_mode` and on request:**
+  `get_latest_frame()` takes the newest frame and leaves older ones queued, so
+  a consumer faster than the screen then receives older frames than the one it
+  just had -- in reverse order. That, measured, is why it is no longer the
+  default.
+- **Measured, `benchmarks/freshness_policies.py`**: RapidShot's capture
+  thread, timer, queue and readers against a simulated screen that presents at
+  a fixed rate and reports merged updates as DXGI does; RGB, 6 s per run, the
+  RTX 4060 laptop's CPU. Medians of 5 runs per case, every
+  run of every case in one shuffled order so neither position nor the run
+  before lines up with a policy (`benchmarks/freshness-policies-1080p.md`,
+  `-1600p.md`, seeds recorded). The min-max ranges of the two policies do not
+  overlap on any figure below except the 1080p pixel age, where they do and
+  the difference is noise. `latest` makes nothing faster per se.
+  What it removes is the default queue's cost behind a slow consumer: at
+  2560x1600, a 60 fps model on a 240 Hz screen held **764 MB** of queued
+  frames under `drop_oldest` and none under `latest`, and capture spent
+  **1.66 against 0.66 ms** a frame, because once the two pooled output buffers
+  are queued every frame is a fresh allocation (4.1 million page faults in
+  6 s against 6,000). Pixel age at handover moved little (p50 6.0 against
+  4.7 ms at 1600p, 4.7 against 4.5 ms at 1080p). For a consumer that pauses
+  250 ms every second, `drop_oldest` handed out frames up to 454 ms old (p95
+  317 ms), 115 of them older than the frame before; `latest` kept p95 at
+  8.7 ms with none out of order. `max_age_ms=20` brought `drop_oldest`'s p95
+  down to 8.8 ms by discarding 112 frames, but kept its memory. `block`
+  behind a 30 fps writer on a 60 Hz screen captured 40 frames a second
+  instead of 60 and handed out older frames (p50 1.5 s against 1.1 s): it
+  moves the loss, it does not reduce it.
+- **Measured live, `freshness_policies.py --live`**: a real camera on the RTX
+  4060 laptop's 2560x1600, 165 Hz panel under the frame-ID test source, RGB,
+  pixel age from each frame's own `Present()`, medians of 5 shuffled runs per
+  case, Desktop Duplication (50 runs) and WGC (30). The source held 159-165
+  presents a second in every run and every frame's marker decoded. Behind a
+  60 fps model, `latest` against `drop_oldest`: 1 MB against 764 MB held;
+  capture CPU 4.55 against 5.50 ms a frame (WGC 3.62 against 4.75); 132
+  against 112 frames captured a second (WGC 144 against 117), because the
+  capture thread no longer allocates; and so pixel age p50 26.0 against
+  28.4 ms (WGC 26.3 against 29.7). No min-max ranges overlap. A consumer that
+  pauses 250 ms a second got frames up to 502 ms old, 117 of them older than
+  the one before, from `drop_oldest`; p95 23.9 ms and none out of order from
+  `latest`. On a screen presenting twice a second, `max_age_ms=20` expired
+  nothing and every update arrived: real `AcquireNextFrame` timeouts confirm
+  the frame as the simulated ones did.
+- Verified by `tests/test_stream_policy.py`, headless, with the clock patched:
+  each of the queue limit, the hold-back, the age check and the idle
+  confirmation was removed in turn and the tests failed;
+  `tests/test_readme_examples.py` runs the README's block against a real
+  camera.
+
+### Fixed — `GpuConverter` held the GIL through its GPU waits (rapidshot-native)
+
+- **`GpuConverter.process()` and `GpuTensor.numpy()` now release the GIL while
+  the GPU works.** They held it for the whole wait: on an Intel UHD at
+  2560x1600 NV12, a second Python thread made 36% of its idle progress during
+  `process()` (33% with readback), and in a capture thread beside an encoder
+  thread, NVENC's 4.2 ms call took 13.5 ms. Any multi-threaded caller paid it
+  -- `TensorStream` beside a model, a web server, an encoder. Now 100% and
+  96%. `Converter12` gained `process_deferred` / `read_back_deferred`, which
+  submit and hand back an event; the binding drops its lock, then waits with
+  the interpreter released (the pattern `GpuPreprocessor12` adopted in
+  2026-08 for the same reason). `tests/test_converter_releases_gil.py` fails
+  against a build that waits holding the GIL (34%) and passes against this
+  one. The texture output's readback (below) waits the same way.
+
+### Added — NV12 straight into a texture an encoder reads (rapidshot-native)
+
+- **`GpuConverter(frame, size, pixel_format="nv12", output="texture")`**
+  writes NV12 into a `DXGI_FORMAT_NV12` texture on the capture device, by the
+  core's texture kernel, instead of a linear buffer. The bytes are the
+  buffer's (`tests/test_gpu_converter_texture.py`, full frame and scaled, two
+  matrices); `GpuTensor.numpy()` returns the same array; the new
+  `output_texture_address` hands the texture to native code. The CUDA exports
+  refuse it (no linear array to import), and it is refused for anything but
+  NV12. `output="buffer"` stays the default.
+- **Why, measured** on an Intel UHD at 2560x1600: `process()` 2.9 against
+  7.5 ms p50 on live frames -- the buffer kernel is the slow one, 9.69 ms on
+  a held frame, more than FP32 NCHW writing 8x the bytes (3.53 ms); why is
+  not yet established. In the encode pipeline (`benchmarks/encode_latency.py`,
+  80 shuffled runs, `encode-latency-nv12-texture.md`), NVENC with the
+  pipelined handoff went from 28.1-28.8 to **25.7-26.5 ms** screen to packet
+  and 77-79 to 80 fps; Quick Sync, which shares the Intel GPU with the
+  conversion, from 42.4 to 38.0 ms and 52 to 65 fps pipelined, 35.7 to
+  32.6 ms reused. No min-max ranges overlap.
+- **Texture readback keeps its copy queue.** It made a queue, allocator, list
+  and fence per call, which cost 12.05 ms p50 per 2560x1600 readback; kept
+  and reused, 6.5 ms, and it now waits with the GIL released like the buffer
+  readback. Still slower than the buffer's 3.0 ms, for a reason not yet
+  established (a direct queue measured the same). The readback is the PyAV
+  path's cost; an encoder reading the texture in place skips it.
+
+### Added — `mf_encode`, in-place hardware encoding measured (ROADMAP § 7.3a step 4)
+
+- **`native/core/src/bin/mf_encode.rs`** encodes captured frames with the
+  hardware H.264 Media Foundation encoder on the capture adapter, fed the
+  converter's NV12 texture directly (no readback, no CPU copy), and writes
+  the stream and per-frame QPC times for the harness to judge. Correct (every
+  frame decoded and identified, 36.9 dB against its input) and slower than
+  the readback path: 45.2 ms screen to packet on Machine B's Intel UHD,
+  because its MFT needs 14.9 ms a frame at 2560x1600 whatever it is told
+  (`benchmarks/mf-encode-inplace-qsv.md`). Two things it took to get there,
+  both documented in the source: an asynchronous MFT refuses every call until
+  `MF_TRANSFORM_ASYNC_UNLOCK` is set, including the D3D manager message; and
+  in windows-rs 0.62 `ICodecAPI::SetValue` needs the `Win32_System_Ole`
+  feature and a raw `VARIANT`. The core crate gains the Media Foundation and
+  COM features for it; nothing in the library uses them yet.
+
+### Added — hardware-encoding measurements (ROADMAP § 7.3a)
+
+- **`benchmarks/encode_latency.py`**: a real camera under the frame-ID test
+  source into FFmpeg encoders through PyAV, timed from the source's
+  `Present()` to the encoded packet, every timed frame identified by decoding
+  the stream and reading its ID back, fidelity as luma PSNR against what the
+  encoder was given, each encoder refused if FFmpeg left a low-latency option
+  unused. Results in `benchmarks/encode-latency-baseline.md` and
+  `encode-latency-handoff.md`; findings in ROADMAP § 7.3a.
+
+### Fixed — the pixel-age clock and the planner's test source, found measuring the above
+
+- **`PresentLog.refresh()` was quadratic.** It split one line off the buffer
+  at a time, copying the rest each time: 4.3 s to catch up on 24,000 lines
+  (2.4 min at 165 Hz), all of it holding the GIL. A reader opened late in a
+  long run -- every `rapidshot benchmark` worker opens its own -- paid that
+  inside its timed window, starving any capture thread beside it. One split
+  now: 0.031 s for the same log
+  (`test_present_log_catches_up_on_a_long_log_in_one_pass`, which fails
+  against the old code).
+- **The capture planner's test source froze after 146 s.** It prints a rate
+  line every 2 s from its present loop, and `_Source` stopped reading stdout
+  after "ready": the 4 KB pipe filled and the next print blocked the loop.
+  Two sources stopped presenting at exactly 146.4 s. Calibration runs for
+  seconds, so the planner itself never reached it; `_Source` now drains
+  stdout for as long as the source runs.
+
+### Changed — package metadata and documentation
+
+- **The PyPI description says what RapidShot is now**: Windows screen and
+  window capture to NumPy frames or model-ready FP16 GPU tensors, rather than
+  the 1.x "screencapture library using Desktop Duplication API". Keywords,
+  classifiers and project links (changelog, discussions) are updated to match.
+- **The README asks for hardware reports**: a Help wanted section for AMD GPUs,
+  HDR displays and unusual setups, pointing at a Benchmark results discussion;
+  the benchmark issue template now points clean results there.
+- **ROADMAP § 1 and the release status are current**: 2.7.1-2.7.4 are listed,
+  `v2.7.0` is recorded as never tagged, and the 2.7 evidence that was run is
+  separated from what is still open.
+
 ## [2.7.4] - 2026-11-12: HDR switches no longer stop grab_frame() on NVIDIA, with rapidshot-native 0.4.1
 
 Published together with `rapidshot-native` 0.4.1, which carries the same

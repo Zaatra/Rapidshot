@@ -32,11 +32,13 @@ the screen's full refresh rate, for 4-14% of DXcam's CPU**. And you do not need
 the GPU path to come out ahead: plain `grab()` into NumPy also beat DXcam's
 default backend on frames, pixel age and CPU on all four.
 
-![Pixel age and CPU per frame on four configurations](images/benchmark-2.7.svg)
+![Pixel age and CPU per frame on four configurations](https://raw.githubusercontent.com/Zaatra/Rapidshot/main/images/benchmark-2.7.svg)
 
 The full tables, memory included, are in [Performance](#performance), and
 [`rapidshot benchmark`](#run-it-on-your-machine) runs the same harness on your
-machine.
+machine. **No AMD GPU has run it yet.** If you have one, or an HDR display, or
+any setup unlike the four above, [your numbers are the most useful thing you
+can send](#help-wanted-amd-gpus-hdr-displays-and-unusual-setups).
 
 ## Why RapidShot
 
@@ -144,7 +146,7 @@ Clone if you need one to outlive the next frame.
 | PyTorch | `tensor.to_torch()` | No | **Yes** |
 | CuPy | `tensor.to_cupy()` | No | **Yes** |
 | Any DLPack framework | `tensor.to_dlpack()` | No | **Yes** |
-| Encoder input (NV12 / P010) | `GpuConverter(pixel_format=…)` | No | **Yes** |
+| Encoder input (NV12 / P010) | `GpuConverter(pixel_format=…)`, `output="texture"` for NV12 | No | **Yes** |
 | Hybrid GPU (Optimus) | `GpuConverter` + `TensorTransfer` | No | **Yes** |
 
 ## Installation
@@ -164,11 +166,14 @@ native extension:
 pip install "rapidshot[native]"
 ```
 
-This installs **`rapidshot-native >= 0.3.1`**: 0.2.0 is the minimum that exports
+This installs **`rapidshot-native >= 0.5.0`**: 0.2.0 is the minimum that exports
 `GpuConverter` and `TensorTransfer`, 0.3.0 adds the Windows.Graphics.Capture
-session behind `backend="wgc"` and window capture, and 0.3.1 makes NV12/P010
-chroma left-sited, as H.264 and HEVC expect. With an older extension, RapidShot
-names the version a feature needs instead of failing obscurely:
+session behind `backend="wgc"` and window capture, 0.3.1 makes NV12/P010
+chroma left-sited, as H.264 and HEVC expect, 0.4.0 tone-maps HDR into NV12,
+and 0.5.0 adds NV12 written straight into a texture for a hardware encoder and
+stops `GpuConverter` blocking other Python threads while the GPU works. With
+an older extension, RapidShot names the version a feature needs instead of
+failing obscurely:
 
 ```text
 RuntimeError: GpuConverter12 requires rapidshot-native >= 0.2.0; the installed
@@ -235,6 +240,59 @@ for _ in range(120):
     ...
 camera.stop()
 ```
+
+`target_fps` describes the capture side. What a model or an agent cares about
+is how old its frame is, so say that instead:
+
+```python
+camera.start(target_fps=240, policy="latest", max_age_ms=12)
+frame = camera.get_latest_frame()   # the newest frame, never older than 12 ms
+print(camera.stream_stats)          # what was replaced, dropped or too old
+```
+
+| `policy=` | Frames waiting for the consumer | Read with |
+| --- | --- | --- |
+| `"latest"` (default) | One, replaced by each new frame, so nothing stale queues up | `get_latest_frame()` |
+| `"drop_oldest"` (default with `video_mode=True`) | Up to `max_buffer_len`; when full, the oldest is dropped | `get_latest_frame()`, or `get_next_frame()` in order |
+| `"block"` | Up to `max_buffer_len`, none dropped: capture waits for the consumer | `get_next_frame()`, in order |
+
+`max_age_ms` makes the readers skip any frame capture has not seen on screen
+within that time, and wait for a fresh one. A still screen's frame stays
+usable, since every poll that finds nothing new confirms it; what expires is a
+frame left behind while capture was stalled or held back. `stream_stats`
+keeps the reasons apart: `stale_frames_replaced`, `consumer_drops`,
+`frames_expired`, and `capture_drops` (screen updates Windows merged into a
+later frame), plus the age of the frames handed out.
+
+**`policy="latest"` is the default since 2.8**, because it is what anything
+live wants. It stops a slow consumer from paying for frames it will never
+use, and a paused one from waking up to a backlog. `video_mode=True` keeps
+`drop_oldest`, which repeating frames to hold a rate needs. Measured live with
+[`benchmarks/freshness_policies.py --live`](https://github.com/Zaatra/Rapidshot/blob/main/benchmarks/freshness_policies.py):
+a real camera on a 2560x1600, 165 Hz display under the frame-ID test source,
+RGB output, pixel age from each frame's own `Present()`. Medians of 5 runs per
+case in shuffled order, the RTX 4060 laptop
+([DXGI](https://github.com/Zaatra/Rapidshot/blob/main/benchmarks/freshness-policies-live-dxgi.md),
+[WGC](https://github.com/Zaatra/Rapidshot/blob/main/benchmarks/freshness-policies-live-wgc.md)):
+
+| Consumer | `drop_oldest` (the default before 2.8) | `latest` (the default now) |
+| --- | --- | --- |
+| Model at 60 fps, Desktop Duplication | +764 MB, 5.50 ms capture CPU a frame, 112 frames captured a second, age p50 28.4 ms | +1 MB, **4.55 ms**, **132 fps**, **26.0 ms** |
+| Model at 60 fps, WGC | +765 MB, 4.75 ms, 117 fps, 29.7 ms | +0 MB, **3.62 ms**, **144 fps**, **26.3 ms** |
+| Agent that pauses 250 ms every second, Desktop Duplication | age p95 **352 ms**, max 502 ms, 117 frames older than the one before | age p95 23.9 ms, max 29.5 ms, none out of order |
+
+The old default, `drop_oldest`, holds up to `max_buffer_len` (64) converted
+frames behind a slow consumer, and once its two pooled buffers are out every
+new frame is a fresh allocation: 1.9 million page faults in 6 s against 171. `latest` holds
+one and recycles it, and the capture time it frees goes into capturing more
+of the screen's frames, which is why its pixels are also 2-3 ms fresher here.
+`block` only moves where frames are lost: behind a 30 fps writer it captured
+40 frames a second where `drop_oldest` captured 111 and dropped the surplus,
+and the frames it handed over were older (p50 2.2 s against 0.6 s). A
+simulated-screen run of the same harness, which isolates the queue from
+capture cost, gives the same picture
+([1080p](https://github.com/Zaatra/Rapidshot/blob/main/benchmarks/freshness-policies-1080p.md),
+[1600p](https://github.com/Zaatra/Rapidshot/blob/main/benchmarks/freshness-policies-1600p.md)).
 
 One Desktop Duplication camera per output: DXGI allows one duplication per
 display per process, so create several for several monitors.
@@ -366,6 +424,7 @@ time a frame waited for you.
 | `crop` | `(left, top, right, bottom)`, frame coordinates, applied before resize |
 | `batch` / `regions=` | multi-ROI, **one dispatch**, returns `(N, …)` |
 | `pixel_format` | `"nv12"` / `"p010"` for encoder input |
+| `output` | `"buffer"` (default) or `"texture"`: NV12 written into a texture a hardware encoder reads |
 
 Multi-ROI in a single dispatch:
 
@@ -389,7 +448,21 @@ against 8.29 MB for a 1080p frame or 16.38 MB at 2560×1600.
 **Encoder input.** `pixel_format="nv12"` (8-bit) and `"p010"` (10-bit) write
 BT.709 4:2:0 for a hardware video encoder, with left-sited chroma as H.264 and
 HEVC expect, checked against a CPU reference and the published inverse
-matrices.
+matrices. `output="texture"` writes NV12 into a `DXGI_FORMAT_NV12` texture on
+the capture device instead of a buffer: the same bytes, by a kernel measured 5x
+faster on an Intel UHD at 2560x1600 (2.9 against 7.5 ms), and
+`converter.output_texture_address` hands it to native code.
+
+**Hardware encoding is measured, not yet shipped.** RapidShot has no
+`Encoder` class yet. Feeding its NV12 to FFmpeg's encoders through PyAV
+(installed separately; its FFmpeg build includes GPL x264/x265, which is why
+RapidShot does not depend on it) has been measured on one machine, the RTX 4060
+laptop in hybrid mode, every encoded frame decoded and checked: screen to
+encoded packet in **25.7 ms at 80 fps** through NVENC and 32.6-38 ms through
+Intel Quick Sync, and 45.2 ms through Windows' own Media Foundation encoder
+fed the texture in place. No AMD encoder has been run. The harness is
+[`benchmarks/encode_latency.py`](https://github.com/Zaatra/Rapidshot/blob/main/benchmarks/encode_latency.py) and the
+numbers, with what was tried and why, are in ROADMAP § 7.3a.
 
 ## Hybrid GPU laptops
 
@@ -448,7 +521,7 @@ Display > Graphics. Found on a ThinkPad E580 (Intel UHD 620 + Radeon 500).
 Every figure here was recorded on 11-12 November 2026 by `rapidshot benchmark
 --full` with RapidShot 2.7.1 and a pre-release build of `rapidshot-native`
 0.4.0, whose additions none of the measured paths use. Each machine's report
-is in [`benchmarks/`](benchmarks/) as Markdown and as JSON with every pass.
+is in [`benchmarks/`](https://github.com/Zaatra/Rapidshot/tree/main/benchmarks) as Markdown and as JSON with every pass.
 
 **How it measures.** A test source draws a frame ID into the image and records
 the time of every `Present()`. Each library then turns the desktop into the
@@ -463,7 +536,7 @@ the test source's own rate in at least one pass, so it is a floor.
 ### Screen to tensor
 
 **Intel desktop**: Core Ultra 5 235, Intel graphics only, 1920×1080 at 100 Hz
-([report](benchmarks/rapidshot-benchmark-machineA-2026-11-11.md)). No CUDA, so
+([report](https://github.com/Zaatra/Rapidshot/blob/main/benchmarks/rapidshot-benchmark-machineA-2026-11-11.md)). No CUDA, so
 the tensor ends in system memory, or on the capture GPU through Direct3D 12 for
 `GpuConverter`.
 
@@ -479,7 +552,7 @@ the tensor ends in system memory, or on the capture GPU through Direct3D 12 for
 
 **Lunar Lake laptop**: HP OmniBook X Flip 16, Core Ultra 5 226V, Arc 130V,
 1920×1200 at 60 Hz, on charger in Best performance
-([report](benchmarks/rapidshot-benchmark-lunarlake-2026-11-11.md)). No CUDA.
+([report](https://github.com/Zaatra/Rapidshot/blob/main/benchmarks/rapidshot-benchmark-lunarlake-2026-11-11.md)). No CUDA.
 
 | | unique frames/s | pixel age p50 / p95 | CPU per frame |
 | --- | ---: | ---: | ---: |
@@ -496,7 +569,7 @@ pixels were still 10.3 ms older than `GpuConverter`'s, at twelve times the CPU.
 
 **RTX 4060 laptop, Optimus**: Acer Predator PHN16-72, i9-14900HX; the Intel UHD
 drives the 2560×1600 165 Hz screen and CUDA runs on the RTX
-([report](benchmarks/rapidshot-benchmark-machineB-optimus-2026-11-12.md)).
+([report](https://github.com/Zaatra/Rapidshot/blob/main/benchmarks/rapidshot-benchmark-machineB-optimus-2026-11-12.md)).
 
 | | unique frames/s | pixel age p50 / p95 | CPU per frame |
 | --- | ---: | ---: | ---: |
@@ -512,7 +585,7 @@ drives the 2560×1600 165 Hz screen and CUDA runs on the RTX
 
 **RTX 4060 laptop, NVIDIA only**: the same laptop with its MUX giving the
 screen to the RTX, so capture and CUDA share one GPU
-([report](benchmarks/rapidshot-benchmark-machineB-nvidia-only-2026-11-12.md)).
+([report](https://github.com/Zaatra/Rapidshot/blob/main/benchmarks/rapidshot-benchmark-machineB-nvidia-only-2026-11-12.md)).
 
 | | unique frames/s | pixel age p50 / p95 | CPU per frame |
 | --- | ---: | ---: | ---: |
@@ -570,8 +643,8 @@ a table, not the milliseconds with the tables above.
 1.55× and 1.34× DXcam's frames through the model, detections 7-8 ms sooner,
 with a third less CPU; every path found the same scene (8.4-9.7 detections a
 frame). Full tables:
-[`section7-inference-machineB-hybrid-2.6.1.json`](benchmarks/section7-inference-machineB-hybrid-2.6.1.json),
-[`section7-inference-machineB-dgpu-2.6.0.json`](benchmarks/section7-inference-machineB-dgpu-2.6.0.json).
+[`section7-inference-machineB-hybrid-2.6.1.json`](https://github.com/Zaatra/Rapidshot/blob/main/benchmarks/section7-inference-machineB-hybrid-2.6.1.json),
+[`section7-inference-machineB-dgpu-2.6.0.json`](https://github.com/Zaatra/Rapidshot/blob/main/benchmarks/section7-inference-machineB-dgpu-2.6.0.json).
 
 ### Run it on your machine
 
@@ -586,9 +659,11 @@ About five minutes; a test pattern fills the screen. With an NVIDIA GPU, add
 `cupy-cuda12x` or `cupy-cuda13x` so the tensor is finished on CUDA as above.
 `--full` adds CPU per tensor and memory (about ten minutes), and `--check` shows
 what would run without running it. It writes a Markdown report and a JSON file
-with no hostname, username or device IDs in them; please
-[open a benchmark issue](https://github.com/Zaatra/Rapidshot/issues/new?template=benchmark.md)
-with both. An AMD result would be especially welcome.
+with no hostname, username or device IDs in them; please post both in the
+[Benchmark results discussion](https://github.com/Zaatra/Rapidshot/discussions/categories/show-and-tell),
+or [open a benchmark issue](https://github.com/Zaatra/Rapidshot/issues/new?template=benchmark.md)
+if something failed. An AMD result would be especially welcome; see
+[Help wanted](#help-wanted-amd-gpus-hdr-displays-and-unusual-setups).
 
 ### What this does not show
 
@@ -603,7 +678,7 @@ with both. An AMD result would be especially welcome.
   milliseconds do not. The tables above use the newer source, which queues one.
 - **Older capture-only comparisons** (RapidShot 2.1-2.4, a call-rate loop
   rather than pixel age) are kept as history in
-  [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md), with their methodology.
+  [`docs/BENCHMARKS.md`](https://github.com/Zaatra/Rapidshot/blob/main/docs/BENCHMARKS.md), with their methodology.
 
 ## Correctness guarantees
 
@@ -652,6 +727,41 @@ run, which is a different claim:
 | AMD GPU capturing | **Not run.** The BGRA swizzle rule is confirmed on Intel and NVIDIA and follows from the DXGI format, but it is the one rule a silent mismatch would corrupt rather than crash |
 | HDR panel with full Windows HDR support | **One machine**: Lunar Lake (Arc 130V) on a Samsung TU7100 4K TV over HDMI 2.0, FP16 scRGB, 2026-11-12; see below. Not yet on NVIDIA or AMD, or on a 10-bit HDR surface |
 | Headless / virtual display (IDD) | Diagnostics exist; capture on one has not been run |
+| Hardware encoding of RapidShot's NV12 | **One machine**: the RTX 4060 laptop, hybrid. NVENC and Intel Quick Sync through FFmpeg, and Intel Quick Sync through Media Foundation, each stream decoded and checked. NVIDIA's Media Foundation encoder refused to start in hybrid mode. Not run: AMD (AMF), Intel-only or NVIDIA-only machines |
+
+### Help wanted: AMD GPUs, HDR displays and unusual setups
+
+Every number in this README comes from Intel and NVIDIA hardware belonging to
+one developer. Two gaps can only be closed by people with other machines:
+
+- **AMD GPUs. No AMD GPU has captured with RapidShot yet.** Nothing in the
+  code branches on vendor, but the BGRA swizzle rule is the one place where a
+  mismatch would quietly produce wrong colours instead of an error. The
+  benchmark checks every path against an independent reference before timing
+  it, so a wrong colour shows up as a failed check: exactly what is worth
+  knowing.
+- **HDR displays. HDR has been checked on one panel** (Intel Lunar Lake on a
+  Samsung TV; see [Known limitations](#known-limitations)). A report from an
+  NVIDIA or AMD GPU, a desktop that duplicates as 10-bit, another SDR white
+  level, or Windows.Graphics.Capture with HDR on would each be a first.
+
+The same goes for anything else unusual: an older Windows 10 build, a desktop
+with two GPUs, a virtual display, a very high refresh rate. With the setup you
+want to report, run:
+
+```bash
+pip install "rapidshot[benchmark]"
+rapidshot benchmark
+python -c "import rapidshot; print(rapidshot.diagnose())"
+```
+
+and post the benchmark's Markdown report and JSON, plus the `diagnose()`
+output, in the
+[Benchmark results discussion](https://github.com/Zaatra/Rapidshot/discussions/categories/show-and-tell).
+For HDR, say whether Windows HDR was on and whether the capture looked like
+the screen. If a path fails or a colour check does not pass,
+[open a benchmark issue](https://github.com/Zaatra/Rapidshot/issues/new?template=benchmark.md)
+instead, so it can be tracked as a bug.
 
 ## Known limitations
 
@@ -740,6 +850,7 @@ From a shell, `rapidshot diagnose` prints the same report.
 | `RapidShotProtectedContentError` | HDCP/DRM content; the OS blanks the region. |
 | Capture stops after a resolution change | Handled automatically; see `on_output_change`. |
 | Nothing captures at all | No desktop session (a CI runner, a service, an RDP session with no console). |
+| A Media Foundation encoder (FFmpeg's `h264_mf`) fails to open after `import rapidshot` | `comtypes` makes the importing thread a single-threaded COM apartment, which Media Foundation refuses ("COM must not be in STA mode"). Set `sys.coinit_flags = 0` before the first import, or run the encoder on a thread of its own. |
 
 ## Advanced: native interop
 
@@ -763,6 +874,13 @@ worked, commented versions. You should not need any of this to use
 
 ## What's new
 
+- **2.8** (with rapidshot-native 0.5.0): continuous capture keeps only the
+  newest frame by default (`policy="latest"`), with `max_age_ms`, in-order
+  reads through `get_next_frame()` and `stream_stats`; measured live, a slow
+  consumer no longer pays hundreds of MB and a fifth to a third more capture
+  CPU for frames it never reads. `GpuConverter(output="texture")` writes NV12 straight
+  into an encoder's texture, and `GpuConverter` no longer blocks other Python
+  threads while the GPU works.
 - **2.7.4** (with rapidshot-native 0.4.1): switching Windows HDR on or off no
   longer leaves `grab_frame()` returning `None` for good on NVIDIA; the frame
   captured during a switch keeps its own colour space.
@@ -780,7 +898,13 @@ worked, commented versions. You should not need any of this to use
   memory than 2.5 for `grab()`, and `rapidshot benchmark`.
 
 Every change, with the measurement behind it, is in
-[`CHANGELOG.md`](CHANGELOG.md).
+[`CHANGELOG.md`](https://github.com/Zaatra/Rapidshot/blob/main/CHANGELOG.md).
+
+**Upgrading from 2.7:** `camera.start()` without a `policy` now keeps one
+frame, so `get_latest_frame()` waits for a newer frame instead of handing back
+older queued ones; pass `policy="drop_oldest"` for the old queue, which
+`video_mode=True` still uses. `rapidshot[native]` now installs
+`rapidshot-native >= 0.5.0`. Nothing was renamed or removed.
 
 **Upgrading from 2.5:** `rapidshot-native >= 0.2.0` is required for the GPU
 tensor features (`pip install --upgrade "rapidshot[native]"`); `GpuConverter`
@@ -792,16 +916,16 @@ was renamed or removed.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). The one rule worth stating here:
+See [CONTRIBUTING.md](https://github.com/Zaatra/Rapidshot/blob/main/CONTRIBUTING.md). The one rule worth stating here:
 **a correctness check against an independent reference comes before any
 performance claim.** A fast wrong answer is worthless.
 
-Plans and their reasoning are in [ROADMAP.md](ROADMAP.md); older measurements
-and their methodology in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+Plans and their reasoning are in [ROADMAP.md](https://github.com/Zaatra/Rapidshot/blob/main/ROADMAP.md); older measurements
+and their methodology in [`docs/BENCHMARKS.md`](https://github.com/Zaatra/Rapidshot/blob/main/docs/BENCHMARKS.md).
 
 ## License
 
-MIT; see [LICENSE](LICENSE).
+MIT; see [LICENSE](https://github.com/Zaatra/Rapidshot/blob/main/LICENSE).
 
 ## Acknowledgments
 

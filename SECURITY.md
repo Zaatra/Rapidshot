@@ -4,7 +4,8 @@
 
 | Version | Supported |
 | --- | --- |
-| 2.0.x | Yes |
+| 2.8.x, with `rapidshot-native` 0.5.x | Yes |
+| 2.0 – 2.7 | No — please upgrade; nothing was renamed or removed, and `CHANGELOG.md` lists what changed |
 | 1.x | No — please upgrade; see the migration notes in `CHANGELOG.md` |
 
 ## Reporting a vulnerability
@@ -31,8 +32,8 @@ security-relevant surface is smaller than that sounds, and these are the parts
 worth reporting:
 
 - **Memory safety in the frame path.** Buffer sizing, pitch and region
-  arithmetic, and the pooled-buffer lifetime. `shot()` is known to overrun an
-  undersized destination — see below.
+  arithmetic, and the pooled-buffer lifetime, including `shot()`'s write into
+  a caller's buffer (see below for its 1.x history).
 - **The optional Rust extension.** It handles raw D3D11/D3D12 resource pointers
   supplied by the caller. Anything that turns a valid call into a bad pointer
   dereference is in scope.
@@ -41,11 +42,13 @@ worth reporting:
 - **Dependency and supply-chain issues** in what a `pip install rapidshot`
   actually pulls.
 
-## Known issue, already public
+## Fixed, for the record
 
-`shot()` writes BGRA regardless of `output_color` and does not bounds-check an
-undersized destination buffer. It is documented in `ROADMAP.md` § 10 and needs no
-new report. Prefer `grab()`, which validates buffer shape.
+In 1.x, `shot()` wrote BGRA regardless of `output_color` and did not
+bounds-check an undersized destination buffer. Since 2.0 it writes in the
+camera's `output_color` and raises `ValueError` for a destination that is too
+small or whose size it cannot know (a raw pointer without `buffer_size`). A
+path that still writes past a destination *is* worth reporting.
 
 ## What is not a vulnerability
 

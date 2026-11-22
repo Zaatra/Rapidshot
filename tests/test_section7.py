@@ -1,6 +1,7 @@
 """Headless section 7 tests. Never construct capture, Tk, CUDA or ORT devices."""
 import io
 import json
+import time
 from pathlib import Path
 import sys
 from fractions import Fraction
@@ -75,6 +76,34 @@ def test_present_log_handles_partial_records(tmp_path):
         assert reader.age(7, 130) == 30
         with pytest.raises(ValueError):
             reader.age(7, 99)
+    finally:
+        reader.close()
+
+
+def test_present_log_catches_up_on_a_long_log_in_one_pass(tmp_path):
+    """A reader opened late in a long run reads the whole log at once.
+
+    It split one line off at a time, copying the rest of the buffer each time:
+    4.3 s for 24,000 lines (2.4 min at 165 Hz), holding the GIL inside the
+    caller's timed window. Every complete line must land, and a partial last
+    line must wait for the rest of itself.
+    """
+    path = tmp_path / "presents.jsonl"
+    rows = [json.dumps({"event": "present", "id": i, "qpc_before": i * 10,
+                        "qpc_after": i * 10 + 1}) for i in range(1, 24001)]
+    tail = json.dumps({"event": "present", "id": 24001, "qpc_before": 240010,
+                       "qpc_after": 240011})
+    path.write_text("\n".join(rows) + "\n\n" + tail[:20])
+    reader = contract.PresentLog(path, 1000)
+    try:
+        started = time.perf_counter()
+        reader.refresh()
+        assert time.perf_counter() - started < 1.0
+        assert len(reader.frames) == 24000
+        assert reader.age(24001, 240020) is None
+        with path.open("a") as stream:
+            stream.write(tail[20:] + "\n")
+        assert reader.age(24001, 240020) == 10
     finally:
         reader.close()
 

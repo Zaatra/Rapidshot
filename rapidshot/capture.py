@@ -106,6 +106,79 @@ def cupy_available() -> bool:
     ``nvidia_gpu`` rather than as a general capability probe."""
     return _require_cupy() is not None
 
+
+#: What continuous mode does with frames the consumer has not taken yet; see
+#: :meth:`ScreenCapture.start`.
+QUEUE_POLICIES = ("drop_oldest", "latest", "block")
+
+#: The counters :attr:`ScreenCapture.stream_stats` reports, all reset by
+#: ``start()``. Kept apart because one number cannot carry them: a consumer
+#: that is too slow, a producer that is held back, and frames that arrive too
+#: old to use each call for a different fix.
+_STREAM_COUNTERS = (
+    "frames_captured",
+    "frames_duplicated",
+    "frames_consumed",
+    "stale_frames_replaced",
+    "consumer_drops",
+    "frames_expired",
+    "capture_drops",
+)
+
+
+def _new_stream_counters() -> dict:
+    counters = dict.fromkeys(_STREAM_COUNTERS, 0)
+    counters.update(_age_sum_ms=0.0, _age_count=0, _age_last_ms=None)
+    return counters
+
+
+def default_queue_policy(video_mode: bool) -> str:
+    """The policy ``start()`` uses when given none.
+
+    ``"latest"`` since 2.8: behind a consumer slower than the screen -- most
+    inference -- the old default held up to ``max_buffer_len`` converted
+    frames (764 MB at 2560x1600) and allocated one per capture, and after a
+    pause handed back frames hundreds of milliseconds old, newest first.
+    ``video_mode`` keeps ``"drop_oldest"``: it repeats frames to hold a rate,
+    which needs a queue, and ``"latest"`` refuses it.
+    """
+    return "drop_oldest" if video_mode else "latest"
+
+
+def _validate_queue_policy(policy, max_age_ms, video_mode) -> None:
+    if policy == "all":
+        # Named in ROADMAP § 7.4c. Unbounded, it would hold pool buffers until
+        # capture ran out of them; bounded, it is "block".
+        raise ValueError(
+            "policy='all' is not offered: a queue that keeps every frame "
+            "without bound runs out of memory behind a slow consumer. "
+            "policy='block' keeps every queued frame and holds capture back "
+            "instead.")
+    if policy not in QUEUE_POLICIES:
+        raise ValueError(
+            f"policy must be one of {', '.join(map(repr, QUEUE_POLICIES))}; "
+            f"got {policy!r}")
+    if max_age_ms is not None and (
+            isinstance(max_age_ms, bool)
+            or not isinstance(max_age_ms, (int, float))
+            or not max_age_ms > 0):
+        raise ValueError(
+            f"max_age_ms must be a positive number of milliseconds or None; "
+            f"got {max_age_ms!r}")
+    if policy == "latest" and video_mode:
+        raise ValueError(
+            "policy='latest' cannot be combined with video_mode: video_mode "
+            "repeats the last frame to hold a frame rate, and 'latest' hands "
+            "each frame out once.")
+
+
+def _int_attr(obj, name: str) -> int:
+    """``obj.name`` as an int, or 0 when it is missing or not a number."""
+    try:
+        return int(getattr(obj, name, 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
 class ScreenCapture:
     #: How long stop() waits for the capture thread before giving up on it.
     #: An abandoned thread still owns its timer handle and the frame queue, so
@@ -118,6 +191,13 @@ class ScreenCapture:
     _backend_name = "dxgi"
     _source = None
     _generation = 0
+
+    #: Continuous mode's queue policy and freshness bound, which ``start()``
+    #: sets. Class-level for the same reason as the attributes above: a camera
+    #: assembled without ``__init__`` behaves as ``start()`` did before either
+    #: existed.
+    _queue_policy = "drop_oldest"
+    _max_age_ms: Optional[float] = None
 
     def __init__(
         self,
@@ -262,8 +342,15 @@ class ScreenCapture:
         # get_latest_frame_buffer() hands frames out, and the producer must not
         # copy from one it no longer owns. Guarded by _capture_lock.
         self._last_dup_source = None
+        # When each queued frame's pixels were presented, in QPC ticks, keyed by
+        # id(): Windows' own present time where the backend reports one, the
+        # moment it was queued where it does not. Beside the deque rather than
+        # in it, so the queue still holds the frames themselves. An entry
+        # leaves with its frame. Guarded by _capture_lock.
+        self._queued_qpc: dict = {}
+        self._stream_counters = _new_stream_counters()
 
-        self._timer_handle = None 
+        self._timer_handle = None
         self._frame_count = 0 
         self._capture_start_time = 0 
         self.rotation_angle = 0
@@ -2074,6 +2161,8 @@ class ScreenCapture:
         target_fps: int = 60,
         video_mode: bool = False,
         delay: float = 0,
+        policy: Optional[str] = None,
+        max_age_ms: Optional[float] = None,
     ):
         """
         Start capturing frames.
@@ -2086,9 +2175,50 @@ class ScreenCapture:
                 are fine. Capture resources are rebuilt after the wait, since
                 the reason to delay is usually a display change that has to
                 settle first.
+            policy: What happens to frames the consumer has not taken yet.
+                None, the default, means ``"latest"`` -- or ``"drop_oldest"``
+                with ``video_mode``, which ``"latest"`` cannot be combined
+                with.
+
+                - ``"latest"`` (the default since 2.8): one frame waits, and a
+                  new one replaces it (``stale_frames_replaced``).
+                  :meth:`get_latest_frame` never returns a frame older than
+                  the last one it returned, and waits for the next -- as
+                  DXcam's does. For a model that should see the screen as it
+                  is now: at 240 fps into 60 fps inference, nothing stale
+                  queues up. Measured live behind a 60 fps model at
+                  2560x1600: 1 MB held instead of 764 MB, 17-24% less capture
+                  CPU a frame, and pixels 2-3 ms fresher
+                  (``benchmarks/freshness-policies-live-*.md``).
+                - ``"drop_oldest"`` (what ``start()`` did before 2.8, and
+                  still does with ``video_mode``): up to ``max_buffer_len``
+                  frames wait; when the queue is full the oldest is dropped
+                  (``consumer_drops``). :meth:`get_latest_frame` takes the
+                  newest and leaves the rest, so a consumer faster than the
+                  screen then works back through older frames, in reverse.
+                - ``"block"``: up to ``max_buffer_len`` frames wait, and none
+                  is ever dropped: while the queue is full the capture thread
+                  stops capturing. Screen updates in the meantime are merged
+                  by Windows into the next frame captured, and counted as
+                  ``capture_drops``. Read it in order with
+                  :meth:`get_next_frame`, for recording.
+            max_age_ms: Hand out no frame unless capture has seen the screen
+                showing it within this many milliseconds. A new frame counts
+                from its capture, and every poll that finds the screen
+                unchanged renews the newest, so a still screen's frame stays
+                usable however long ago it was presented. What expires is a
+                frame nobody has confirmed lately: capture held back
+                (``"block"``), stalled, or rebuilding, or an old frame left in
+                a ``"drop_oldest"`` queue. The readers skip those
+                (``frames_expired``) and wait for a fresh one, returning None
+                if none arrives in time. None, the default, hands out frames
+                of any age.
 
         Raises:
-            ValueError: If delay is negative or not a number.
+            ValueError: If delay is negative or not a number, if ``policy`` is
+                not one of :data:`QUEUE_POLICIES`, if ``max_age_ms`` is not a
+                positive number, or for ``policy="latest"`` with
+                ``video_mode``.
             RuntimeError: If a previous capture thread that ``stop()`` gave up
                 on is still running.
         """
@@ -2099,6 +2229,8 @@ class ScreenCapture:
         # the part that was wrong.
         if isinstance(delay, bool) or not isinstance(delay, (int, float)) or delay < 0:
             raise ValueError(f"delay must be a non-negative number of seconds, got {delay!r}")
+        policy = default_queue_policy(video_mode) if policy is None else policy
+        _validate_queue_policy(policy, max_age_ms, video_mode)
 
         if self.is_capturing:
             logger.debug("start() called while capture is already active; ignoring request.")
@@ -2134,9 +2266,13 @@ class ScreenCapture:
             self._region_set_by_user = True
         self._validate_region(region)
         self.is_capturing = True
-        
+        self._queue_policy = policy
+        self._max_age_ms = None if max_age_ms is None else float(max_age_ms)
+
         # Phase 4: Initialize deque for continuous mode
         self._pooled_frames_deque = collections.deque(maxlen=self._queue_limit())
+        self._queued_qpc = {}
+        self._stream_counters = _new_stream_counters()
         self._last_dup_source = None
         self._frame_available_event.clear() # Clear before starting
         self._stop_capture_event.clear()
@@ -2170,7 +2306,11 @@ class ScreenCapture:
 
         One buffer is always left free for the next grab, which is why this is
         ``pool_size - 1``.
+
+        ``policy="latest"`` holds one frame, whatever ``max_buffer_len`` says.
         """
+        if self._queue_policy == "latest":
+            return 1
         limit = self.max_buffer_len
         processor = getattr(self, "_processor", None)
         if processor is None or getattr(processor, "converts_output", True):
@@ -2289,8 +2429,30 @@ class ScreenCapture:
 
         Use :meth:`get_latest_frame_buffer` to skip the copy; it hands over the
         buffer itself, and with it the duty to release it.
+
+        With ``start(max_age_ms=...)``, frames older than that are skipped and
+        this waits for a fresh one; see :meth:`start`.
         """
-        frame = self.get_latest_frame_buffer()
+        return self._copy_out(self.get_latest_frame_buffer(), as_numpy)
+
+    def get_next_frame(self, as_numpy: bool = True):
+        """
+        The oldest frame waiting in the queue, as an array that is the
+        caller's to keep: frames in the order they were captured.
+
+        The in-order counterpart of :meth:`get_latest_frame`, for consumers
+        that want every frame rather than the newest -- recording, chiefly,
+        with ``start(policy="block")`` so that none is dropped before it is
+        read. Copied for the same reason; :meth:`get_next_frame_buffer` hands
+        over the buffer instead.
+
+        Returns:
+            The oldest queued frame, or None if none arrived within a second.
+        """
+        return self._copy_out(self.get_next_frame_buffer(), as_numpy)
+
+    def _copy_out(self, frame, as_numpy: bool):
+        """A copy of a frame taken from the queue, which is then released."""
         if frame is None:
             return None
 
@@ -2329,34 +2491,233 @@ class ScreenCapture:
 
         Prefer :meth:`get_latest_frame` unless the copy shows up in a profile.
         """
-        if not self._frame_available_event.wait(timeout=1.0): # Wait for a short duration
-            logger.debug("get_latest_frame timed out waiting for frame_available_event.")
-            return None # No frame available or timeout
+        return self._take_frame(newest=True)
 
-        with self._capture_lock: # Protect access to deque
-            if not self._pooled_frames_deque:
-                self._frame_available_event.clear() # Clear if deque is empty after wait
+    def get_next_frame_buffer(self):
+        """
+        The oldest queued frame, handed over without a copy.
+
+        :meth:`get_next_frame` without the copy, on the same terms as
+        :meth:`get_latest_frame_buffer`: the frame leaves the queue and the
+        caller must ``release()`` it, if it has a ``release()``.
+
+        Returns:
+            A :class:`~rapidshot.memory_pool.PooledBuffer` or a plain array, or
+            None if no frame arrived within a second.
+        """
+        return self._take_frame(newest=False)
+
+    def _take_frame(self, newest: bool):
+        """Take one frame out of the queue: the newest, or the oldest.
+
+        Waits up to a second in all, including any time spent skipping frames
+        older than ``max_age_ms``.
+        """
+        deadline = time.monotonic() + 1.0
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not self._frame_available_event.wait(timeout=remaining):
+                logger.debug("Timed out waiting for a frame from continuous capture.")
                 return None
 
-            # Take the newest frame out of the queue rather than peeking at it.
-            # While it sits there the producer may evict and release it, and a
-            # caller reading the array it wrapped would then be looking at a
-            # buffer the next capture is writing into.
-            frame = self._pooled_frames_deque.pop()
+            expired = []
+            frame = None
+            with self._capture_lock:
+                queue = self._pooled_frames_deque
+                if not queue:
+                    self._frame_available_event.clear()  # A stale signal
+                    return None
 
-            # video_mode duplicates the newest frame when the screen is idle.
-            # That frame is now the caller's and may be released at any moment,
-            # so the producer must not copy out of it; it picks up a fresh
-            # source on the next real frame.
-            if self._last_dup_source is frame:
-                self._last_dup_source = None
+                now_qpc = self._qpc_now_if_needed()
+                while queue:
+                    # Taken out of the queue rather than peeked at. While a
+                    # frame sits there the producer may evict and release it,
+                    # and a caller reading the array it wrapped would then be
+                    # looking at a buffer the next capture is writing into.
+                    candidate = queue.pop() if newest else queue.popleft()
+                    age_ms, unconfirmed_ms = self._forget_queued(candidate, now_qpc)
+                    if self._is_expired(unconfirmed_ms):
+                        expired.append(candidate)
+                        if newest:
+                            # Everything behind the newest is older still.
+                            for older in queue:
+                                self._forget_queued(older)
+                            expired.extend(queue)
+                            queue.clear()
+                        continue
+                    frame = candidate
+                    self._note_consumed(age_ms)
+                    break
 
-            if not self._pooled_frames_deque:
-                # Nothing left to hand out: the next call waits for a new frame,
-                # which is what "blocks until a new frame arrives" promises.
-                self._frame_available_event.clear()
+                # video_mode duplicates the newest frame when the screen is
+                # idle. A frame taken out here is the caller's, or about to be
+                # released, so the producer must not copy out of it; it picks
+                # up a fresh source on the next real frame.
+                source = self._last_dup_source
+                if source is not None and (
+                        source is frame or any(f is source for f in expired)):
+                    self._last_dup_source = None
 
-        return frame
+                if expired:
+                    self._stream_counter_state()["frames_expired"] += len(expired)
+                if not queue:
+                    # Nothing left to hand out: the next call waits for a new
+                    # frame, which is what "blocks until a new frame arrives"
+                    # promises.
+                    self._frame_available_event.clear()
+
+            for stale in expired:  # Outside the lock, as the producer does
+                self._discard_frame(stale)
+            if frame is not None:
+                return frame
+            # Every waiting frame was too old: wait for a fresh one.
+
+    # ------------------------------------------------------------------
+    # Continuous-mode bookkeeping. Everything here runs under _capture_lock.
+    # ------------------------------------------------------------------
+
+    def _queued_times(self) -> dict:
+        times = getattr(self, "_queued_qpc", None)
+        if times is None:
+            times = self._queued_qpc = {}
+        return times
+
+    def _stream_counter_state(self) -> dict:
+        counters = getattr(self, "_stream_counters", None)
+        if counters is None:
+            counters = self._stream_counters = _new_stream_counters()
+        return counters
+
+    def _queue_frame(self, frame, pixels_qpc: int, confirmed_qpc: Optional[int] = None):
+        """Append a frame and record its times; return the frame it evicted.
+
+        ``pixels_qpc`` is when its pixels were presented, which the reported
+        age runs from. ``confirmed_qpc`` is the last time capture saw the screen
+        still showing them, which ``max_age_ms`` runs from; it defaults to
+        ``pixels_qpc``. The evicted frame, if any, is the caller's to discard
+        outside the lock.
+        """
+        queue = self._pooled_frames_deque
+        evicted = None
+        if len(queue) == queue.maxlen:
+            evicted = queue[0]
+            self._forget_queued(evicted)
+            counter = ("stale_frames_replaced" if self._queue_policy == "latest"
+                       else "consumer_drops")
+            self._stream_counter_state()[counter] += 1
+        queue.append(frame)
+        if pixels_qpc:
+            self._queued_times()[id(frame)] = (pixels_qpc, confirmed_qpc or pixels_qpc)
+        return evicted
+
+    def _confirm_newest(self, now_qpc: int) -> None:
+        """A poll found nothing new: the newest queued frame is still what the
+        screen shows.
+
+        Desktop Duplication and WGC deliver a frame only when the screen
+        changes, so on an idle screen the newest frame may have been presented
+        long ago and still be exactly current. Without this, ``max_age_ms``
+        would refuse it for as long as the screen stayed still. Older queued
+        frames are superseded by it whatever the screen does, so only the
+        newest is renewed.
+        """
+        queue = self._pooled_frames_deque
+        if not queue:
+            return
+        times = self._queued_times()
+        entry = times.get(id(queue[-1]))
+        if entry is not None:
+            times[id(queue[-1])] = (entry[0], now_qpc)
+
+    def _forget_queued(self, frame, now_qpc: Optional[int] = None):
+        """Drop a frame's recorded times.
+
+        Returns ``(pixel_age_ms, unconfirmed_ms)`` -- how old its pixels are,
+        and how long since capture last saw the screen showing them -- or
+        ``(None, None)`` if it had no times or ``now_qpc`` was not given.
+        """
+        entry = self._queued_times().pop(id(frame), None)
+        if entry is None or now_qpc is None:
+            return None, None
+        from rapidshot.frame import _qpc_freq
+        scale = 1000.0 / _qpc_freq()
+        pixels_qpc, confirmed_qpc = entry
+        return (max(0.0, (now_qpc - pixels_qpc) * scale),
+                max(0.0, (now_qpc - confirmed_qpc) * scale))
+
+    def _qpc_now_if_needed(self) -> Optional[int]:
+        """The QPC time now, if there is any recorded time to measure against.
+
+        Skipped when nothing is recorded, so a camera assembled for a test with
+        plain frames never touches the clock.
+        """
+        if not self._queued_times():
+            return None
+        from rapidshot.frame import _qpc_now
+        return _qpc_now()
+
+    def _is_expired(self, age_ms: Optional[float]) -> bool:
+        limit = self._max_age_ms
+        return limit is not None and age_ms is not None and age_ms > limit
+
+    def _note_consumed(self, age_ms: Optional[float]) -> None:
+        counters = self._stream_counter_state()
+        counters["frames_consumed"] += 1
+        if age_ms is not None:
+            counters["_age_sum_ms"] += age_ms
+            counters["_age_count"] += 1
+            counters["_age_last_ms"] = age_ms
+
+    def _queue_is_full(self) -> bool:
+        with self._capture_lock:
+            queue = self._pooled_frames_deque
+            return queue is not None and len(queue) == queue.maxlen
+
+    def _pixels_qpc(self, captured_qpc: int) -> int:
+        """When the frame just grabbed was presented, in QPC ticks.
+
+        Both backends report it (Desktop Duplication's ``LastPresentTime``,
+        WGC's arrival time). Where none is reported, ``captured_qpc`` -- which
+        undercounts the frame's age by however long capture took, rather than
+        inventing one.
+        """
+        present = _int_attr(getattr(self, "_duplicator", None), "last_present_time")
+        return present or captured_qpc
+
+    @property
+    def stream_stats(self) -> dict:
+        """What continuous capture has done since the last ``start()``.
+
+        - ``frames_captured``: new frames the capture thread queued.
+        - ``frames_duplicated``: repeats ``video_mode`` queued while the
+          screen was idle.
+        - ``frames_consumed``: frames the ``get_*_frame`` readers handed out.
+        - ``stale_frames_replaced``: frames replaced unread by a newer one
+          (``policy="latest"``).
+        - ``consumer_drops``: frames dropped unread because the queue was full
+          (``policy="drop_oldest"``): the consumer is not keeping up.
+        - ``frames_expired``: frames the readers skipped because capture had
+          not seen the screen showing them within ``max_age_ms``.
+        - ``capture_drops``: screen updates Windows merged into a later frame
+          instead of delivering separately -- frames the capture never saw,
+          because it was held back (``policy="block"``) or slower than the
+          screen. From DXGI's ``AccumulatedFrames`` or WGC's skipped count.
+        - ``age_ms_last``, ``age_ms_mean``: how old handed-out frames' pixels
+          were when they were taken, from Windows' present time; None until
+          one has been. On a still screen this grows with the time since the
+          last change, which is what it is: the pixels' age, not staleness.
+
+        Counters stay readable after ``stop()``.
+        """
+        with self._capture_lock:
+            counters = dict(self._stream_counter_state())
+        count = counters.pop("_age_count")
+        total = counters.pop("_age_sum_ms")
+        counters["age_ms_last"] = counters.pop("_age_last_ms")
+        counters["age_ms_mean"] = total / count if count else None
+        counters["policy"] = self._queue_policy
+        counters["max_age_ms"] = self._max_age_ms
+        return counters
 
     def _capture_thread_func( # Renamed from __capture
         self, region: Tuple[int, int, int, int], target_fps: int = 60, video_mode: bool = False
@@ -2396,6 +2757,15 @@ class ScreenCapture:
                     self._stop_capture_event.set() # Signal thread to stop
                     break # Exit while loop
 
+                if self._queue_policy == "block" and self._queue_is_full():
+                    # Hold capture back rather than drop a queued frame. The
+                    # screen updates meanwhile are not lost silently: Windows
+                    # merges them into the next frame acquired, whose
+                    # accumulated count turns them into capture_drops.
+                    if not self._timer_handle:
+                        self._stop_capture_event.wait(0.001)
+                    continue
+
                 # The camera's region, which start() set. Resolved inside
                 # _grab, after any rebuild it performs, so a rebuild for a new
                 # size is not cropped to the old one.
@@ -2403,17 +2773,26 @@ class ScreenCapture:
 
                 if grab_result is not None:
                     self._frame_count += 1
+                    duplicator = getattr(self, "_duplicator", None)
+                    from rapidshot.frame import _qpc_now
+                    captured_qpc = _qpc_now()
+                    pixels_qpc = self._pixels_qpc(captured_qpc)
+                    accumulated = _int_attr(duplicator, "accumulated_frames")
                     # grab_result is a PooledBuffer only when the processor could
                     # write the result in place, i.e. BGRA output. Every other
                     # color mode changes the channel count and yields a freshly
                     # allocated array -- which is equally valid to queue, and
                     # rejecting it (as this used to) left the deque permanently
                     # empty for RGB/BGR/RGBA/GRAY consumers.
-                    evicted_buffer = None
                     with self._capture_lock:
-                        if len(self._pooled_frames_deque) == self._pooled_frames_deque.maxlen:
-                            evicted_buffer = self._pooled_frames_deque[0]
-                        self._pooled_frames_deque.append(grab_result)
+                        counters = self._stream_counter_state()
+                        if counters["frames_captured"]:
+                            # Not on the first frame: what Windows accumulated
+                            # before start() is not a frame this run dropped.
+                            counters["capture_drops"] += max(0, accumulated - 1)
+                        counters["frames_captured"] += 1
+                        evicted_buffer = self._queue_frame(
+                            grab_result, pixels_qpc, captured_qpc)
                         self._last_dup_source = grab_result
                     # Check the evicted buffer back in outside the capture
                     # lock: release() takes the pool's own lock, and holding
@@ -2428,11 +2807,25 @@ class ScreenCapture:
                     time.sleep(0.1) # Avoid tight loop if _grab keeps failing due to re-init
                     continue # Try again, _grab will attempt re-init
 
-                elif video_mode:
+                if grab_result is None and self._max_age_ms is not None:
+                    # Nothing new, and the duplication is healthy: the screen
+                    # still shows the newest queued frame. Only worth the
+                    # clock read when something measures against it.
+                    from rapidshot.frame import _qpc_now
+                    with self._capture_lock:
+                        self._confirm_newest(_qpc_now())
+
+                if grab_result is None and video_mode:
                     # No new content this tick: re-queue a copy of the last frame
                     # so the output stream keeps a constant frame rate.
                     with self._capture_lock:
                         dup_source = self._last_dup_source
+                        queue = self._pooled_frames_deque
+                        if (self._queue_policy == "block" and queue is not None
+                                and len(queue) == queue.maxlen):
+                            # A repeat is not worth holding capture back for,
+                            # and must not push out a queued frame.
+                            dup_source = None
                     if dup_source is None:
                         # Nothing captured yet, or the last frame was handed to
                         # a caller by get_latest_frame_buffer(). Either way
@@ -2474,10 +2867,14 @@ class ScreenCapture:
                             if self._last_dup_source is not dup_source:
                                 taken_during_copy = True
                             else:
-                                if len(self._pooled_frames_deque) == self._pooled_frames_deque.maxlen:
-                                    evicted_buffer = self._pooled_frames_deque[0]
-                                self._pooled_frames_deque.append(duplicate_frame)
+                                # The repeat carries its source's time: the
+                                # pixels are as old as the frame it copies.
+                                pixels_qpc, confirmed_qpc = self._queued_times().get(
+                                    id(dup_source), (0, 0))
+                                evicted_buffer = self._queue_frame(
+                                    duplicate_frame, pixels_qpc, confirmed_qpc)
                                 self._last_dup_source = duplicate_frame
+                                self._stream_counter_state()["frames_duplicated"] += 1
                         if taken_during_copy:
                             # The consumer has the frame; the next real one
                             # starts duplication again.
@@ -2556,6 +2953,7 @@ class ScreenCapture:
             # it so a slow pool cannot block the producer.
             stale_frames = list(queue)
             queue.clear()
+            self._queued_times().clear()
             self._last_dup_source = None
         for frame in stale_frames:
             self._discard_frame(frame)
