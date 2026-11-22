@@ -258,9 +258,13 @@ class GpuTensor:
         applies to it too — clone it if you need it to outlive the next
         ``process()``.
         """
+        # The CuPy view first: it refuses what cannot be exported at all (a
+        # texture output, a tensor on a GPU CUDA cannot see) with the reason,
+        # where importing Torch first answered a texture with "No module named
+        # 'torch'" on a machine without Torch.
+        array = self.to_cupy(device)
         import torch
 
-        array = self.to_cupy(device)
         # from_dlpack is the documented zero-copy route; torch.as_tensor over
         # __cuda_array_interface__ would also work but copies on some versions,
         # which would silently undo the point of this method.
