@@ -47,7 +47,12 @@ through its GPU waits. Tag `native-v0.5.0` first (`RELEASING.md`).
   out of memory behind a slow consumer, and with one it is `"block"`.
 - **`start(max_age_ms=...)`**: the readers skip any frame capture has not seen
   on screen within this time, and wait for a fresh one. A new frame counts from
-  its capture, and each poll that finds the screen unchanged renews the newest.
+  its capture, and each poll that finds the screen unchanged renews the newest
+  frame captured -- only that one, and only a poll that saw the screen: a
+  grab that failed (protected content, a DXGI error) confirms nothing, and a
+  frame left in a `drop_oldest` queue after a newer one was read is not what
+  the screen shows (both caught in review, each pinned by a test that fails
+  without its fix).
   A first version measured from the present time instead, and would have
   refused a still screen's only frame for as long as the screen stayed still,
   although that frame is exactly what the screen shows

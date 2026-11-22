@@ -82,6 +82,9 @@ def _produce(cam, script, video_mode=False, clock=None):
             cam._stop_capture_event.set()
             return None
         grabs.append(step)
+        # An idle tick is a poll that saw the screen unchanged, as
+        # _grab_locked reports it.
+        cam._last_grab_unchanged = step is None
         if step is None:
             return None
         fill, present_qpc, accumulated = step
@@ -396,6 +399,7 @@ def test_an_idle_screen_keeps_its_frame_fresh(clock):
         except StopIteration:
             cam._stop_capture_event.set()
             return None
+        cam._last_grab_unchanged = step is None
         if step is None:
             return None
         fill, present_qpc, accumulated = step
@@ -427,6 +431,74 @@ def test_a_frame_nobody_has_confirmed_lately_expires(clock):
     started = time.monotonic()
     assert cam.get_latest_frame() is None
     assert time.monotonic() - started >= 0.9
+    assert cam.stream_stats["frames_expired"] == 1
+
+
+def _poll(cam, steps, clock, step_ms=100):
+    """Drive the capture thread through polls, ``step_ms`` apart.
+
+    A step is ``("frame", fill, present_qpc)`` for a new frame, ``"same"`` for a
+    poll that saw the screen unchanged -- what `_grab_locked` reports by setting
+    ``_last_grab_unchanged`` -- or ``"fail"`` for one that saw nothing at all
+    (protected content, a DXGI error), which returns None the same way.
+    """
+    steps = iter(steps)
+
+    def grab(region):
+        try:
+            step = next(steps)
+        except StopIteration:
+            # The tick that ends the script takes no time, so the last poll's
+            # confirmation is what the reader measures against.
+            cam._stop_capture_event.set()
+            cam._last_grab_unchanged = False
+            return None
+        clock["qpc"] += step_ms
+        if step in ("same", "fail"):
+            cam._last_grab_unchanged = step == "same"
+            return None
+        _kind, fill, present_qpc = step
+        cam._last_grab_unchanged = False
+        cam._duplicator.last_present_time = present_qpc
+        cam._duplicator.accumulated_frames = 1
+        buffer = cam.memory_pool.checkout()
+        buffer.array[...] = fill
+        return buffer
+
+    cam._grab = grab
+    cam._stop_capture_event.clear()
+    cam._capture_thread_func(cam.region, target_fps=0, video_mode=False)
+
+
+def test_an_unchanged_screen_renews_only_the_frame_it_shows(clock):
+    """drop_oldest keeps older frames after the newest is taken. An unchanged
+    poll confirms what the screen shows -- the frame taken, not the one left
+    behind -- so the older frame must still expire (PR #14 review)."""
+    cam = _camera(policy="drop_oldest", max_age_ms=12)
+    # 2 ms apart, so frame 2 is fresh when it is read.
+    _poll(cam, [("frame", 1, clock["qpc"] + 2), ("frame", 2, clock["qpc"] + 4)], clock,
+          step_ms=2)
+    assert int(cam.get_latest_frame().flat[0]) == 2   # B taken; A still queued
+
+    _poll(cam, ["same", "same", "same"], clock, step_ms=20)  # the screen still shows B
+    clock["qpc"] += 5
+
+    started = time.monotonic()
+    assert cam.get_latest_frame() is None, (
+        "frame 1 was renewed by polls that saw frame 2 on screen")
+    assert time.monotonic() - started >= 0.9
+    assert cam.stream_stats["frames_expired"] == 1
+
+
+def test_a_failed_poll_does_not_renew_a_frame(clock):
+    """A grab that could not see the screen returns None too. Only a poll that
+    saw the screen unchanged confirms the queued frame (PR #14 review)."""
+    cam = _camera(policy="latest", max_age_ms=12)
+    _poll(cam, [("frame", 1, clock["qpc"] + 100), "fail", "fail", "fail"], clock)
+    clock["qpc"] += 5
+
+    assert cam.get_latest_frame() is None, (
+        "a frame was confirmed by polls that never saw the screen")
     assert cam.stream_stats["frames_expired"] == 1
 
 

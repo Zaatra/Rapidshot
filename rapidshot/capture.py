@@ -198,6 +198,9 @@ class ScreenCapture:
     #: existed.
     _queue_policy = "drop_oldest"
     _max_age_ms: Optional[float] = None
+    #: Whether the last grab saw the screen unchanged, as opposed to returning
+    #: None because it could not see it; set by `_grab_locked`.
+    _last_grab_unchanged = False
 
     def __init__(
         self,
@@ -1797,6 +1800,10 @@ class ScreenCapture:
         Returns:
             ndarray: Captured frame
         """
+        # Set only where the duplicator says the screen did not change. Every
+        # other None -- protected content, a DXGI error, a pending rebuild --
+        # saw nothing, so it confirms nothing (see _confirm_newest).
+        self._last_grab_unchanged = False
         try:
             if self._capture_permanently_failed:
                 logger.error(f"Capture is permanently failed: {self._last_capture_error_message}")
@@ -1912,6 +1919,7 @@ class ScreenCapture:
 
                 if pooled_buffer_wrapper:
                     pooled_buffer_wrapper.release()
+                self._last_grab_unchanged = True
                 return None
 
             frame_needs_release = self._duplicator._frame_acquired
@@ -2622,7 +2630,12 @@ class ScreenCapture:
         newest is renewed.
         """
         queue = self._pooled_frames_deque
-        if not queue:
+        # Only while the newest frame captured is still queued. Once a reader
+        # has taken it, the last frame left in a drop_oldest queue is an older
+        # one the screen no longer shows, and renewing it would let it pass
+        # max_age_ms as current. _last_dup_source is the newest frame queued,
+        # cleared when a reader takes it.
+        if not queue or queue[-1] is not self._last_dup_source:
             return
         times = self._queued_times()
         entry = times.get(id(queue[-1]))
@@ -2807,10 +2820,13 @@ class ScreenCapture:
                     time.sleep(0.1) # Avoid tight loop if _grab keeps failing due to re-init
                     continue # Try again, _grab will attempt re-init
 
-                if grab_result is None and self._max_age_ms is not None:
-                    # Nothing new, and the duplication is healthy: the screen
-                    # still shows the newest queued frame. Only worth the
-                    # clock read when something measures against it.
+                if (grab_result is None and self._max_age_ms is not None
+                        and self._last_grab_unchanged):
+                    # The poll saw the screen and it had not changed, so it
+                    # still shows the newest frame captured. A None that saw
+                    # nothing (protected content, a DXGI error) confirms
+                    # nothing. Only worth the clock read when something
+                    # measures against it.
                     from rapidshot.frame import _qpc_now
                     with self._capture_lock:
                         self._confirm_newest(_qpc_now())
