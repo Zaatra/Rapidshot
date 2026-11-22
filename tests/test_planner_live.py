@@ -38,7 +38,10 @@ def test_calibration_measures_both_backends_and_auto_follows_it(private_cache, d
         # Plausible, not a benchmark: a frame younger than a millisecond or
         # older than a tenth of a second means the instrument is wrong.
         assert 1 < measurement.age_p50_ms < 100, measurement
-        assert measurement.fps > 30, measurement
+        # Virtual and software displays can legitimately measure below 30 fps.
+        # Frames and the elapsed wall time are already the meaningful validity
+        # checks here; this only rejects an instrument that is effectively stalled.
+        assert measurement.fps > 10, measurement
         assert measurement.frames >= planner.MIN_FRAMES
 
     assert planner.cached_backend(rapidshot.get_factory(), Monitor()) == result.backend
