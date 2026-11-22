@@ -8,14 +8,38 @@ This document is written to be read cold. It states where the project actually i
 
 ## 1. Start here
 
-**Current state.** Rapidshot captures the desktop via DXGI Desktop Duplication and can hand a frame to a GPU consumer as a **model-ready tensor that never touches the CPU** — `float16` or `float32`, NCHW or NHWC, produced by one fused dispatch and exported zero-copy to Torch, CuPy or DLPack (2.6). The CPU path for the same work costs ~8 ms per 1080p frame on a toolchain-free install. Core capture is pure Python; an *optional* Rust extension provides GPU interop **and byte-exact AVX2 conversion kernels** — with it, colour conversion drops to 0.26–0.36 ms and stops being the dominant CPU cost (§ 3, § 10).
+**Current state.** Rapidshot captures the desktop via DXGI Desktop Duplication and can hand a frame to a GPU consumer as a **model-ready tensor that never touches the CPU** — `float16` or `float32`, NCHW or NHWC, produced by one fused dispatch and exported zero-copy to Torch, CuPy or DLPack (2.6). Since 2.7 it also captures single windows, and monitors through Windows.Graphics.Capture. The CPU path for the same work costs ~8 ms per 1080p frame on a toolchain-free install. Core capture is pure Python; an *optional* Rust extension provides GPU interop **and byte-exact AVX2 conversion kernels** — with it, colour conversion drops to 0.26–0.36 ms and stops being the dominant CPU cost (§ 3, § 10).
 
-> **2.7.0 is in progress: § 7.3 in full.** The feature freeze that followed
-> 2.6.0 was lifted on 2026-10-22. 2.7.0 brings the source/backend split
-> (`Monitor`, `Window`, `Region`), a native Windows.Graphics.Capture backend for
-> monitors and windows (`rapidshot-native` 0.3.0), the HDR tone map in
-> `GpuConverter`, and a measured planner behind `backend="auto"`. The 2.6 fixes
-> still unreleased ship with it; there is no 2.6.4.
+> **The current release is 2.8.0 with `rapidshot-native` 0.5.0
+> (2026-11-22).** 2.8 brings § 7.4c's freshness contract
+> (`start(policy=..., max_age_ms=...)`, `latest` the default, measured live),
+> NV12 written straight into an encoder's texture, `GpuConverter` releasing
+> the GIL, and § 7.3a's hardware-encoding measurements (no `Encoder` class
+> yet; § 7.3a says what was measured and on which GPUs).
+>
+> **2.7 shipped as 2.7.1-2.7.4 (2026-11-03 to 11-12).** 2.7 is § 7.3: the
+> source/backend split (`Monitor`, `Window`, `Region`), a native
+> Windows.Graphics.Capture backend for monitors and windows, the HDR tone map in
+> `GpuConverter`, and a measured planner behind `backend="auto"`. Its first
+> published release is **2.7.1** (2026-11-03, `rapidshot-native` 0.3.1):
+> `v2.7.0` was cut on a release branch and never tagged or published, because
+> left-sited NV12/P010 chroma followed within minutes. 2.7.2-2.7.4 are fixes
+> found on more hardware: a named cause and fix when a hybrid laptop refuses
+> capture, HDR desktops converted by default, and an HDR switch no longer
+> stopping `grab_frame()` on NVIDIA. The 2.6 fixes that were unreleased in
+> October shipped with 2.7; there is no 2.6.4.
+>
+> **What the 2.7 tag was waiting for, and where it ended up.** The five-pass
+> `rapidshot benchmark --full` has run on three PCs in four graphics
+> configurations (Intel desktop, Lunar Lake, RTX 4060 laptop in both MUX modes;
+> README, Performance), and the HDR tone map has been checked on one HDR panel
+> (Lunar Lake on a Samsung TV; README, Known limitations). **Still not run:** an
+> older Windows build without `MinUpdateInterval`, the WGC rows of the OBS
+> recovery table (monitor unplug, adapter change, fullscreen transition), HDR
+> on NVIDIA, AMD or a 10-bit surface, and **any AMD GPU capturing**. The
+> maintainer chose on 2026-11-09 to stop treating these as gates and to ask
+> users for them instead: the README's Tested hardware section asks for
+> `rapidshot benchmark` results and HDR reports in Discussions.
 >
 > **Why the freeze was lifted while the evidence it asked for is incomplete.**
 > The freeze existed so usage could find 2.6's weaknesses, and a month of it
@@ -26,12 +50,6 @@ This document is written to be read cold. It states where the project actually i
 > new users, because RapidShot still could not capture a window -- the gap
 > § 7.3 names as the one that limits who can use the pipeline at all. The
 > maintainer chose, on 2026-10-22, to close that gap rather than wait longer.
->
-> **The freeze's condition still binds the tag.** 2.7.0 is built and tested on
-> Machine B only. Before `v2.7.0` is tagged it needs the multi-pass
-> `rapidshot benchmark --full` on more than one machine, the tone map on an HDR
-> panel, and an older Windows build (no `MinUpdateInterval`). No AMD part has
-> run any of it, and the release notes say so rather than implying otherwise.
 >
 > **The freeze, for the record.** 2.6.0 was tagged and published 2026-09-20
 > along with `rapidshot-native` 0.2.0, and the project then took only bugs and
@@ -62,6 +80,8 @@ This document is written to be read cold. It states where the project actually i
 
 ### Release status
 
+**2.8.0 is the current release** (`v2.8.0`, 22 November 2026), together with **`rapidshot-native` 0.5.0** (`native-v0.5.0`); every tag below is also a GitHub Release. Since 2.6.0: **2.7.4** with native 0.4.1, **2.7.3** with native 0.4.0 and **2.7.2** (12 November), **2.7.1** with native 0.3.1 (3 November; `v2.7.0` was never tagged, see § 1), **2.6.3** (30 September) with native 0.2.2 (29 September), **2.6.2** (27 September), and **2.6.1** with native 0.2.1 (25 September).
+
 **2.6.0 is tagged and published** (`v2.6.0`, 20 September 2026), together with the separately versioned **`rapidshot-native` 0.2.0** (`native-v0.2.0`) that its GPU features require. Before it: **2.5.0** (13 September), **2.4.0** (`v2.4.0` at `9d40b70`, 22 August 2026), **2.3.0** (`v2.3.0` at `b3a01f2`, 21 August), **2.2.0** (`403849e`, 6 August), **2.1.0** (5 August) and **2.0.0** (4 August). PyPI Trusted Publishing and the `pypi` GitHub environment are configured and restricted to `v*` tags, so a pushed tag is what cuts a release; the full procedure is in `RELEASING.md`.
 
 **2.4.0 is confirmed live**, which earlier releases in this list never were from inside the repository: PyPI serves 2.4.0 as the current version with both the wheel and the sdist, and the GitHub Release carries wheel, sdist and SBOM. The release ran from the tag with no manual step.
@@ -78,6 +98,9 @@ What each release delivered, in one line each — `CHANGELOG.md` has the detail:
 | **2.3.0** | First release verified on NVIDIA hardware. CUDA interop for the GPU tensor; two shipped bugs fixed — `nvidia_gpu=True` returning wrong pixels for every mode but BGRA, and every `E_ACCESSDENIED` misreported as protected content; five "untestable" paths given real tests |
 | **2.4.0** | The hybrid path end to end: capture on the iGPU, cross-adapter to the dGPU, CUDA consumer, no CPU in the pixels or the synchronisation. `transfer_async()` with a GPU-side shared fence, and `set_consumer_fence()` / `wait_for_consumer()` closing the buffer-reuse race — **28 of 60 frames wrong without the handshake, 0 with it** |
 | **2.5.0** | Reliability and adoption: automatic recovery, diagnostics, the § 7.0 benchmark harness |
+| **2.6.1–2.6.3** | `rapidshot benchmark` for testers (2.6.1), the benchmark without CuPy (2.6.2), testing fixes and the 80-nit HDR clip raised as a warning (2.6.3) |
+| **2.7.1** | Windows sources: `Monitor` / `Window` / `Region`, window capture, the native Windows.Graphics.Capture backend, the measuring planner behind `backend="auto"`, the HDR tone map in `GpuConverter`, left-sited NV12/P010 chroma. Requires `rapidshot-native` ≥ 0.3.1 |
+| **2.7.2–2.7.4** | A hybrid laptop that refuses capture names the GPU setting that fixes it (2.7.2); HDR desktops convert to sRGB by default and a WGC camera open at exit no longer crashes (2.7.3); an HDR switch no longer stops `grab_frame()` on NVIDIA (2.7.4) |
 | **2.6.0** | Capture to a model-ready tensor. `GpuConverter` (one fused dispatch: crop, resize, colour, normalise, layout), native **FP16**, NHWC, multi-ROI, NV12/P010; `TensorStream`; one-call `to_torch()` / `to_cupy()` / `to_dlpack()`; `TensorTransfer` convert-before-transfer verified Intel→RTX 4060 with CUDA importing the result. **`grab()` −58%, `grab_frame()` −63% memory** against 2.5. Requires `rapidshot-native` ≥ 0.2.0 |
 
 **All of them published. Checked against PyPI on 2026-09-13**, which is the authority the repository is not: 2.0.0, 2.1.0, 2.2.0, 2.3.0 and 2.4.0 each serve two files, and 1.1.0 is present and yanked as intended. This entry previously said the outcome could not be verified from the tree and asked for a manual UI pass; the tree is still not the authority, but the index is one query away.
@@ -107,7 +130,7 @@ Both of the related settings were checked the same way on 2026-09-13:
 
 **Region cameras: fixed on every GPU path.** `GpuConverter`, `GpuPreprocessor12` and the D3D11 `GpuPreprocessor` all converted the whole monitor on a region camera; all three now convert the region, with whole-frame output unchanged bit for bit (§ 10). This changes output for anyone using the two shipped preprocessors on a region camera — which is the fix.
 
-**Next feature task: finish 2.7.0 (§ 7.3).** What is left is evidence, not code: the release conditions in the block above. After it, § 7.3a, in the priority order at the end of § 7 (re-ranked on 2026-09-20 to put userbase growth ahead of further capture optimisation).
+**Next: users, and § 7.3a measured on more than one vendor.** 2.8 has shipped (§ 1). The next step is putting it in front of people and collecting the hardware reports § 1 lists as not run, AMD above all. The feature work continues in § 7.3a, whose encoder measurements so far are one hybrid NVIDIA + Intel laptop -- an `Encoder` that picks each vendor's encoder (NVENC, Quick Sync, AMF) with Media Foundation as the fallback has to be measured on Intel-only and AMD machines before it is built on. After it, the priority order at the end of § 7 (re-ranked on 2026-09-20 to put userbase growth ahead of further capture optimisation) puts an inference path for GPUs that are not NVIDIA; let the first users' reports decide which comes first.
 
 **Do not start another round of D3D12 synchronisation work without a measurement or a user report asking for it.** That seam has been through feature work, hardware validation, adversarial review, four rounds of fixes, targeted regression tests and a clean final pass. The next thing to do here is nothing; the returns are elsewhere.
 
@@ -2619,6 +2642,10 @@ for tensor in stream:
 
 #### Where 7.3 stands — 2026-10-29
 
+> **Shipped since: 2.7.1 on 2026-11-03, then 2.7.2–2.7.4 (§ 1).** The
+> paragraph below is the state before the release; § 1 has which of its "not
+> done" items have since been run.
+
 **Built, on main, unreleased:** the source model (`Monitor`, `Window`,
 `Region`; `core/backend.py`'s `CaptureBackend` contract), the native WGC
 backend (`rapidshot-native` 0.3.0, `native/src/wgc.rs`), window capture, the
@@ -2971,6 +2998,150 @@ codec/profile/level before selecting the path, and keep a fallback.
 `NvEncodeAPI` accepts D3D12 input surfaces directly, so a slim native NVENC
 branch needs no extra copy. **Untested here** — noted from review, not measured.
 
+#### 7.3a step 1 — the measured baseline, 2026-11-17
+
+`benchmarks/encode_latency.py`: a real camera under the frame-ID test source,
+each frame through FFmpeg (PyAV 19.0.2) into an encoder opened low-latency (no
+B-frames, CBR 20 Mbps, each encoder's own low-delay switches, refused if
+FFmpeg left any option unused). Latency runs from the source's `Present()` to
+the packet in hand, for frames identified by decoding the stream and reading
+the frame ID back; fidelity is luma PSNR against what the encoder was given.
+Machine B, **hybrid** (Intel UHD drives the 2560x1600 @ 165 Hz panel, the RTX
+4060 has no display), 70 runs, 5 per case, shuffled
+(`benchmarks/encode-latency-baseline.md`).
+
+| Encoder (GPU NV12 path) | latency p50 | encode p50 | fps | CPU ms/frame | PSNR |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `hevc_nvenc` / `av1_nvenc` / `h264_nvenc` (RTX 4060) | 31.5-31.6 ms | 3.3-4.2 ms | 53 | 7.5-8.0 | 46 / 50 / 38 dB |
+| `h264_qsv` / `hevc_qsv` (Intel UHD) | 37.2-37.3 ms | 9.7-10.6 ms | 39 | 8.8-9.8 | 36 / 44 dB |
+| `libx264` ultrafast (CPU) | 34.3 ms | 4.2 ms | 48 | 24.4 | **21 dB** |
+| `h264_mf` (Media Foundation) | **75.4 ms** | **42.5 ms** | 49 | 9.7 | 31 dB |
+
+What it settles:
+
+- **NVENC works on a hybrid laptop through FFmpeg**, encoding on the GPU with
+  no display. Media Foundation does not reach it: its NVIDIA H.264 MFT is
+  listed first and fails to activate, and `h264_mf` falls back to Intel Quick
+  Sync's MFT (FFmpeg's verbose log, here and on 2026-11-12) -- at 4x Quick
+  Sync's own encode time through `h264_qsv`. **"Media Foundation first" is
+  wrong for this machine**; the plan's NVENC-direct branch is the one that
+  measured best.
+- **RapidShot's GPU NV12 path costs 2.2-2.9x less CPU a frame than CPU
+  conversion with every hardware encoder** (NVENC: 7.5-8.0 against
+  19.8-22.9 ms; with `libx264` the encoder dominates and it is 1.2x). On
+  latency it wins by 3.0-4.4 ms for NVENC and HEVC Quick Sync, by 0.8 ms for
+  H.264 Quick Sync and x264, and loses by 3.9 ms through Media Foundation.
+- **The encoder is not the bottleneck; getting NV12 to it is.** Capture to
+  NV12 in system memory is 13.4-14.6 ms -- measured apart: the GPU conversion
+  on the Intel UHD 6.9 ms, the readback 3.1 ms, PyAV copying it into its own
+  frame 3.1 ms -- against 3.3 ms of NVENC. One synchronous loop caps every
+  encoder at about 53 fps on a 165 Hz screen.
+- **Media Foundation needs a multithreaded COM apartment.** `import
+  rapidshot` makes the main thread single-threaded (comtypes), and FFmpeg's MF
+  encoder then refuses to open ("COM must not be in STA mode"); its error
+  path uninitialises COM on the thread. STA: 1 of 3 opens failed; MTA: 3 of
+  3; its own (MTA) thread: works. A `rapidshot.Encoder` that uses MF must give
+  it an MTA thread of its own.
+- **x264 ultrafast at 20 Mbps is not usable at 2560x1600**: 21 dB, and its
+  CPU load slowed the test source in one run.
+- PyAV's wheel bundles an FFmpeg that reports LGPL-3.0 but ships GPL
+  `libx264` / `libx265`: a benchmark tool here, not a dependency RapidShot can
+  take without a licence review.
+
+#### 7.3a step 2 — the handoff, 2026-11-17
+
+Same harness and machine, GPU NV12 path, 5 hardware encoders x 3 handoffs, 75
+runs shuffled, 430 sampled frames each confirmed to be the frame sent
+(`benchmarks/encode-latency-handoff.md`).
+
+| Handoff | NVENC fps | NVENC latency p50 | NVENC CPU ms/frame | Quick Sync latency p50 |
+| --- | ---: | ---: | ---: | ---: |
+| `sync`: one loop, a new PyAV frame each time (step 1) | 53 | 31.4-32.4 ms | 7.6-7.8 | 37.1-37.5 ms |
+| `reuse`: frames allocated once, readback copied in | 62-64 | 29.2-30.4 ms | 4.9-6.7 | 36.7-40.8 ms |
+| `pipelined`: capture+convert thread, encode thread, newest wins | **77.5** | **28.0-28.9 ms** | 5.7-5.9 | 42.2-47.3 ms |
+
+- **Allocating the encoder's frame was most of PyAV's cost**: `from_ndarray`
+  for a 2560x1600 NV12 frame is 2.32 ms p50, copying into a frame allocated
+  once 0.21 ms.
+- **Pipelining only worked after a fix**: `GpuConverter` held the GIL through
+  its GPU waits (CHANGELOG), so the encode thread stalled behind the capture
+  thread (NVENC 4.2 -> 13.5 ms, latency 54 ms). With the GIL released,
+  pipelining is the fastest handoff for NVENC.
+- **Pipelining makes Quick Sync worse**: encoding and conversion then compete
+  for the same Intel GPU (encode 9.7 -> 10.9-15.8 ms, conversion 13.9 ->
+  15.5-17.1 ms). On a hybrid machine, encode on the GPU that is not
+  converting.
+- **The largest remaining cost is the conversion kernel itself.** On one held
+  frame on this UHD, `GpuConverter`'s NV12 *buffer* output is 9.69 ms p50 at
+  2560x1600 -- against 3.53 ms for FP32 NCHW at the same size, which writes 8x
+  more -- while the core's NV12 *texture* output (`nv12_routes`, not yet
+  exposed to Python) is 1.82 ms, 2.17 ms including the copy into a shareable
+  texture, 100% exact, and the D3D11 texture an encoder reads holds exactly
+  those bytes (`benchmarks/nv12-routes-machineB-uhd.json`). Why the buffer
+  kernel is that slow is not yet established.
+
+#### 7.3a step 3 — NV12 texture output, 2026-11-17
+
+Exposed as `GpuConverter(..., pixel_format="nv12", output="texture")`, same
+bytes as the buffer (tests), and measured in the pipeline: 80 shuffled runs,
+555 sampled frames confirmed, no ranges overlapping
+(`benchmarks/encode-latency-nv12-texture.md`).
+
+| Encoder, handoff | buffer NV12 | texture NV12 |
+| --- | --- | --- |
+| NVENC AV1/HEVC/H.264, pipelined | 28.1-28.8 ms, 77-79 fps | **25.7-26.5 ms, 80 fps** |
+| NVENC, reuse | 29.1-30.4 ms, 61-64 fps | 26.7-28.8 ms, 68-73 fps |
+| Quick Sync H.264, reuse | 35.7 ms, 45 fps | 32.6 ms, 50 fps |
+| Quick Sync H.264, pipelined | 42.4 ms, 52 fps | 38.0 ms, 65 fps |
+
+The expected ~7 ms did not all arrive: the kernel saved 4.6 ms (7.5 -> 2.9
+ms live), but texture *readback* is 6.5 ms against the buffer's 3.0 ms (after
+caching its copy queue, which cost 12 ms per call before). Net capture -> NV12
+in system memory: 11.3-11.5 -> 9.9-10.0 ms pipelined. **Best measured path on
+this machine: texture NV12, pipelined, NVENC (AV1 or HEVC): 25.7 ms screen to
+packet at 80 fps, 5.0 ms CPU a frame.**
+
+Open, unexplained: why the buffer NV12 kernel and the texture readback are as
+slow as they are.
+
+#### 7.3a step 4 — encoding in place through Media Foundation, 2026-11-17
+
+`native/core/src/bin/mf_encode.rs` feeds `Converter12`'s NV12 texture to the
+hardware H.264 MFT on the capture adapter: `IMFSample`s wrapping D3D11
+textures through an `IMFDXGIDeviceManager`, a 4-slot GPU ring so the
+converter never rewrites a frame the encoder is reading, events on an MTA
+thread. No readback, no CPU copy. Judged like the PyAV runs: the stream
+decoded, every frame's ID read back, PSNR 36.9 dB against a verify run's
+inputs, 0 of 20 sampled frames wrong (`benchmarks/mf-encode-inplace-qsv.md`).
+
+It works, and it loses. Five runs, every frame verified: **45.2 ms** screen to
+packet at 65 fps, because Intel's H.264 MFT -- the only one that activates here;
+NVIDIA's refuses with `0x8000FFFF` -- needs **14.9 ms a frame** at 2560x1600
+and takes the next input only once the last is out. Tested one variable at a
+time, none moved it: `AVEncCommonQualityVsSpeed` 0 or 50 (accepted, no
+effect), nothing else on the GPU (`--encode-only`, 14.9 ms), the frame rate
+the encoder is told (60 vs 165). Low-latency mode off pipelines frames to
+73-78 fps at 143-156 ms each, useless live. For comparison on the same GPU,
+FFmpeg's `h264_qsv` (oneVPL) encodes the frame in 9.7 ms and NVENC in 3.3-4.1
+ms. **Zero copy saved the 6.5 ms readback and the encoder spent more.**
+
+What this settles for `rapidshot.Encoder`, on this machine:
+
+- **Media Foundation is not the encoder to build on here.** The plan said
+  "Media Foundation first, NVENC-direct only if measured better"; measured,
+  MF is the slowest route tried (45.2 ms in place, 71-75 ms through FFmpeg),
+  and its NVIDIA MFT does not activate on a hybrid laptop at all.
+- **The best measured path is still texture NV12 read back into NVENC:
+  25.7 ms, 80 fps** (step 3). The frame has to reach the RTX either way on
+  hybrid; NVENC is fast enough that the readback is worth paying.
+- **Not yet measured:** NVENC fed on the GPU (the frame crossing to the RTX
+  as a texture, through `TensorTransfer`'s shared-heap path, into the NVENC
+  API), Quick Sync in place through oneVPL rather than Media Foundation, and
+  any of it on a single-GPU machine, where the NVIDIA MFT may activate. A no-readback handoff -- the
+texture straight into an encoder -- needs native code (PyAV cannot wrap a
+D3D11 texture as encoder input), and on this hybrid machine NVENC still needs
+the frame to cross to the RTX, so its value has to be measured, not assumed.
+
 ### 7.4 — 2.8: the freshness-aware runtime
 
 **This is the release with things competitors do not have.** 2.7 broadens what
@@ -3091,6 +3262,32 @@ on state, not the microseconds, is the argument** — a consumer polling rarely
 accumulates rects without limit until it looks.
 
 #### 7.4c — A freshness contract, not just a frame rate
+
+> **Built 2026-11-17, shipped in 2.8.0:** `start(policy="latest" | "drop_oldest" |
+> "block", max_age_ms=...)`, `get_next_frame()` for in-order reads, and
+> `ScreenCapture.stream_stats` with the counters below kept separate
+> (`CHANGELOG.md` `[Unreleased]`). `all` is not offered: unbounded it
+> exhausts memory behind a slow consumer, bounded it is `block`. Headless tests
+> (`tests/test_stream_policy.py`), a simulated-screen comparison and a live one
+> (`benchmarks/freshness_policies.py [--live]`, Machine B, DXGI and WGC).
+> **Live, behind a 60 fps model at 2560x1600 @ 165 Hz:** `latest` held 1 MB
+> against 764 MB, spent 4.55 against 5.50 ms of capture CPU a frame, captured
+> 132 against 112 frames a second and delivered pixels 2.4 ms fresher (p50
+> 26.0 against 28.4 ms); on WGC 3.62 against 4.75 ms, 144 against 117 fps,
+> 3.4 ms fresher.
+>
+> **What the comparison found:** the policies do not make capture faster; the
+> default queue makes a slow consumer expensive. Behind a 60 fps model on a
+> 240 Hz screen at 2560x1600, `drop_oldest` held 764 MB of queued frames and
+> spent 1.66 ms a frame capturing (allocation fallback once the two pooled
+> output buffers are queued); `latest` held none and spent 0.66 ms. A consumer
+> that pauses got frames up to 454 ms old and out of order from `drop_oldest`,
+> p95 under 9 ms from `latest`. Medians of 5 shuffled runs per case; the two
+> policies' ranges do not overlap. `max_age_ms` matters mostly for `drop_oldest`
+> and `block` queues; with `latest` it rarely fires. `block` moved the loss
+> to capture time without reducing it. **Decided 2026-11-17, after the live
+> run: `latest` is the default**, `drop_oldest` with `video_mode` (which needs
+> a queue and which `latest` refuses).
 
 `target_fps=120` describes the producer. An agent cares about the consumer:
 

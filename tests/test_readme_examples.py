@@ -182,6 +182,42 @@ def test_continuous_capture_block():
         camera.release()
 
 
+def test_freshness_contract_block():
+    """`start(target_fps=240, policy="latest", max_age_ms=12)`, then
+    `get_latest_frame()` and `stream_stats`, as the README prints them."""
+    camera = _camera()
+    try:
+        camera.start(target_fps=240, policy="latest", max_age_ms=12)
+        frame = None
+        for _ in range(20):
+            frame = camera.get_latest_frame()
+            if frame is not None:
+                break
+        stats = camera.stream_stats
+        camera.stop()
+        if frame is None:
+            pytest.skip("no frame captured — the screen must be changing")
+        for key in ("stale_frames_replaced", "consumer_drops", "frames_expired",
+                    "capture_drops", "age_ms_last", "age_ms_mean"):
+            assert key in stats, f"the README names stream_stats[{key!r}]"
+        assert stats["policy"] == "latest" and stats["max_age_ms"] == 12
+        assert stats["frames_consumed"] >= 1
+    finally:
+        camera.release()
+
+
+def test_policy_table_names_every_policy_and_reader():
+    """The README's policy table and the code agree on names."""
+    from rapidshot.capture import QUEUE_POLICIES, ScreenCapture
+
+    text = README.read_text(encoding="utf-8")
+    for policy in QUEUE_POLICIES:
+        assert f'`"{policy}"`' in text, f"README's policy table omits {policy!r}"
+    for reader in ("get_latest_frame", "get_next_frame"):
+        assert hasattr(ScreenCapture, reader)
+        assert f"`{reader}()`" in text
+
+
 def test_pool_output_false_block():
     """The README says this hands back plain ndarrays."""
     camera = _camera(pool_output=False, pool_size_frames=4)

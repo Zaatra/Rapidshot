@@ -28,7 +28,7 @@ def _version() -> str:
 setup(
     name="rapidshot",
     version=_version(),
-    description="A high-performance screencapture library for Windows using Desktop Duplication API",
+    description="Windows screen and window capture for Python: NumPy frames, or model-ready FP16 GPU tensors for PyTorch, CuPy and DLPack without a CPU round trip",
     packages=find_packages(),
     long_description=long_description,
     long_description_content_type="text/markdown",
@@ -61,7 +61,7 @@ setup(
         "gpu": ["cupy-cuda11x>=11.0.0"],
         "gpu_cuda12": ["cupy-cuda12x>=12.0.0"],
         "gpu_cuda13": ["cupy-cuda13x>=14.0.0"],
-        "native": ["rapidshot-native>=0.1.0; platform_system == 'Windows'"],
+        "native": ["rapidshot-native>=0.5.0; platform_system == 'Windows'"],
         "all": [
             "numpy>=1.19.0",
             "comtypes>=1.1.0",

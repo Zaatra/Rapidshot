@@ -8,9 +8,12 @@ assignees: ''
 ---
 
 Thank you. Every published RapidShot number so far comes from one developer's
-two machines, and a result from different hardware -- especially AMD, a desktop
-GPU, or a panel that is not 2560x1600 at 165 Hz -- is worth more than any code
-change.
+Intel and NVIDIA machines, and a result from different hardware -- especially
+AMD, an HDR display, or a setup unlike those in the README -- is worth more
+than any code change. Results that ran cleanly are just as welcome in the
+[Benchmark results discussion](https://github.com/Zaatra/Rapidshot/discussions/categories/show-and-tell);
+an issue is the place for a path that failed or a colour check that did not
+pass.
 
 **How to run it**
 

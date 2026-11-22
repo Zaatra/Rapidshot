@@ -80,6 +80,26 @@ fn format_name(format: u32) -> &'static str {
 /// This takes a closure rather than returning the reference because the
 /// borrowed handle is tied to a local raw pointer; handing it back out would
 /// let it outlive the value it borrows from.
+/// Wait on an event from a `*_deferred` call with the interpreter released,
+/// then close it. `None` means the GPU had already finished.
+///
+/// The GPU wait is most of a conversion -- 6.9 ms of `GpuConverter.process`
+/// for 2560x1600 NV12 on an Intel UHD (2026-11-17) -- and holding the GIL
+/// through it left another Python thread 36% of its idle progress.
+fn wait_detached(py: Python<'_>, event: Option<windows::Win32::Foundation::HANDLE>) {
+    if let Some(event) = event {
+        let raw = event.0 as usize;
+        py.detach(move || unsafe {
+            let event = windows::Win32::Foundation::HANDLE(raw as *mut core::ffi::c_void);
+            windows::Win32::System::Threading::WaitForSingleObject(
+                event,
+                windows::Win32::System::Threading::INFINITE,
+            );
+            let _ = windows::Win32::Foundation::CloseHandle(event);
+        });
+    }
+}
+
 unsafe fn with_texture<T>(
     pointer: usize,
     f: impl FnOnce(&ID3D11Texture2D) -> PyResult<T>,
@@ -755,8 +775,12 @@ impl GpuConverter12 {
             ("float16", Some("nhwc")) => F::Fp16Nhwc,
             ("bgra8", None | Some("nhwc")) => F::Bgra8Nhwc,
             ("nv12", None) => F::Nv12,
+            // The same bytes as `nv12`, in a DXGI_FORMAT_NV12 texture on the
+            // capture device, by a different kernel: 1.82 against 9.69 ms p50
+            // at 2560x1600 on an Intel UHD (2026-11-17, `nv12_routes`).
+            ("nv12_texture", None) => F::Nv12Texture,
             ("p010", None) => F::P010,
-            ("float32" | "float16" | "bgra8" | "nv12" | "p010", Some(other)) => {
+            ("float32" | "float16" | "bgra8" | "nv12" | "nv12_texture" | "p010", Some(other)) => {
                 return Err(PyValueError::new_err(format!(
                     "layout {other:?} is not available for dtype {dtype:?}: float32 and \
                      float16 take 'nchw' or 'nhwc', bgra8 is 'nhwc', nv12/p010 take none"
@@ -812,6 +836,7 @@ impl GpuConverter12 {
     #[allow(clippy::too_many_arguments)]
     fn process(
         &self,
+        py: Python<'_>,
         texture_ptr: usize,
         scale: f32,
         bias: f32,
@@ -857,10 +882,13 @@ impl GpuConverter12 {
             height,
         })
         .collect();
-        unsafe {
+        // Submit under the lock, then drop it before waiting: the wait runs
+        // with the interpreter released, and a thread holding the GIL while
+        // blocked on this lock would otherwise deadlock against it.
+        let armed = unsafe {
             with_texture(texture_ptr, |texture| {
                 inner
-                    .process(
+                    .process_deferred(
                         texture,
                         source_id,
                         scale,
@@ -871,19 +899,32 @@ impl GpuConverter12 {
                     )
                     .map_err(|e| PyRuntimeError::new_err(format!("D3D12 dispatch failed: {e}")))
             })
-        }
+        }?;
+        drop(inner);
+        wait_detached(py, armed);
+        Ok(())
     }
 
     /// Raw output bytes. Interpret with the `dtype` and `shape` properties.
     /// Verification only — production keeps the result on the GPU.
     fn read_back<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let inner = self
-            .inner
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("converter lock poisoned"))?;
-        let data = inner
-            .read_back()
-            .map_err(|e| PyRuntimeError::new_err(format!("D3D12 readback failed: {e}")))?;
+        let lock = || {
+            self.inner
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("converter lock poisoned"))
+        };
+        let failed = |e: windows::core::Error| {
+            PyRuntimeError::new_err(format!("D3D12 readback failed: {e}"))
+        };
+        let deferred = lock()?.read_back_deferred().map_err(failed)?;
+        let data = match deferred {
+            // Texture output reads back on a copy queue of its own.
+            None => lock()?.read_back().map_err(failed)?,
+            Some(event) => {
+                wait_detached(py, event);
+                lock()?.finish_read_back().map_err(failed)?
+            }
+        };
         Ok(PyBytes::new(py, &data))
     }
 
@@ -954,6 +995,21 @@ impl GpuConverter12 {
 
     /// `"nv12"`, `"p010"`, or `None` for the tensor and BGRA outputs, which
     /// `dtype` already describes.
+    /// `nv12_texture` only: the address of the `ID3D11Texture2D` (NV12) on the
+    /// capture device that `process` wrote, for an encoder there. Borrowed:
+    /// valid while this converter lives, until the next `process`.
+    #[getter]
+    fn output_texture_address(&self) -> PyResult<usize> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("converter lock poisoned"))?;
+        inner
+            .output_texture()
+            .map(|texture| texture.as_raw() as usize)
+            .ok_or_else(|| PyRuntimeError::new_err("output_texture_address needs nv12_texture"))
+    }
+
     #[getter]
     fn pixel_format(&self) -> PyResult<Option<&'static str>> {
         let inner = self

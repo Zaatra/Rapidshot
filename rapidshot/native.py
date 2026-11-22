@@ -161,6 +161,10 @@ _BEHAVIOUR_SINCE: Dict[str, str] = {
     # NV12/P010 chroma left-sited, as H.264/HEVC assume; 0.3.0 and earlier
     # averaged each 2x2 block (centre-sited).
     "left-sited NV12/P010 chroma": "0.3.1",
+    # GpuConverter(..., output="texture"): NV12 written into a texture an
+    # encoder reads. An older extension refuses the native format name with a
+    # message about dtypes, which names the wrong cause.
+    "NV12 texture output": "0.5.0",
 }
 
 

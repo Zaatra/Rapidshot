@@ -29,6 +29,7 @@ import logging
 import os
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -331,7 +332,21 @@ class _Source:
         if self.frequency is None:
             self.close()
             raise RuntimeError("the test source did not become ready")
+        # Keep reading. The source prints a rate line every 2 s from its
+        # present loop; left unread, the pipe's 4 KB fill after 146 s and the
+        # next print blocks the loop, freezing the screen -- measured: two
+        # sources stopped presenting at exactly 146.4 s. Calibration runs for
+        # seconds, but nothing about this class says so.
+        threading.Thread(target=self._drain, name="test-source-stdout",
+                         daemon=True).start()
         time.sleep(0.5)   # let it settle into presenting
+
+    def _drain(self) -> None:
+        try:
+            for _line in self.proc.stdout:
+                pass
+        except (OSError, ValueError):
+            pass
 
     def close(self) -> None:
         if self.proc.poll() is None:

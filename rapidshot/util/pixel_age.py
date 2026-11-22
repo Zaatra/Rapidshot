@@ -76,9 +76,16 @@ class PresentLog:
         self.pending, self.frames, self.frequency = "", {}, frequency
 
     def refresh(self):
+        # One split for everything read. Splitting a line off at a time copied
+        # the rest of the buffer per line: quadratic, 4.3 s for a 24,000-line
+        # catch-up (2.4 min at 165 Hz), all of it holding the GIL -- which a
+        # reader opened late in a long run pays inside its timed window,
+        # starving any capture thread beside it.
         self.pending += self.reader.read()
-        while "\n" in self.pending:
-            line, self.pending = self.pending.split("\n", 1)
+        *lines, self.pending = self.pending.split("\n")
+        for line in lines:
+            if not line:
+                continue
             row = json.loads(line)
             if row.get("event") == "present":
                 self.frames[row["id"]] = row

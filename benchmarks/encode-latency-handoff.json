@@ -1,0 +1,3959 @@
+{
+  "width": 2560,
+  "height": 1600,
+  "hz": 165,
+  "seconds": 5.0,
+  "repeats": 5,
+  "seed": 609175765,
+  "unhealthy": [],
+  "failed": [],
+  "encoders": {
+    "h264_nvenc": {
+      "preset": "p1",
+      "tune": "ull",
+      "zerolatency": "1",
+      "delay": "0",
+      "rc": "cbr"
+    },
+    "hevc_nvenc": {
+      "preset": "p1",
+      "tune": "ull",
+      "zerolatency": "1",
+      "delay": "0",
+      "rc": "cbr"
+    },
+    "av1_nvenc": {
+      "preset": "p1",
+      "tune": "ull",
+      "zerolatency": "1",
+      "delay": "0",
+      "rc": "cbr"
+    },
+    "h264_qsv": {
+      "preset": "veryfast",
+      "async_depth": "1",
+      "look_ahead_depth": "0",
+      "low_delay_brc": "1"
+    },
+    "hevc_qsv": {
+      "preset": "veryfast",
+      "async_depth": "1",
+      "look_ahead_depth": "0",
+      "low_delay_brc": "1"
+    },
+    "h264_mf": {
+      "hw_encoding": "1",
+      "scenario": "display_remoting",
+      "rate_control": "cbr"
+    },
+    "libx264": {
+      "preset": "ultrafast",
+      "tune": "zerolatency"
+    }
+  },
+  "bitrate": 20000000,
+  "medians": [
+    {
+      "path": "gpu-nv12",
+      "encoder": "h264_nvenc",
+      "mode": "sync",
+      "runs": 5,
+      "range": {
+        "fps": [
+          53.00400813917405,
+          53.63608918418715
+        ],
+        "latency_ms_p50": [
+          31.0362,
+          31.7691
+        ],
+        "latency_ms_p95": [
+          37.1598,
+          38.1278
+        ],
+        "latency_ms_max": [
+          138.7643,
+          147.3737
+        ],
+        "present_to_capture_ms_p50": [
+          0.9774,
+          1.5427
+        ],
+        "capture_to_nv12_ms_p50": [
+          13.4508,
+          13.7057
+        ],
+        "encode_ms_p50": [
+          4.1091,
+          4.1796
+        ],
+        "encode_ms_p95": [
+          4.4033,
+          4.7475
+        ],
+        "cpu_ms_per_frame": [
+          7.028345724907063,
+          7.929981203007519
+        ],
+        "mbps": [
+          6.523598050933507,
+          6.599454125775415
+        ],
+        "psnr_db_median": [
+          38.516543999271995,
+          38.81026083666026
+        ],
+        "psnr_db_min": [
+          36.23893860830734,
+          36.80680768531472
+        ],
+        "undecodable_markers": [
+          0,
+          0
+        ],
+        "order_errors": [
+          0,
+          0
+        ],
+        "source_fps": [
+          162.45943304131788,
+          165.18918326080933
+        ],
+        "timed_frames_identified": [
+          266,
+          269
+        ],
+        "identity_checked": [
+          27,
+          27
+        ],
+        "identity_errors": [
+          0,
+          0
+        ],
+        "pipeline_drops": [
+          0,
+          0
+        ]
+      },
+      "fps": 53.09277383397728,
+      "latency_ms_p50": 31.4132,
+      "latency_ms_p95": 37.7842,
+      "latency_ms_max": 140.0862,
+      "present_to_capture_ms_p50": 1.2913,
+      "capture_to_nv12_ms_p50": 13.6365,
+      "encode_ms_p50": 4.1687,
+      "encode_ms_p95": 4.5412,
+      "cpu_ms_per_frame": 7.636278195488722,
+      "mbps": 6.556685076724274,
+      "psnr_db_median": 38.62240146177908,
+      "psnr_db_min": 36.615837059677524,
+      "undecodable_markers": 0,
+      "order_errors": 0,
+      "source_fps": 164.66743764297465,
+      "timed_frames_identified": 266,
+      "identity_checked": 27,
+      "identity_errors": 0,
+      "pipeline_drops": 0
+    },
+    {
+      "path": "gpu-nv12",
+      "encoder": "h264_nvenc",
+      "mode": "pipelined",
+      "runs": 5,
+      "range": {
+        "fps": [
+          71.88551238500149,
+          79.35445489047875
+        ],
+        "latency_ms_p50": [
+          28.7186,
+          29.0698
+        ],
+        "latency_ms_p95": [
+          31.1871,
+          36.2531
+        ],
+        "latency_ms_max": [
+          136.3069,
+          143.8429
+        ],
+        "present_to_capture_ms_p50": [
+          0.301,
+          0.3959
+        ],
+        "capture_to_nv12_ms_p50": [
+          11.1704,
+          11.5526
+        ],
+        "encode_ms_p50": [
+          4.4378,
+          4.4893
+        ],
+        "encode_ms_p95": [
+          4.8314,
+          5.1488
+        ],
+        "cpu_ms_per_frame": [
+          5.769230769230769,
+          7.487880886426593
+        ],
+        "mbps": [
+          8.758491003219946,
+          9.658813246157848
+        ],
+        "psnr_db_median": [
+          37.58327140645635,
+          40.475494618557235
+        ],
+        "psnr_db_min": [
+          35.7888050157372,
+          36.80502560344809
+        ],
+        "undecodable_markers": [
+          0,
+          0
+        ],
+        "order_errors": [
+          0,
+          0
+        ],
+        "source_fps": [
+          158.10830147836893,
+          165.14046698894978
+        ],
+        "timed_frames_identified": [
+          361,
+          399
+        ],
+        "identity_checked": [
+          37,
+          40
+        ],
+        "identity_errors": [
+          0,
+          0
+        ],
+        "pipeline_drops": [
+          0,
+          0
+        ]
+      },
+      "fps": 77.5961230430005,
+      "latency_ms_p50": 28.9036,
+      "latency_ms_p95": 31.8515,
+      "latency_ms_max": 139.1911,
+      "present_to_capture_ms_p50": 0.3689,
+      "capture_to_nv12_ms_p50": 11.3446,
+      "encode_ms_p50": 4.4776,
+      "encode_ms_p95": 4.962,
+      "cpu_ms_per_frame": 5.888819095477387,
+      "mbps": 9.344078554976717,
+      "psnr_db_median": 39.426385183241905,
+      "psnr_db_min": 36.51827755371433,
+      "undecodable_markers": 0,
+      "order_errors": 0,
+      "source_fps": 164.87429349425284,
+      "timed_frames_identified": 390,
+      "identity_checked": 39,
+      "identity_errors": 0,
+      "pipeline_drops": 0
+    },
+    {
+      "path": "gpu-nv12",
+      "encoder": "av1_nvenc",
+      "mode": "pipelined",
+      "runs": 5,
+      "range": {
+        "fps": [
+          76.34410372558413,
+          79.1304673845966
+        ],
+        "latency_ms_p50": [
+          27.8929,
+          28.1818
+        ],
+        "latency_ms_p95": [
+          34.3648,
+          34.9447
+        ],
+        "latency_ms_max": [
+          137.2722,
+          157.5123
+        ],
+        "present_to_capture_ms_p50": [
+          0.3272,
+          0.5138
+        ],
+        "capture_to_nv12_ms_p50": [
+          11.2217,
+          11.4584
+        ],
+        "encode_ms_p50": [
+          3.6565,
+          3.7325
+        ],
+        "encode_ms_p95": [
+          3.9923,
+          4.3732
+        ],
+        "cpu_ms_per_frame": [
+          5.472715736040609,
+          6.445822454308094
+        ],
+        "mbps": [
+          10.130744760472203,
+          10.480399472922349
+        ],
+        "psnr_db_median": [
+          50.783918466264325,
+          51.10647720678944
+        ],
+        "psnr_db_min": [
+          45.88925740420349,
+          46.90431380407909
+        ],
+        "undecodable_markers": [
+          0,
+          0
+        ],
+        "order_errors": [
+          0,
+          0
+        ],
+        "source_fps": [
+          163.65194043423162,
+          165.03785137140045
+        ],
+        "timed_frames_identified": [
+          383,
+          397
+        ],
+        "identity_checked": [
+          39,
+          40
+        ],
+        "identity_errors": [
+          0,
+          0
+        ],
+        "pipeline_drops": [
+          0,
+          0
+        ]
+      },
+      "fps": 77.48941776423756,
+      "latency_ms_p50": 27.984,
+      "latency_ms_p95": 34.6968,
+      "latency_ms_max": 142.6876,
+      "present_to_capture_ms_p50": 0.3698,
+      "capture_to_nv12_ms_p50": 11.2718,
+      "encode_ms_p50": 3.6779,
+      "encode_ms_p95": 4.1201,
+      "cpu_ms_per_frame": 5.667506297229219,
+      "mbps": 10.271694432413444,
+      "psnr_db_median": 50.92046362186874,
+      "psnr_db_min": 46.542486498165076,
+      "undecodable_markers": 0,
+      "order_errors": 0,
+      "source_fps": 164.05012367142493,
+      "timed_frames_identified": 389,
+      "identity_checked": 39,
+      "identity_errors": 0,
+      "pipeline_drops": 0
+    },
+    {
+      "path": "gpu-nv12",
+      "encoder": "av1_nvenc",
+      "mode": "sync",
+      "runs": 5,
+      "range": {
+        "fps": [
+          51.15252534121867,
+          54.09190166187989
+        ],
+        "latency_ms_p50": [
+          30.9769,
+          35.2972
+        ],
+        "latency_ms_p95": [
+          37.805,
+          38.4942
+        ],
+        "latency_ms_max": [
+          134.9381,
+          143.4133
+        ],
+        "present_to_capture_ms_p50": [
+          1.554,
+          4.8302
+        ],
+        "capture_to_nv12_ms_p50": [
+          14.2462,
+          14.5418
+        ],
+        "encode_ms_p50": [
+          3.2768,
+          3.3139
+        ],
+        "encode_ms_p95": [
+          3.6226,
+          3.848
+        ],
+        "cpu_ms_per_frame": [
+          7.380073800738008,
+          8.4228515625
+        ],
+        "mbps": [
+          7.022322582409598,
+          7.390097082188878
+        ],
+        "psnr_db_median": [
+          49.91346034984315,
+          50.15694794972079
+        ],
+        "psnr_db_min": [
+          45.58405150262131,
+          46.54557087999633
+        ],
+        "undecodable_markers": [
+          0,
+          0
+        ],
+        "order_errors": [
+          0,
+          0
+        ],
+        "source_fps": [
+          160.2512707955366,
+          165.07012056964822
+        ],
+        "timed_frames_identified": [
+          256,
+          271
+        ],
+        "identity_checked": [
+          26,
+          28
+        ],
+        "identity_errors": [
+          0,
+          0
+        ],
+        "pipeline_drops": [
+          0,
+          0
+        ]
+      },
+      "fps": 53.500292574736925,
+      "latency_ms_p50": 32.0183,
+      "latency_ms_p95": 38.0244,
+      "latency_ms_max": 139.3003,
+      "present_to_capture_ms_p50": 1.8365,
+      "capture_to_nv12_ms_p50": 14.3702,
+      "encode_ms_p50": 3.293,
+      "encode_ms_p95": 3.6492,
+      "cpu_ms_per_frame": 7.783239700374532,
+      "mbps": 7.314569640381149,
+      "psnr_db_median": 50.085973443330886,
+      "psnr_db_min": 46.36929022909776,
+      "undecodable_markers": 0,
+      "order_errors": 0,
+      "source_fps": 163.6949250421055,
+      "timed_frames_identified": 268,
+      "identity_checked": 27,
+      "identity_errors": 0,
+      "pipeline_drops": 0
+    },
+    {
+      "path": "gpu-nv12",
+      "encoder": "hevc_qsv",
+      "mode": "reuse",
+      "runs": 5,
+      "range": {
+        "fps": [
+          38.46155685686301,
+          40.1551627452777
+        ],
+        "latency_ms_p50": [
+          38.6235,
+          41.2783
+        ],
+        "latency_ms_p95": [
+          43.7703,
+          48.1132
+        ],
+        "latency_ms_max": [
+          159.7042,
+          171.0725
+        ],
+        "present_to_capture_ms_p50": [
+          4.4065,
+          4.798
+        ],
+        "capture_to_nv12_ms_p50": [
+          11.8281,
+          12.2281
+        ],
+        "encode_ms_p50": [
+          11.3869,
+          11.5332
+        ],
+        "encode_ms_p95": [
+          12.7717,
+          13.5739
+        ],
+        "cpu_ms_per_frame": [
+          6.138392857142857,
+          8.743523316062177
+        ],
+        "mbps": [
+          4.525429027706242,
+          4.73061905610035
+        ],
+        "psnr_db_median": [
+          42.643397816921144,
+          43.28876025816996
+        ],
+        "psnr_db_min": [
+          40.476227876204554,
+          42.148524922020634
+        ],
+        "undecodable_markers": [
+          0,
+          0
+        ],
+        "order_errors": [
+          0,
+          0
+        ],
+        "source_fps": [
+          158.42972902179324,
+          165.05427072237478
+        ],
+        "timed_frames_identified": [
+          193,
+          201
+        ],
+        "identity_checked": [
+          20,
+          21
+        ],
+        "identity_errors": [
+          0,
+          0
+        ],
+        "pipeline_drops": [
+          0,
+          0
+        ]
+      },
+      "fps": 39.24499248338482,
+      "latency_ms_p50": 40.8203,
+      "latency_ms_p95": 47.5503,
+      "latency_ms_max": 163.7158,
+      "present_to_capture_ms_p50": 4.7277,
+      "capture_to_nv12_ms_p50": 11.8915,
+      "encode_ms_p50": 11.4651,
+      "encode_ms_p95": 13.4246,
+      "cpu_ms_per_frame": 6.452114427860696,
+      "mbps": 4.638516212145697,
+      "psnr_db_median": 43.14213546844144,
+      "psnr_db_min": 41.80162223384703,
+      "undecodable_markers": 0,
+      "order_errors": 0,
+      "source_fps": 164.2166357045685,
+      "timed_frames_identified": 197,
+      "identity_checked": 20,
+      "identity_errors": 0,
+      "pipeline_drops": 0
+    },
+    {
+      "path": "gpu-nv12",
+      "encoder": "hevc_nvenc",
+      "mode": "sync",
+      "runs": 5,
+      "range": {
+        "fps": [
+          53.35295549796535,
+          54.34022249484485
+        ],
+        "latency_ms_p50": [
+          31.7675,
+          32.835
+        ],
+        "latency_ms_p95": [
+          38.0449,
+          38.5526
+        ],
+        "latency_ms_max": [
+          138.7306,
+          152.486
+        ],
+        "present_to_capture_ms_p50": [
+          1.8841,
+          3.1799
+        ],
+        "capture_to_nv12_ms_p50": [
+          14.3043,
+          14.5385
+        ],
+        "encode_ms_p50": [
+          3.3091,
+          3.3601
+        ],
+        "encode_ms_p95": [
+          3.6561,
+          3.9515
+        ],
+        "cpu_ms_per_frame": [
+          7.404384328358209,
+          7.69589552238806
+        ],
+        "mbps": [
+          7.223528181791131,
+          7.3382107279070015
+        ],
+        "psnr_db_median": [
+          46.30065962561014,
+          46.6179537198242
+        ],
+        "psnr_db_min": [
+          44.43026008379704,
+          45.69041704464509
+        ],
+        "undecodable_markers": [
+          0,
+          0
+        ],
+        "order_errors": [
+          0,
+          0
+        ],
+        "source_fps": [
+          164.05534256115936,
+          165.09406418962493
+        ],
+        "timed_frames_identified": [
+          267,
+          272
+        ],
+        "identity_checked": [
+          27,
+          28
+        ],
+        "identity_errors": [
+          0,
+          0
+        ],
+        "pipeline_drops": [
+          0,
+          0
+        ]
+      },
+      "fps": 53.4359750683767,
+      "latency_ms_p50": 32.3625,
+      "latency_ms_p95": 38.3914,
+      "latency_ms_max": 140.8752,
+      "present_to_capture_ms_p50": 2.3074,
+      "capture_to_nv12_ms_p50": 14.4665,
+      "encode_ms_p50": 3.3331,
+      "encode_ms_p95": 3.6947,
+      "cpu_ms_per_frame": 7.582720588235294,
+      "mbps": 7.281484281476881,
+      "psnr_db_median": 46.39516324167188,
+      "psnr_db_min": 45.38329999960931,
+      "undecodable_markers": 0,
+      "order_errors": 0,
+      "source_fps": 164.8791501780697,
+      "timed_frames_identified": 268,
+      "identity_checked": 27,
+      "identity_errors": 0,
+      "pipeline_drops": 0
+    },
+    {
+      "path": "gpu-nv12",
+      "encoder": "hevc_nvenc",
+      "mode": "pipelined",
+      "runs": 5,
+      "range": {
+        "fps": [
+          67.26555967325069,
+          78.57052252402848
+        ],
+        "latency_ms_p50": [
+          27.9069,
+          28.274
+        ],
+        "latency_ms_p95": [
+          30.9171,
+          48.2575
+        ],
+        "latency_ms_max": [
+          139.7776,
+          193.8126
+        ],
+        "present_to_capture_ms_p50": [
+          0.3156,
+          0.4587
+        ],
+        "capture_to_nv12_ms_p50": [
+          11.2085,
+          11.3782
+        ],
+        "encode_ms_p50": [
+          3.7078,
+          3.7642
+        ],
+        "encode_ms_p95": [
+          4.0937,
+          4.4239
+        ],
+        "cpu_ms_per_frame": [
+          5.754475703324808,
+          7.303994082840236
+        ],
+        "mbps": [
+          8.42802118435423,
+          9.734161311491032
+        ],
+        "psnr_db_median": [
+          48.03108483610531,
+          48.38495056103536
+        ],
+        "psnr_db_min": [
+          47.096686228586194,
+          47.4040494006115
+        ],
+        "undecodable_markers": [
+          0,
+          0
+        ],
+        "order_errors": [
+          0,
+          0
+        ],
+        "source_fps": [
+          151.04899346744756,
+          165.17566441865395
+        ],
+        "timed_frames_identified": [
+          338,
+          395
+        ],
+        "identity_checked": [
+          34,
+          40
+        ],
+        "identity_errors": [
+          0,
+          0
+        ],
+        "pipeline_drops": [
+          0,
+          0
+        ]
+      },
+      "fps": 77.66886036720096,
+      "latency_ms_p50": 28.1689,
+      "latency_ms_p95": 34.2805,
+      "latency_ms_max": 141.681,
+      "present_to_capture_ms_p50": 0.3497,
+      "capture_to_nv12_ms_p50": 11.3254,
+      "encode_ms_p50": 3.7486,
+      "encode_ms_p95": 4.1434,
+      "cpu_ms_per_frame": 5.829015544041451,
+      "mbps": 9.654752356423352,
+      "psnr_db_median": 48.18851666738293,
+      "psnr_db_min": 47.25644194013973,
+      "undecodable_markers": 0,
+      "order_errors": 0,
+      "source_fps": 165.09611601130666,
+      "timed_frames_identified": 390,
+      "identity_checked": 39,
+      "identity_errors": 0,
+      "pipeline_drops": 0
+    },
+    {
+      "path": "gpu-nv12",
+      "encoder": "hevc_qsv",
+      "mode": "sync",
+      "runs": 5,
+      "range": {
+        "fps": [
+          38.31788018462289,
+          39.27891880489853
+        ],
+        "latency_ms_p50": [
+          37.4062,
+          37.8798
+        ],
+        "latency_ms_p95": [
+          44.5506,
+          47.6266
+        ],
+        "latency_ms_max": [
+          157.778,
+          169.8837
+        ],
+        "present_to_capture_ms_p50": [
+          1.2247,
+          1.3691
+        ],
+        "capture_to_nv12_ms_p50": [
+          13.3665,
+          13.5334
+        ],
+        "encode_ms_p50": [
+          10.4534,
+          10.6948
+        ],
+        "encode_ms_p95": [
+          12.5312,
+          13.7262
+        ],
+        "cpu_ms_per_frame": [
+          8.30078125,
+          8.974358974358974
+        ],
+        "mbps": [
+          4.410206914155866,
+          4.516314807973689
+        ],
+        "psnr_db_median": [
+          43.68357670657986,
+          44.433237551101236
+        ],
+        "psnr_db_min": [
+          41.629254323380394,
+          42.359049678423474
+        ],
+        "undecodable_markers": [
+          0,
+          0
+        ],
+        "order_errors": [
+          0,
+          0
+        ],
+        "source_fps": [
+          163.9416888695058,
+          165.2458582961862
+        ],
+        "timed_frames_identified": [
+          192,
+          197
+        ],
+        "identity_checked": [
+          20,
+          20
+        ],
+        "identity_errors": [
+          0,
+          0
+        ],
+        "pipeline_drops": [
+          0,
+          0
+        ]
+      },
+      "fps": 38.71096246366815,
+      "latency_ms_p50": 37.5473,
+      "latency_ms_p95": 47.3002,
+      "latency_ms_max": 160.4349,
+      "present_to_capture_ms_p50": 1.3026,
+      "capture_to_nv12_ms_p50": 13.5022,
+      "encode_ms_p50": 10.6624,
+      "encode_ms_p95": 12.9354,
+      "cpu_ms_per_frame": 8.500647668393782,
+      "mbps": 4.4763435529361795,
+      "psnr_db_median": 44.06973957498893,
+      "psnr_db_min": 41.65677570482876,
+      "undecodable_markers": 0,
+      "order_errors": 0,
+      "source_fps": 165.09109020536033,
+      "timed_frames_identified": 194,
+      "identity_checked": 20,
+      "identity_errors": 0,
+      "pipeline_drops": 0
+    },
+    {
+      "path": "gpu-nv12",
+      "encoder": "h264_qsv",
+      "mode": "pipelined",
+      "runs": 5,
+      "range": {
+        "fps": [
+          52.305611385908854,
+          54.15994794591626
+        ],
+        "latency_ms_p50": [
+          37.3908,
+          42.6016
+        ],
+        "latency_ms_p95": [
+          48.0712,
+          51.3132
+        ],
+        "latency_ms_max": [
+          147.0173,
+          156.2721
+        ],
+        "present_to_capture_ms_p50": [
+          0.2381,
+          0.2566
+        ],
+        "capture_to_nv12_ms_p50": [
+          15.1166,
+          15.6622
+        ],
+        "encode_ms_p50": [
+          9.7398,
+          12.8671
+        ],
+        "encode_ms_p95": [
+          16.6978,
+          17.0112
+        ],
+        "cpu_ms_per_frame": [
+          6.031709558823529,
+          7.229477611940299
+        ],
+        "mbps": [
+          6.231334383224386,
+          6.413632186332921
+        ],
+        "psnr_db_median": [
+          36.595564888857474,
+          37.216329171534426
+        ],
+        "psnr_db_min": [
+          33.118711755466755,
+          33.81147355051502
+        ],
+        "undecodable_markers": [
+          0,
+          0
+        ],
+        "order_errors": [
+          0,
+          0
+        ],
+        "source_fps": [
+          162.10746734869463,
+          165.18106983492652
+        ],
+        "timed_frames_identified": [
+          262,
+          272
+        ],
+        "identity_checked": [
+          27,
+          28
+        ],
+        "identity_errors": [
+          0,
+          0
+        ],
+        "pipeline_drops": [
+          0,
+          0
+        ]
+      },
+      "fps": 53.53271649978447,
+      "latency_ms_p50": 42.1608,
+      "latency_ms_p95": 50.8638,
+      "latency_ms_max": 149.6336,
+      "present_to_capture_ms_p50": 0.2551,
+      "capture_to_nv12_ms_p50": 15.4727,
+      "encode_ms_p50": 10.8948,
+      "encode_ms_p95": 16.8518,
+      "cpu_ms_per_frame": 6.621747211895911,
+      "mbps": 6.321566649873403,
+      "psnr_db_median": 36.89537174286481,
+      "psnr_db_min": 33.29737486686891,
+      "undecodable_markers": 0,
+      "order_errors": 0,
+      "source_fps": 164.9762898822354,
+      "timed_frames_identified": 269,
+      "identity_checked": 27,
+      "identity_errors": 0,
+      "pipeline_drops": 0
+    },
+    {
+      "path": "gpu-nv12",
+      "encoder": "h264_qsv",
+      "mode": "sync",
+      "runs": 5,
+      "range": {
+        "fps": [
+          39.629163431942594,
+          40.48076552437669
+        ],
+        "latency_ms_p50": [
+          37.0662,
+          38.0356
+        ],
+        "latency_ms_p95": [
+          43.8834,
+          47.6198
+        ],
+        "latency_ms_max": [
+          144.9806,
+          152.9171
+        ],
+        "present_to_capture_ms_p50": [
+          1.22,
+          1.9828
+        ],
+        "capture_to_nv12_ms_p50": [
+          13.7656,
+          13.997
+        ],
+        "encode_ms_p50": [
+          9.5229,
+          9.8212
+        ],
+        "encode_ms_p95": [
+          10.2434,
+          10.8603
+        ],
+        "cpu_ms_per_frame": [
+          8.395522388059701,
+          9.591584158415841
+        ],
+        "mbps": [
+          4.710087378521453,
+          4.785697519384333
+        ],
+        "psnr_db_median": [
+          35.91417927070116,
+          36.83132693533508
+        ],
+        "psnr_db_min": [
+          33.004658627460046,
+          33.72090738861926
+        ],
+        "undecodable_markers": [
+          0,
+          0
+        ],
+        "order_errors": [
+          0,
+          0
+        ],
+        "source_fps": [
+          163.89347489692844,
+          165.13914947830415
+        ],
+        "timed_frames_identified": [
+          199,
+          203
+        ],
+        "identity_checked": [
+          20,
+          21
+        ],
+        "identity_errors": [
+          0,
+          0
+        ],
+        "pipeline_drops": [
+          0,
+          0
+        ]
+      },
+      "fps": 40.104448744594485,
+      "latency_ms_p50": 37.084,
+      "latency_ms_p95": 44.0714,
+      "latency_ms_max": 151.7631,
+      "present_to_capture_ms_p50": 1.2898,
+      "capture_to_nv12_ms_p50": 13.9105,
+      "encode_ms_p50": 9.6875,
+      "encode_ms_p95": 10.3348,
+      "cpu_ms_per_frame": 8.479899497487438,
+      "mbps": 4.7596438629174225,
+      "psnr_db_median": 36.244051828423935,
+      "psnr_db_min": 33.5215270262676,
+      "undecodable_markers": 0,
+      "order_errors": 0,
+      "source_fps": 165.04279356573883,
+      "timed_frames_identified": 201,
+      "identity_checked": 21,
+      "identity_errors": 0,
+      "pipeline_drops": 0
+    },
+    {
+      "path": "gpu-nv12",
+      "encoder": "h264_nvenc",
+      "mode": "reuse",
+      "runs": 5,
+      "range": {
+        "fps": [
+          60.728643843474906,
+          62.48588452852901
+        ],
+        "latency_ms_p50": [
+          30.1581,
+          30.6969
+        ],
+        "latency_ms_p95": [
+          34.4951,
+          35.2392
+        ],
+        "latency_ms_max": [
+          134.9429,
+          140.0541
+        ],
+        "present_to_capture_ms_p50": [
+          2.8043,
+          3.0069
+        ],
+        "capture_to_nv12_ms_p50": [
+          10.7126,
+          10.949
+        ],
+        "encode_ms_p50": [
+          4.2115,
+          4.2622
+        ],
+        "encode_ms_p95": [
+          4.7796,
+          4.9744
+        ],
+        "cpu_ms_per_frame": [
+          5.040322580645161,
+          7.388178913738019
+        ],
+        "mbps": [
+          7.387661897269611,
+          7.595004746632397
+        ],
+        "psnr_db_median": [
+          39.451640177671024,
+          40.68995588220676
+        ],
+        "psnr_db_min": [
+          35.77459881974124,
+          36.88591785930388
+        ],
+        "undecodable_markers": [
+          0,
+          0
+        ],
+        "order_errors": [
+          0,
+          0
+        ],
+        "source_fps": [
+          163.40799560513972,
+          165.09848723672042
+        ],
+        "timed_frames_identified": [
+          304,
+          313
+        ],
+        "identity_checked": [
+          31,
+          32
+        ],
+        "identity_errors": [
+          0,
+          0
+        ],
+        "pipeline_drops": [
+          0,
+          0
+        ]
+      },
+      "fps": 61.94809616814728,
+      "latency_ms_p50": 30.3648,
+      "latency_ms_p95": 34.8665,
+      "latency_ms_max": 139.3232,
+      "present_to_capture_ms_p50": 2.8446,
+      "capture_to_nv12_ms_p50": 10.9235,
+      "encode_ms_p50": 4.2352,
+      "encode_ms_p95": 4.8415,
+      "cpu_ms_per_frame": 6.510416666666667,
+      "mbps": 7.506512967714287,
+      "psnr_db_median": 39.47479824162018,
+      "psnr_db_min": 36.6037964033653,
+      "undecodable_markers": 0,
+      "order_errors": 0,
+      "source_fps": 164.74640044070685,
+      "timed_frames_identified": 310,
+      "identity_checked": 31,
+      "identity_errors": 0,
+      "pipeline_drops": 0
+    },
+    {
+      "path": "gpu-nv12",
+      "encoder": "h264_qsv",
+      "mode": "reuse",
+      "runs": 5,
+      "range": {
+        "fps": [
+          44.104700327721204,
+          45.872497393486604
+        ],
+        "latency_ms_p50": [
+          36.0564,
+          37.3024
+        ],
+        "latency_ms_p95": [
+          42.1585,
+          43.5551
+        ],
+        "latency_ms_max": [
+          140.7145,
+          151.9388
+        ],
+        "present_to_capture_ms_p50": [
+          2.5033,
+          2.7977
+        ],
+        "capture_to_nv12_ms_p50": [
+          10.9615,
+          11.6852
+        ],
+        "encode_ms_p50": [
+          9.45,
+          9.681
+        ],
+        "encode_ms_p95": [
+          10.7233,
+          10.9102
+        ],
+        "cpu_ms_per_frame": [
+          6.182065217391305,
+          7.460585585585585
+        ],
+        "mbps": [
+          5.245849520390917,
+          5.433385903879197
+        ],
+        "psnr_db_median": [
+          36.911271936877235,
+          37.536620983588335
+        ],
+        "psnr_db_min": [
+          32.97618832384877,
+          34.00556139224747
+        ],
+        "undecodable_markers": [
+          0,
+          0
+        ],
+        "order_errors": [
+          0,
+          0
+        ],
+        "source_fps": [
+          161.92137421913841,
+          165.14099061655176
+        ],
+        "timed_frames_identified": [
+          221,
+          230
+        ],
+        "identity_checked": [
+          23,
+          23
+        ],
+        "identity_errors": [
+          0,
+          0
+        ],
+        "pipeline_drops": [
+          0,
+          0
+        ]
+      },
+      "fps": 44.37845071191201,
+      "latency_ms_p50": 36.6991,
+      "latency_ms_p95": 43.0658,
+      "latency_ms_max": 146.1093,
+      "present_to_capture_ms_p50": 2.6511,
+      "capture_to_nv12_ms_p50": 11.3476,
+      "encode_ms_p50": 9.5225,
+      "encode_ms_p95": 10.7792,
+      "cpu_ms_per_frame": 6.999434389140271,
+      "mbps": 5.2676498728608765,
+      "psnr_db_median": 37.09255852060943,
+      "psnr_db_min": 33.41125572789052,
+      "undecodable_markers": 0,
+      "order_errors": 0,
+      "source_fps": 164.24510574531473,
+      "timed_frames_identified": 222,
+      "identity_checked": 23,
+      "identity_errors": 0,
+      "pipeline_drops": 0
+    },
+    {
+      "path": "gpu-nv12",
+      "encoder": "hevc_nvenc",
+      "mode": "reuse",
+      "runs": 5,
+      "range": {
+        "fps": [
+          63.051007946165676,
+          64.59935400645276
+        ],
+        "latency_ms_p50": [
+          29.0381,
+          29.2816
+        ],
+        "latency_ms_p95": [
+          32.9493,
+          34.2098
+        ],
+        "latency_ms_max": [
+          130.6897,
+          162.0548
+        ],
+        "present_to_capture_ms_p50": [
+          2.065,
+          2.3534
+        ],
+        "capture_to_nv12_ms_p50": [
+          10.8633,
+          11.1279
+        ],
+        "encode_ms_p50": [
+          3.4427,
+          3.4836
+        ],
+        "encode_ms_p95": [
+          3.9862,
+          4.2515
+        ],
+        "cpu_ms_per_frame": [
+          3.6851415094339623,
+          5.338949843260188
+        ],
+        "mbps": [
+          8.245149497595738,
+          8.427810121897844
+        ],
+        "psnr_db_median": [
+          46.490064238973126,
+          46.93607553204279
+        ],
+        "psnr_db_min": [
+          45.63983862924726,
+          45.90887492902948
+        ],
+        "undecodable_markers": [
+          0,
+          0
+        ],
+        "order_errors": [
+          0,
+          0
+        ],
+        "source_fps": [
+          163.83440601244587,
+          165.19834801650146
+        ],
+        "timed_frames_identified": [
+          316,
+          323
+        ],
+        "identity_checked": [
+          32,
+          33
+        ],
+        "identity_errors": [
+          0,
+          0
+        ],
+        "pipeline_drops": [
+          0,
+          0
+        ]
+      },
+      "fps": 63.535781843850955,
+      "latency_ms_p50": 29.1811,
+      "latency_ms_p95": 33.9162,
+      "latency_ms_max": 141.7141,
+      "present_to_capture_ms_p50": 2.2714,
+      "capture_to_nv12_ms_p50": 10.9759,
+      "encode_ms_p50": 3.4609,
+      "encode_ms_p95": 4.0925,
+      "cpu_ms_per_frame": 4.885835913312693,
+      "mbps": 8.29527622847821,
+      "psnr_db_median": 46.5558899130569,
+      "psnr_db_min": 45.80234391063114,
+      "undecodable_markers": 0,
+      "order_errors": 0,
+      "source_fps": 165.0273648736382,
+      "timed_frames_identified": 319,
+      "identity_checked": 32,
+      "identity_errors": 0,
+      "pipeline_drops": 0
+    },
+    {
+      "path": "gpu-nv12",
+      "encoder": "av1_nvenc",
+      "mode": "reuse",
+      "runs": 5,
+      "range": {
+        "fps": [
+          56.293875910992234,
+          63.99816642261367
+        ],
+        "latency_ms_p50": [
+          29.1798,
+          29.3946
+        ],
+        "latency_ms_p95": [
+          33.7364,
+          51.1212
+        ],
+        "latency_ms_max": [
+          133.9974,
+          155.8834
+        ],
+        "present_to_capture_ms_p50": [
+          2.3138,
+          2.4849
+        ],
+        "capture_to_nv12_ms_p50": [
+          10.9565,
+          11.2332
+        ],
+        "encode_ms_p50": [
+          3.4205,
+          3.46
+        ],
+        "encode_ms_p95": [
+          3.9449,
+          4.1119
+        ],
+        "cpu_ms_per_frame": [
+          4.443359375,
+          7.758620689655173
+        ],
+        "mbps": [
+          7.663538450581299,
+          8.563742582466276
+        ],
+        "psnr_db_median": [
+          50.041958106396145,
+          50.19603914784159
+        ],
+        "psnr_db_min": [
+          45.973600730640236,
+          47.06876096028607
+        ],
+        "undecodable_markers": [
+          0,
+          0
+        ],
+        "order_errors": [
+          0,
+          0
+        ],
+        "source_fps": [
+          151.7139918168585,
+          165.07938254805023
+        ],
+        "timed_frames_identified": [
+          282,
+          321
+        ],
+        "identity_checked": [
+          29,
+          33
+        ],
+        "identity_errors": [
+          0,
+          0
+        ],
+        "pipeline_drops": [
+          0,
+          0
+        ]
+      },
+      "fps": 63.04416113807702,
+      "latency_ms_p50": 29.3739,
+      "latency_ms_p95": 33.8774,
+      "latency_ms_max": 134.6488,
+      "present_to_capture_ms_p50": 2.3922,
+      "capture_to_nv12_ms_p50": 11.0139,
+      "encode_ms_p50": 3.44,
+      "encode_ms_p95": 4.0224,
+      "cpu_ms_per_frame": 6.675237341772152,
+      "mbps": 8.470801824968087,
+      "psnr_db_median": 50.17004446256479,
+      "psnr_db_min": 46.0317694367746,
+      "undecodable_markers": 0,
+      "order_errors": 0,
+      "source_fps": 163.23682520475282,
+      "timed_frames_identified": 316,
+      "identity_checked": 32,
+      "identity_errors": 0,
+      "pipeline_drops": 0
+    },
+    {
+      "path": "gpu-nv12",
+      "encoder": "hevc_qsv",
+      "mode": "pipelined",
+      "runs": 5,
+      "range": {
+        "fps": [
+          45.647852967192286,
+          53.08823016373545
+        ],
+        "latency_ms_p50": [
+          46.9396,
+          47.4365
+        ],
+        "latency_ms_p95": [
+          52.3524,
+          67.2302
+        ],
+        "latency_ms_max": [
+          160.2838,
+          170.8671
+        ],
+        "present_to_capture_ms_p50": [
+          0.2882,
+          0.4706
+        ],
+        "capture_to_nv12_ms_p50": [
+          16.8686,
+          17.6004
+        ],
+        "encode_ms_p50": [
+          14.9402,
+          16.0739
+        ],
+        "encode_ms_p95": [
+          18.6378,
+          20.743
+        ],
+        "cpu_ms_per_frame": [
+          6.3215648854961835,
+          9.347707423580786
+        ],
+        "mbps": [
+          5.405326123710475,
+          6.336026782652037
+        ],
+        "psnr_db_median": [
+          43.58645226148889,
+          43.970541993919866
+        ],
+        "psnr_db_min": [
+          41.69761277276392,
+          42.80314446330188
+        ],
+        "undecodable_markers": [
+          0,
+          0
+        ],
+        "order_errors": [
+          0,
+          0
+        ],
+        "source_fps": [
+          156.87711914925907,
+          165.1724332541697
+        ],
+        "timed_frames_identified": [
+          229,
+          266
+        ],
+        "identity_checked": [
+          23,
+          27
+        ],
+        "identity_errors": [
+          0,
+          0
+        ],
+        "pipeline_drops": [
+          0,
+          1
+        ]
+      },
+      "fps": 49.95195756049469,
+      "latency_ms_p50": 47.2821,
+      "latency_ms_p95": 54.8593,
+      "latency_ms_max": 166.2559,
+      "present_to_capture_ms_p50": 0.3419,
+      "capture_to_nv12_ms_p50": 17.1383,
+      "encode_ms_p50": 15.758,
+      "encode_ms_p95": 18.7928,
+      "cpu_ms_per_frame": 7.594621513944223,
+      "mbps": 5.949261428465136,
+      "psnr_db_median": 43.88635527222138,
+      "psnr_db_min": 41.88807230991239,
+      "undecodable_markers": 0,
+      "order_errors": 0,
+      "source_fps": 161.0159564820006,
+      "timed_frames_identified": 251,
+      "identity_checked": 26,
+      "identity_errors": 0,
+      "pipeline_drops": 0
+    }
+  ],
+  "runs": {
+    "gpu-nv12|h264_nvenc|sync": [
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_nvenc",
+        "mode": "sync",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 268,
+        "fps": 53.56175476462286,
+        "latency_ms_p50": 31.4132,
+        "latency_ms_p95": 38.1278,
+        "latency_ms_max": 138.7643,
+        "present_to_capture_ms_p50": 1.3236,
+        "capture_to_nv12_ms_p50": 13.4508,
+        "encode_ms_p50": 4.1796,
+        "encode_ms_p95": 4.5989,
+        "cpu_ms_per_frame": 7.3460820895522385,
+        "mbps": 6.599454125775415,
+        "psnr_db_median": 38.79538579053049,
+        "psnr_db_min": 36.23893860830734,
+        "decoded_frames": 268,
+        "timed_frames_identified": 268,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 27,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 164.48255287792767,
+        "run": 3,
+        "order": 1
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_nvenc",
+        "mode": "sync",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 266,
+        "fps": 53.088709077383974,
+        "latency_ms_p50": 31.2048,
+        "latency_ms_p95": 37.2286,
+        "latency_ms_max": 147.3737,
+        "present_to_capture_ms_p50": 1.0656,
+        "capture_to_nv12_ms_p50": 13.5784,
+        "encode_ms_p50": 4.1767,
+        "encode_ms_p95": 4.7475,
+        "cpu_ms_per_frame": 7.929981203007519,
+        "mbps": 6.523598050933507,
+        "psnr_db_median": 38.81026083666026,
+        "psnr_db_min": 36.80680768531472,
+        "decoded_frames": 266,
+        "timed_frames_identified": 266,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 27,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 162.45943304131788,
+        "run": 4,
+        "order": 27
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_nvenc",
+        "mode": "sync",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 266,
+        "fps": 53.09277383397728,
+        "latency_ms_p50": 31.4721,
+        "latency_ms_p95": 37.7842,
+        "latency_ms_max": 146.4993,
+        "present_to_capture_ms_p50": 1.2913,
+        "capture_to_nv12_ms_p50": 13.647,
+        "encode_ms_p50": 4.1687,
+        "encode_ms_p95": 4.5412,
+        "cpu_ms_per_frame": 7.695018796992481,
+        "mbps": 6.533438667269107,
+        "psnr_db_median": 38.542474411499576,
+        "psnr_db_min": 36.797067955381124,
+        "decoded_frames": 266,
+        "timed_frames_identified": 266,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 27,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 164.66743764297465,
+        "run": 5,
+        "order": 40
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_nvenc",
+        "mode": "sync",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 266,
+        "fps": 53.00400813917405,
+        "latency_ms_p50": 31.7691,
+        "latency_ms_p95": 37.8863,
+        "latency_ms_max": 140.0862,
+        "present_to_capture_ms_p50": 1.5427,
+        "capture_to_nv12_ms_p50": 13.7057,
+        "encode_ms_p50": 4.1599,
+        "encode_ms_p95": 4.5191,
+        "cpu_ms_per_frame": 7.636278195488722,
+        "mbps": 6.556685076724274,
+        "psnr_db_median": 38.516543999271995,
+        "psnr_db_min": 36.457172124995516,
+        "decoded_frames": 266,
+        "timed_frames_identified": 266,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 27,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.18918326080933,
+        "run": 2,
+        "order": 51
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_nvenc",
+        "mode": "sync",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 269,
+        "fps": 53.63608918418715,
+        "latency_ms_p50": 31.0362,
+        "latency_ms_p95": 37.1598,
+        "latency_ms_max": 139.0176,
+        "present_to_capture_ms_p50": 0.9774,
+        "capture_to_nv12_ms_p50": 13.6365,
+        "encode_ms_p50": 4.1091,
+        "encode_ms_p95": 4.4033,
+        "cpu_ms_per_frame": 7.028345724907063,
+        "mbps": 6.59662963177938,
+        "psnr_db_median": 38.62240146177908,
+        "psnr_db_min": 36.615837059677524,
+        "decoded_frames": 269,
+        "timed_frames_identified": 269,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 27,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.09547154091806,
+        "run": 1,
+        "order": 57
+      }
+    ],
+    "gpu-nv12|h264_nvenc|pipelined": [
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_nvenc",
+        "mode": "pipelined",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 387,
+        "fps": 77.01483801302902,
+        "latency_ms_p50": 28.9036,
+        "latency_ms_p95": 35.0696,
+        "latency_ms_max": 143.8429,
+        "present_to_capture_ms_p50": 0.3689,
+        "capture_to_nv12_ms_p50": 11.3446,
+        "encode_ms_p50": 4.4893,
+        "encode_ms_p95": 5.0071,
+        "cpu_ms_per_frame": 5.773578811369509,
+        "mbps": 9.344078554976717,
+        "psnr_db_median": 39.33441650113747,
+        "psnr_db_min": 36.30199981311784,
+        "decoded_frames": 387,
+        "timed_frames_identified": 387,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 39,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 163.38289924727863,
+        "run": 5,
+        "order": 2
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_nvenc",
+        "mode": "pipelined",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 399,
+        "fps": 79.35445489047875,
+        "latency_ms_p50": 28.7186,
+        "latency_ms_p95": 31.8515,
+        "latency_ms_max": 140.7673,
+        "present_to_capture_ms_p50": 0.301,
+        "capture_to_nv12_ms_p50": 11.1704,
+        "encode_ms_p50": 4.4776,
+        "encode_ms_p95": 4.8314,
+        "cpu_ms_per_frame": 5.913220551378446,
+        "mbps": 9.594804021444624,
+        "psnr_db_median": 40.475494618557235,
+        "psnr_db_min": 36.80502560344809,
+        "decoded_frames": 399,
+        "timed_frames_identified": 399,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 40,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 164.87429349425284,
+        "run": 4,
+        "order": 15
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_nvenc",
+        "mode": "pipelined",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 361,
+        "fps": 71.88551238500149,
+        "latency_ms_p50": 29.0698,
+        "latency_ms_p95": 36.2531,
+        "latency_ms_max": 138.267,
+        "present_to_capture_ms_p50": 0.3816,
+        "capture_to_nv12_ms_p50": 11.5526,
+        "encode_ms_p50": 4.4378,
+        "encode_ms_p95": 5.1488,
+        "cpu_ms_per_frame": 7.487880886426593,
+        "mbps": 8.758491003219946,
+        "psnr_db_median": 39.51781625677204,
+        "psnr_db_min": 36.552402501027636,
+        "decoded_frames": 361,
+        "timed_frames_identified": 361,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 37,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 158.10830147836893,
+        "run": 2,
+        "order": 25
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_nvenc",
+        "mode": "pipelined",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 398,
+        "fps": 79.29668858025222,
+        "latency_ms_p50": 28.7459,
+        "latency_ms_p95": 31.1871,
+        "latency_ms_max": 139.1911,
+        "present_to_capture_ms_p50": 0.3057,
+        "capture_to_nv12_ms_p50": 11.2373,
+        "encode_ms_p50": 4.4486,
+        "encode_ms_p95": 4.8804,
+        "cpu_ms_per_frame": 5.888819095477387,
+        "mbps": 9.658813246157848,
+        "psnr_db_median": 37.58327140645635,
+        "psnr_db_min": 35.7888050157372,
+        "decoded_frames": 398,
+        "timed_frames_identified": 398,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 40,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 164.96899031268555,
+        "run": 1,
+        "order": 34
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_nvenc",
+        "mode": "pipelined",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 390,
+        "fps": 77.5961230430005,
+        "latency_ms_p50": 29.0466,
+        "latency_ms_p95": 31.6239,
+        "latency_ms_max": 136.3069,
+        "present_to_capture_ms_p50": 0.3959,
+        "capture_to_nv12_ms_p50": 11.5481,
+        "encode_ms_p50": 4.4818,
+        "encode_ms_p95": 4.962,
+        "cpu_ms_per_frame": 5.769230769230769,
+        "mbps": 9.301656579732267,
+        "psnr_db_median": 39.426385183241905,
+        "psnr_db_min": 36.51827755371433,
+        "decoded_frames": 390,
+        "timed_frames_identified": 390,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 39,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.14046698894978,
+        "run": 3,
+        "order": 60
+      }
+    ],
+    "gpu-nv12|av1_nvenc|pipelined": [
+      {
+        "path": "gpu-nv12",
+        "encoder": "av1_nvenc",
+        "mode": "pipelined",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 383,
+        "fps": 76.34410372558413,
+        "latency_ms_p50": 28.0314,
+        "latency_ms_p95": 34.9447,
+        "latency_ms_max": 142.6876,
+        "present_to_capture_ms_p50": 0.5138,
+        "capture_to_nv12_ms_p50": 11.2718,
+        "encode_ms_p50": 3.7206,
+        "encode_ms_p95": 4.3732,
+        "cpu_ms_per_frame": 6.445822454308094,
+        "mbps": 10.131400760416502,
+        "psnr_db_median": 50.84382666051123,
+        "psnr_db_min": 46.542486498165076,
+        "decoded_frames": 383,
+        "timed_frames_identified": 383,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 39,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 164.05012367142493,
+        "run": 1,
+        "order": 3
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "av1_nvenc",
+        "mode": "pipelined",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 389,
+        "fps": 77.48941776423756,
+        "latency_ms_p50": 28.1818,
+        "latency_ms_p95": 34.6968,
+        "latency_ms_max": 157.5123,
+        "present_to_capture_ms_p50": 0.3698,
+        "capture_to_nv12_ms_p50": 11.4584,
+        "encode_ms_p50": 3.6779,
+        "encode_ms_p95": 3.9923,
+        "cpu_ms_per_frame": 6.025064267352185,
+        "mbps": 10.271694432413444,
+        "psnr_db_median": 50.783918466264325,
+        "psnr_db_min": 46.90431380407909,
+        "decoded_frames": 389,
+        "timed_frames_identified": 389,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 39,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 164.14210858028727,
+        "run": 2,
+        "order": 5
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "av1_nvenc",
+        "mode": "pipelined",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 397,
+        "fps": 79.1304673845966,
+        "latency_ms_p50": 27.984,
+        "latency_ms_p95": 34.8319,
+        "latency_ms_max": 137.2722,
+        "present_to_capture_ms_p50": 0.3667,
+        "capture_to_nv12_ms_p50": 11.2257,
+        "encode_ms_p50": 3.7325,
+        "encode_ms_p95": 4.1201,
+        "cpu_ms_per_frame": 5.667506297229219,
+        "mbps": 10.480399472922349,
+        "psnr_db_median": 50.92046362186874,
+        "psnr_db_min": 46.04278944071535,
+        "decoded_frames": 397,
+        "timed_frames_identified": 397,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 40,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.03785137140045,
+        "run": 4,
+        "order": 30
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "av1_nvenc",
+        "mode": "pipelined",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 394,
+        "fps": 78.45558000377889,
+        "latency_ms_p50": 27.8929,
+        "latency_ms_p95": 34.4273,
+        "latency_ms_max": 146.3704,
+        "present_to_capture_ms_p50": 0.3272,
+        "capture_to_nv12_ms_p50": 11.2217,
+        "encode_ms_p50": 3.6742,
+        "encode_ms_p95": 4.0284,
+        "cpu_ms_per_frame": 5.472715736040609,
+        "mbps": 10.404180049581736,
+        "psnr_db_median": 51.02520579207513,
+        "psnr_db_min": 46.776180186777765,
+        "decoded_frames": 394,
+        "timed_frames_identified": 394,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 40,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 163.88056432261428,
+        "run": 5,
+        "order": 36
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "av1_nvenc",
+        "mode": "pipelined",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 384,
+        "fps": 76.45054151672134,
+        "latency_ms_p50": 27.9744,
+        "latency_ms_p95": 34.3648,
+        "latency_ms_max": 140.6253,
+        "present_to_capture_ms_p50": 0.4616,
+        "capture_to_nv12_ms_p50": 11.4007,
+        "encode_ms_p50": 3.6565,
+        "encode_ms_p95": 4.2402,
+        "cpu_ms_per_frame": 5.574544270833333,
+        "mbps": 10.130744760472203,
+        "psnr_db_median": 51.10647720678944,
+        "psnr_db_min": 45.88925740420349,
+        "decoded_frames": 384,
+        "timed_frames_identified": 384,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 39,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 163.65194043423162,
+        "run": 3,
+        "order": 62
+      }
+    ],
+    "gpu-nv12|av1_nvenc|sync": [
+      {
+        "path": "gpu-nv12",
+        "encoder": "av1_nvenc",
+        "mode": "sync",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 256,
+        "fps": 51.15252534121867,
+        "latency_ms_p50": 30.9769,
+        "latency_ms_p95": 38.3872,
+        "latency_ms_max": 143.4133,
+        "present_to_capture_ms_p50": 1.554,
+        "capture_to_nv12_ms_p50": 14.2462,
+        "encode_ms_p50": 3.293,
+        "encode_ms_p95": 3.848,
+        "cpu_ms_per_frame": 8.4228515625,
+        "mbps": 7.022322582409598,
+        "psnr_db_median": 49.974222894378144,
+        "psnr_db_min": 46.52852604857852,
+        "decoded_frames": 256,
+        "timed_frames_identified": 256,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 26,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 160.2512707955366,
+        "run": 2,
+        "order": 4
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "av1_nvenc",
+        "mode": "sync",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 267,
+        "fps": 53.35776092929218,
+        "latency_ms_p50": 31.5633,
+        "latency_ms_p95": 38.4942,
+        "latency_ms_max": 136.3974,
+        "present_to_capture_ms_p50": 1.8365,
+        "capture_to_nv12_ms_p50": 14.3957,
+        "encode_ms_p50": 3.2796,
+        "encode_ms_p95": 3.7347,
+        "cpu_ms_per_frame": 7.783239700374532,
+        "mbps": 7.314569640381149,
+        "psnr_db_median": 50.085973443330886,
+        "psnr_db_min": 45.58405150262131,
+        "decoded_frames": 267,
+        "timed_frames_identified": 267,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 27,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 163.47059340884272,
+        "run": 4,
+        "order": 28
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "av1_nvenc",
+        "mode": "sync",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 270,
+        "fps": 53.81751556820462,
+        "latency_ms_p50": 32.4004,
+        "latency_ms_p95": 37.9299,
+        "latency_ms_max": 139.3003,
+        "present_to_capture_ms_p50": 2.1265,
+        "capture_to_nv12_ms_p50": 14.3702,
+        "encode_ms_p50": 3.3139,
+        "encode_ms_p95": 3.6492,
+        "cpu_ms_per_frame": 7.75462962962963,
+        "mbps": 7.332653239394945,
+        "psnr_db_median": 50.10423533588004,
+        "psnr_db_min": 46.36929022909776,
+        "decoded_frames": 270,
+        "timed_frames_identified": 270,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 27,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.0403810758275,
+        "run": 1,
+        "order": 46
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "av1_nvenc",
+        "mode": "sync",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 271,
+        "fps": 54.09190166187989,
+        "latency_ms_p50": 35.2972,
+        "latency_ms_p95": 38.0244,
+        "latency_ms_max": 134.9381,
+        "present_to_capture_ms_p50": 4.8302,
+        "capture_to_nv12_ms_p50": 14.3296,
+        "encode_ms_p50": 3.309,
+        "encode_ms_p95": 3.6308,
+        "cpu_ms_per_frame": 7.380073800738008,
+        "mbps": 7.390097082188878,
+        "psnr_db_median": 50.15694794972079,
+        "psnr_db_min": 45.93410789620485,
+        "decoded_frames": 271,
+        "timed_frames_identified": 271,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 28,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.07012056964822,
+        "run": 3,
+        "order": 53
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "av1_nvenc",
+        "mode": "sync",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 268,
+        "fps": 53.500292574736925,
+        "latency_ms_p50": 32.0183,
+        "latency_ms_p95": 37.805,
+        "latency_ms_max": 143.0741,
+        "present_to_capture_ms_p50": 1.831,
+        "capture_to_nv12_ms_p50": 14.5418,
+        "encode_ms_p50": 3.2768,
+        "encode_ms_p95": 3.6226,
+        "cpu_ms_per_frame": 8.278917910447761,
+        "mbps": 7.297056621515969,
+        "psnr_db_median": 49.91346034984315,
+        "psnr_db_min": 46.54557087999633,
+        "decoded_frames": 268,
+        "timed_frames_identified": 268,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 27,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 163.6949250421055,
+        "run": 5,
+        "order": 59
+      }
+    ],
+    "gpu-nv12|hevc_qsv|reuse": [
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_qsv",
+        "mode": "reuse",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 193,
+        "fps": 38.46155685686301,
+        "latency_ms_p50": 40.7112,
+        "latency_ms_p95": 47.8684,
+        "latency_ms_max": 171.0725,
+        "present_to_capture_ms_p50": 4.7277,
+        "capture_to_nv12_ms_p50": 11.8915,
+        "encode_ms_p50": 11.4647,
+        "encode_ms_p95": 13.5739,
+        "cpu_ms_per_frame": 8.743523316062177,
+        "mbps": 4.525429027706242,
+        "psnr_db_median": 43.28876025816996,
+        "psnr_db_min": 42.148524922020634,
+        "decoded_frames": 193,
+        "timed_frames_identified": 193,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 20,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 158.42972902179324,
+        "run": 1,
+        "order": 6
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_qsv",
+        "mode": "reuse",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 201,
+        "fps": 40.115971481496175,
+        "latency_ms_p50": 41.0745,
+        "latency_ms_p95": 44.324,
+        "latency_ms_max": 163.7158,
+        "present_to_capture_ms_p50": 4.7467,
+        "capture_to_nv12_ms_p50": 11.8701,
+        "encode_ms_p50": 11.4767,
+        "encode_ms_p95": 12.8218,
+        "cpu_ms_per_frame": 6.452114427860696,
+        "mbps": 4.73061905610035,
+        "psnr_db_median": 43.06372236425494,
+        "psnr_db_min": 41.840728621971735,
+        "decoded_frames": 201,
+        "timed_frames_identified": 201,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 21,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.05427072237478,
+        "run": 5,
+        "order": 18
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_qsv",
+        "mode": "reuse",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 197,
+        "fps": 39.24499248338482,
+        "latency_ms_p50": 40.8203,
+        "latency_ms_p95": 47.5503,
+        "latency_ms_max": 160.2934,
+        "present_to_capture_ms_p50": 4.4065,
+        "capture_to_nv12_ms_p50": 12.2281,
+        "encode_ms_p50": 11.3869,
+        "encode_ms_p95": 13.5538,
+        "cpu_ms_per_frame": 6.66243654822335,
+        "mbps": 4.621589124570664,
+        "psnr_db_median": 42.643397816921144,
+        "psnr_db_min": 41.80162223384703,
+        "decoded_frames": 197,
+        "timed_frames_identified": 197,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 20,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 164.55007000647646,
+        "run": 3,
+        "order": 26
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_qsv",
+        "mode": "reuse",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 196,
+        "fps": 39.17133676602445,
+        "latency_ms_p50": 41.2783,
+        "latency_ms_p95": 48.1132,
+        "latency_ms_max": 164.2412,
+        "present_to_capture_ms_p50": 4.798,
+        "capture_to_nv12_ms_p50": 12.2212,
+        "encode_ms_p50": 11.5332,
+        "encode_ms_p95": 13.4246,
+        "cpu_ms_per_frame": 6.138392857142857,
+        "mbps": 4.638516212145697,
+        "psnr_db_median": 43.14213546844144,
+        "psnr_db_min": 41.70870094631178,
+        "decoded_frames": 196,
+        "timed_frames_identified": 196,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 20,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 163.88008238846967,
+        "run": 2,
+        "order": 37
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_qsv",
+        "mode": "reuse",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 201,
+        "fps": 40.1551627452777,
+        "latency_ms_p50": 38.6235,
+        "latency_ms_p95": 43.7703,
+        "latency_ms_max": 159.7042,
+        "present_to_capture_ms_p50": 4.5692,
+        "capture_to_nv12_ms_p50": 11.8281,
+        "encode_ms_p50": 11.4651,
+        "encode_ms_p95": 12.7717,
+        "cpu_ms_per_frame": 6.374378109452737,
+        "mbps": 4.692892715993214,
+        "psnr_db_median": 43.16763884592368,
+        "psnr_db_min": 40.476227876204554,
+        "decoded_frames": 201,
+        "timed_frames_identified": 201,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 21,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 164.2166357045685,
+        "run": 4,
+        "order": 70
+      }
+    ],
+    "gpu-nv12|hevc_nvenc|sync": [
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_nvenc",
+        "mode": "sync",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 267,
+        "fps": 53.360888603084376,
+        "latency_ms_p50": 32.3625,
+        "latency_ms_p95": 38.0449,
+        "latency_ms_max": 144.7842,
+        "present_to_capture_ms_p50": 2.0169,
+        "capture_to_nv12_ms_p50": 14.5385,
+        "encode_ms_p50": 3.3503,
+        "encode_ms_p95": 3.6884,
+        "cpu_ms_per_frame": 7.6661985018726595,
+        "mbps": 7.314534738617282,
+        "psnr_db_median": 46.37311124990611,
+        "psnr_db_min": 44.43026008379704,
+        "decoded_frames": 267,
+        "timed_frames_identified": 267,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 27,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 164.8791501780697,
+        "run": 5,
+        "order": 7
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_nvenc",
+        "mode": "sync",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 268,
+        "fps": 53.4359750683767,
+        "latency_ms_p50": 32.0497,
+        "latency_ms_p95": 38.5526,
+        "latency_ms_max": 138.7306,
+        "present_to_capture_ms_p50": 2.5721,
+        "capture_to_nv12_ms_p50": 14.3243,
+        "encode_ms_p50": 3.3601,
+        "encode_ms_p95": 3.9515,
+        "cpu_ms_per_frame": 7.404384328358209,
+        "mbps": 7.2724176775945955,
+        "psnr_db_median": 46.39516324167188,
+        "psnr_db_min": 45.38329999960931,
+        "decoded_frames": 268,
+        "timed_frames_identified": 268,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 27,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 164.29568453859105,
+        "run": 2,
+        "order": 24
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_nvenc",
+        "mode": "sync",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 267,
+        "fps": 53.35295549796535,
+        "latency_ms_p50": 32.5897,
+        "latency_ms_p95": 38.3914,
+        "latency_ms_max": 152.486,
+        "present_to_capture_ms_p50": 2.3074,
+        "capture_to_nv12_ms_p50": 14.4665,
+        "encode_ms_p50": 3.3331,
+        "encode_ms_p95": 3.7981,
+        "cpu_ms_per_frame": 7.432116104868914,
+        "mbps": 7.223528181791131,
+        "psnr_db_median": 46.49900343842431,
+        "psnr_db_min": 45.69041704464509,
+        "decoded_frames": 267,
+        "timed_frames_identified": 267,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 27,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 164.05534256115936,
+        "run": 3,
+        "order": 31
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_nvenc",
+        "mode": "sync",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 268,
+        "fps": 53.50085756084581,
+        "latency_ms_p50": 31.7675,
+        "latency_ms_p95": 38.4204,
+        "latency_ms_max": 140.2579,
+        "present_to_capture_ms_p50": 1.8841,
+        "capture_to_nv12_ms_p50": 14.5092,
+        "encode_ms_p50": 3.3091,
+        "encode_ms_p95": 3.6947,
+        "cpu_ms_per_frame": 7.69589552238806,
+        "mbps": 7.281484281476881,
+        "psnr_db_median": 46.6179537198242,
+        "psnr_db_min": 45.611583013908295,
+        "decoded_frames": 268,
+        "timed_frames_identified": 268,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 27,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.09406418962493,
+        "run": 1,
+        "order": 32
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_nvenc",
+        "mode": "sync",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 272,
+        "fps": 54.34022249484485,
+        "latency_ms_p50": 32.835,
+        "latency_ms_p95": 38.1202,
+        "latency_ms_max": 140.8752,
+        "present_to_capture_ms_p50": 3.1799,
+        "capture_to_nv12_ms_p50": 14.3043,
+        "encode_ms_p50": 3.3205,
+        "encode_ms_p95": 3.6561,
+        "cpu_ms_per_frame": 7.582720588235294,
+        "mbps": 7.3382107279070015,
+        "psnr_db_median": 46.30065962561014,
+        "psnr_db_min": 44.81504748040595,
+        "decoded_frames": 272,
+        "timed_frames_identified": 272,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 28,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.01846978213916,
+        "run": 4,
+        "order": 38
+      }
+    ],
+    "gpu-nv12|hevc_nvenc|pipelined": [
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_nvenc",
+        "mode": "pipelined",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 391,
+        "fps": 77.81166841890807,
+        "latency_ms_p50": 28.2332,
+        "latency_ms_p95": 30.9171,
+        "latency_ms_max": 146.6531,
+        "present_to_capture_ms_p50": 0.3542,
+        "capture_to_nv12_ms_p50": 11.2875,
+        "encode_ms_p50": 3.7486,
+        "encode_ms_p95": 4.0937,
+        "cpu_ms_per_frame": 5.754475703324808,
+        "mbps": 9.655408339817237,
+        "psnr_db_median": 48.38495056103536,
+        "psnr_db_min": 47.33655934888087,
+        "decoded_frames": 391,
+        "timed_frames_identified": 391,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 40,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.17566441865395,
+        "run": 2,
+        "order": 8
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_nvenc",
+        "mode": "pipelined",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 395,
+        "fps": 78.57052252402848,
+        "latency_ms_p50": 27.9069,
+        "latency_ms_p95": 34.2805,
+        "latency_ms_max": 141.515,
+        "present_to_capture_ms_p50": 0.3156,
+        "capture_to_nv12_ms_p50": 11.2085,
+        "encode_ms_p50": 3.7596,
+        "encode_ms_p95": 4.1434,
+        "cpu_ms_per_frame": 5.775316455696203,
+        "mbps": 9.734161311491032,
+        "psnr_db_median": 48.18851666738293,
+        "psnr_db_min": 47.161305676286645,
+        "decoded_frames": 395,
+        "timed_frames_identified": 395,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 40,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.09755365808516,
+        "run": 5,
+        "order": 29
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_nvenc",
+        "mode": "pipelined",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 338,
+        "fps": 67.26555967325069,
+        "latency_ms_p50": 28.1689,
+        "latency_ms_p95": 48.2575,
+        "latency_ms_max": 193.8126,
+        "present_to_capture_ms_p50": 0.4587,
+        "capture_to_nv12_ms_p50": 11.3254,
+        "encode_ms_p50": 3.7319,
+        "encode_ms_p95": 4.4239,
+        "cpu_ms_per_frame": 7.303994082840236,
+        "mbps": 8.42802118435423,
+        "psnr_db_median": 48.03108483610531,
+        "psnr_db_min": 47.4040494006115,
+        "decoded_frames": 338,
+        "timed_frames_identified": 338,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 34,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 151.04899346744756,
+        "run": 4,
+        "order": 43
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_nvenc",
+        "mode": "pipelined",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 390,
+        "fps": 77.66886036720096,
+        "latency_ms_p50": 28.274,
+        "latency_ms_p95": 30.9664,
+        "latency_ms_max": 141.681,
+        "present_to_capture_ms_p50": 0.3494,
+        "capture_to_nv12_ms_p50": 11.3782,
+        "encode_ms_p50": 3.7642,
+        "encode_ms_p95": 4.1574,
+        "cpu_ms_per_frame": 6.009615384615385,
+        "mbps": 9.654752356423352,
+        "psnr_db_median": 48.337241922260795,
+        "psnr_db_min": 47.096686228586194,
+        "decoded_frames": 390,
+        "timed_frames_identified": 390,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 39,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.09611601130666,
+        "run": 3,
+        "order": 58
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_nvenc",
+        "mode": "pipelined",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 386,
+        "fps": 76.87680070463321,
+        "latency_ms_p50": 28.0542,
+        "latency_ms_p95": 34.478,
+        "latency_ms_max": 139.7776,
+        "present_to_capture_ms_p50": 0.3497,
+        "capture_to_nv12_ms_p50": 11.3263,
+        "encode_ms_p50": 3.7078,
+        "encode_ms_p95": 4.1347,
+        "cpu_ms_per_frame": 5.829015544041451,
+        "mbps": 9.610041432613768,
+        "psnr_db_median": 48.06539008049488,
+        "psnr_db_min": 47.25644194013973,
+        "decoded_frames": 386,
+        "timed_frames_identified": 386,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 39,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 163.51257351944008,
+        "run": 1,
+        "order": 63
+      }
+    ],
+    "gpu-nv12|hevc_qsv|sync": [
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_qsv",
+        "mode": "sync",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 193,
+        "fps": 38.48730915878755,
+        "latency_ms_p50": 37.8651,
+        "latency_ms_p95": 47.3987,
+        "latency_ms_max": 169.8837,
+        "present_to_capture_ms_p50": 1.351,
+        "capture_to_nv12_ms_p50": 13.5022,
+        "encode_ms_p50": 10.6948,
+        "encode_ms_p95": 13.0696,
+        "cpu_ms_per_frame": 8.500647668393782,
+        "mbps": 4.410206914155866,
+        "psnr_db_median": 44.00064704572678,
+        "psnr_db_min": 41.65677570482876,
+        "decoded_frames": 193,
+        "timed_frames_identified": 193,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 20,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.11653877448754,
+        "run": 2,
+        "order": 9
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_qsv",
+        "mode": "sync",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 192,
+        "fps": 38.31788018462289,
+        "latency_ms_p50": 37.8798,
+        "latency_ms_p95": 47.6266,
+        "latency_ms_max": 157.778,
+        "present_to_capture_ms_p50": 1.3691,
+        "capture_to_nv12_ms_p50": 13.5064,
+        "encode_ms_p50": 10.6626,
+        "encode_ms_p95": 13.7262,
+        "cpu_ms_per_frame": 8.30078125,
+        "mbps": 4.4213644853446485,
+        "psnr_db_median": 44.433237551101236,
+        "psnr_db_min": 42.05108015287392,
+        "decoded_frames": 192,
+        "timed_frames_identified": 192,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 20,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.2458582961862,
+        "run": 1,
+        "order": 47
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_qsv",
+        "mode": "sync",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 194,
+        "fps": 38.71096246366815,
+        "latency_ms_p50": 37.4152,
+        "latency_ms_p95": 47.3002,
+        "latency_ms_max": 160.4349,
+        "present_to_capture_ms_p50": 1.2748,
+        "capture_to_nv12_ms_p50": 13.3665,
+        "encode_ms_p50": 10.6624,
+        "encode_ms_p95": 12.9354,
+        "cpu_ms_per_frame": 8.376288659793815,
+        "mbps": 4.484271506477923,
+        "psnr_db_median": 43.68357670657986,
+        "psnr_db_min": 41.629254323380394,
+        "decoded_frames": 194,
+        "timed_frames_identified": 194,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 20,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.02044307965755,
+        "run": 5,
+        "order": 48
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_qsv",
+        "mode": "sync",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 195,
+        "fps": 38.84402105656578,
+        "latency_ms_p50": 37.5473,
+        "latency_ms_p95": 44.7653,
+        "latency_ms_max": 160.9361,
+        "present_to_capture_ms_p50": 1.2247,
+        "capture_to_nv12_ms_p50": 13.5334,
+        "encode_ms_p50": 10.4534,
+        "encode_ms_p95": 12.5312,
+        "cpu_ms_per_frame": 8.974358974358974,
+        "mbps": 4.4763435529361795,
+        "psnr_db_median": 44.124210329019775,
+        "psnr_db_min": 42.359049678423474,
+        "decoded_frames": 195,
+        "timed_frames_identified": 195,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 20,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 163.9416888695058,
+        "run": 3,
+        "order": 71
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_qsv",
+        "mode": "sync",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 197,
+        "fps": 39.27891880489853,
+        "latency_ms_p50": 37.4062,
+        "latency_ms_p95": 44.5506,
+        "latency_ms_max": 160.2356,
+        "present_to_capture_ms_p50": 1.3026,
+        "capture_to_nv12_ms_p50": 13.3752,
+        "encode_ms_p50": 10.5698,
+        "encode_ms_p95": 12.8437,
+        "cpu_ms_per_frame": 8.565989847715736,
+        "mbps": 4.516314807973689,
+        "psnr_db_median": 44.06973957498893,
+        "psnr_db_min": 41.63292690483691,
+        "decoded_frames": 197,
+        "timed_frames_identified": 197,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 20,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.09109020536033,
+        "run": 4,
+        "order": 72
+      }
+    ],
+    "gpu-nv12|h264_qsv|pipelined": [
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_qsv",
+        "mode": "pipelined",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 269,
+        "fps": 53.59916500071801,
+        "latency_ms_p50": 42.1608,
+        "latency_ms_p95": 51.0074,
+        "latency_ms_max": 149.7211,
+        "present_to_capture_ms_p50": 0.2393,
+        "capture_to_nv12_ms_p50": 15.3892,
+        "encode_ms_p50": 10.8948,
+        "encode_ms_p95": 16.6978,
+        "cpu_ms_per_frame": 6.621747211895911,
+        "mbps": 6.334962223247836,
+        "psnr_db_median": 37.184651318604345,
+        "psnr_db_min": 33.29737486686891,
+        "decoded_frames": 269,
+        "timed_frames_identified": 269,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 27,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.18106983492652,
+        "run": 3,
+        "order": 10
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_qsv",
+        "mode": "pipelined",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 262,
+        "fps": 52.305611385908854,
+        "latency_ms_p50": 41.3355,
+        "latency_ms_p95": 51.3132,
+        "latency_ms_max": 156.2721,
+        "present_to_capture_ms_p50": 0.2551,
+        "capture_to_nv12_ms_p50": 15.5263,
+        "encode_ms_p50": 10.2745,
+        "encode_ms_p95": 16.8518,
+        "cpu_ms_per_frame": 7.096851145038168,
+        "mbps": 6.231334383224386,
+        "psnr_db_median": 36.894061114269036,
+        "psnr_db_min": 33.81147355051502,
+        "decoded_frames": 262,
+        "timed_frames_identified": 262,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 27,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 162.10746734869463,
+        "run": 5,
+        "order": 23
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_qsv",
+        "mode": "pipelined",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 269,
+        "fps": 53.53271649978447,
+        "latency_ms_p50": 42.6016,
+        "latency_ms_p95": 48.0712,
+        "latency_ms_max": 149.5789,
+        "present_to_capture_ms_p50": 0.2381,
+        "capture_to_nv12_ms_p50": 15.4727,
+        "encode_ms_p50": 12.8671,
+        "encode_ms_p95": 17.0112,
+        "cpu_ms_per_frame": 6.04089219330855,
+        "mbps": 6.321566649873403,
+        "psnr_db_median": 36.89537174286481,
+        "psnr_db_min": 33.28136295035257,
+        "decoded_frames": 269,
+        "timed_frames_identified": 269,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 27,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 164.9762898822354,
+        "run": 2,
+        "order": 45
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_qsv",
+        "mode": "pipelined",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 268,
+        "fps": 53.40133528444252,
+        "latency_ms_p50": 42.4479,
+        "latency_ms_p95": 50.8638,
+        "latency_ms_max": 149.6336,
+        "present_to_capture_ms_p50": 0.2566,
+        "capture_to_nv12_ms_p50": 15.6622,
+        "encode_ms_p50": 12.8268,
+        "encode_ms_p95": 16.8146,
+        "cpu_ms_per_frame": 7.229477611940299,
+        "mbps": 6.307668485546041,
+        "psnr_db_median": 37.216329171534426,
+        "psnr_db_min": 33.65967174503251,
+        "decoded_frames": 268,
+        "timed_frames_identified": 268,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 27,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 164.7869562695297,
+        "run": 4,
+        "order": 55
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_qsv",
+        "mode": "pipelined",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 272,
+        "fps": 54.15994794591626,
+        "latency_ms_p50": 37.3908,
+        "latency_ms_p95": 50.5658,
+        "latency_ms_max": 147.0173,
+        "present_to_capture_ms_p50": 0.2566,
+        "capture_to_nv12_ms_p50": 15.1166,
+        "encode_ms_p50": 9.7398,
+        "encode_ms_p95": 16.9081,
+        "cpu_ms_per_frame": 6.031709558823529,
+        "mbps": 6.413632186332921,
+        "psnr_db_median": 36.595564888857474,
+        "psnr_db_min": 33.118711755466755,
+        "decoded_frames": 272,
+        "timed_frames_identified": 272,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 28,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.06837076163447,
+        "run": 1,
+        "order": 69
+      }
+    ],
+    "gpu-nv12|h264_qsv|sync": [
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_qsv",
+        "mode": "sync",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 201,
+        "fps": 40.104448744594485,
+        "latency_ms_p50": 37.0773,
+        "latency_ms_p95": 44.3226,
+        "latency_ms_max": 151.7631,
+        "present_to_capture_ms_p50": 1.283,
+        "capture_to_nv12_ms_p50": 13.7656,
+        "encode_ms_p50": 9.7157,
+        "encode_ms_p95": 10.4195,
+        "cpu_ms_per_frame": 8.395522388059701,
+        "mbps": 4.7596438629174225,
+        "psnr_db_median": 36.117950747868676,
+        "psnr_db_min": 33.72090738861926,
+        "decoded_frames": 201,
+        "timed_frames_identified": 201,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 21,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.00686125263502,
+        "run": 4,
+        "order": 11
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_qsv",
+        "mode": "sync",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 203,
+        "fps": 40.48076552437669,
+        "latency_ms_p50": 37.084,
+        "latency_ms_p95": 43.953,
+        "latency_ms_max": 152.9171,
+        "present_to_capture_ms_p50": 1.3344,
+        "capture_to_nv12_ms_p50": 13.8534,
+        "encode_ms_p50": 9.5229,
+        "encode_ms_p95": 10.2434,
+        "cpu_ms_per_frame": 8.466748768472906,
+        "mbps": 4.785697519384333,
+        "psnr_db_median": 35.91417927070116,
+        "psnr_db_min": 33.152615176241056,
+        "decoded_frames": 203,
+        "timed_frames_identified": 203,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 21,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.11366430632464,
+        "run": 5,
+        "order": 49
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_qsv",
+        "mode": "sync",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 199,
+        "fps": 39.6892400316214,
+        "latency_ms_p50": 38.0356,
+        "latency_ms_p95": 47.6198,
+        "latency_ms_max": 144.9806,
+        "present_to_capture_ms_p50": 1.9828,
+        "capture_to_nv12_ms_p50": 13.9294,
+        "encode_ms_p50": 9.8212,
+        "encode_ms_p95": 10.8603,
+        "cpu_ms_per_frame": 8.479899497487438,
+        "mbps": 4.717739897621655,
+        "psnr_db_median": 36.244051828423935,
+        "psnr_db_min": 33.004658627460046,
+        "decoded_frames": 199,
+        "timed_frames_identified": 199,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 20,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.13914947830415,
+        "run": 1,
+        "order": 54
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_qsv",
+        "mode": "sync",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 199,
+        "fps": 39.629163431942594,
+        "latency_ms_p50": 37.0662,
+        "latency_ms_p95": 43.8834,
+        "latency_ms_max": 152.2432,
+        "present_to_capture_ms_p50": 1.22,
+        "capture_to_nv12_ms_p50": 13.997,
+        "encode_ms_p50": 9.5809,
+        "encode_ms_p95": 10.3348,
+        "cpu_ms_per_frame": 8.793969849246231,
+        "mbps": 4.710087378521453,
+        "psnr_db_median": 36.49170165140724,
+        "psnr_db_min": 33.58565033540511,
+        "decoded_frames": 199,
+        "timed_frames_identified": 199,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 20,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 163.89347489692844,
+        "run": 2,
+        "order": 64
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_qsv",
+        "mode": "sync",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 202,
+        "fps": 40.215493727719235,
+        "latency_ms_p50": 37.1087,
+        "latency_ms_p95": 44.0714,
+        "latency_ms_max": 146.7078,
+        "present_to_capture_ms_p50": 1.2898,
+        "capture_to_nv12_ms_p50": 13.9105,
+        "encode_ms_p50": 9.6875,
+        "encode_ms_p95": 10.2569,
+        "cpu_ms_per_frame": 9.591584158415841,
+        "mbps": 4.764976971554593,
+        "psnr_db_median": 36.83132693533508,
+        "psnr_db_min": 33.5215270262676,
+        "decoded_frames": 202,
+        "timed_frames_identified": 202,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 21,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.04279356573883,
+        "run": 3,
+        "order": 75
+      }
+    ],
+    "gpu-nv12|h264_nvenc|reuse": [
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_nvenc",
+        "mode": "reuse",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 312,
+        "fps": 62.36806006907837,
+        "latency_ms_p50": 30.2861,
+        "latency_ms_p95": 34.8665,
+        "latency_ms_max": 140.0541,
+        "present_to_capture_ms_p50": 2.8225,
+        "capture_to_nv12_ms_p50": 10.7126,
+        "encode_ms_p50": 4.2622,
+        "encode_ms_p95": 4.8203,
+        "cpu_ms_per_frame": 6.510416666666667,
+        "mbps": 7.530792930324637,
+        "psnr_db_median": 39.51789707537658,
+        "psnr_db_min": 36.46558892512473,
+        "decoded_frames": 312,
+        "timed_frames_identified": 312,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 32,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 164.71564582346338,
+        "run": 1,
+        "order": 12
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_nvenc",
+        "mode": "reuse",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 304,
+        "fps": 60.728643843474906,
+        "latency_ms_p50": 30.3848,
+        "latency_ms_p95": 35.2392,
+        "latency_ms_max": 139.3232,
+        "present_to_capture_ms_p50": 2.8826,
+        "capture_to_nv12_ms_p50": 10.9235,
+        "encode_ms_p50": 4.2599,
+        "encode_ms_p95": 4.7796,
+        "cpu_ms_per_frame": 5.910773026315789,
+        "mbps": 7.387661897269611,
+        "psnr_db_median": 39.47479824162018,
+        "psnr_db_min": 36.88591785930388,
+        "decoded_frames": 304,
+        "timed_frames_identified": 304,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 31,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 163.40799560513972,
+        "run": 4,
+        "order": 13
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_nvenc",
+        "mode": "reuse",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 310,
+        "fps": 61.94809616814728,
+        "latency_ms_p50": 30.6969,
+        "latency_ms_p95": 34.9838,
+        "latency_ms_max": 134.9429,
+        "present_to_capture_ms_p50": 3.0069,
+        "capture_to_nv12_ms_p50": 10.9428,
+        "encode_ms_p50": 4.2352,
+        "encode_ms_p95": 4.9556,
+        "cpu_ms_per_frame": 5.040322580645161,
+        "mbps": 7.483913528211582,
+        "psnr_db_median": 40.68995588220676,
+        "psnr_db_min": 36.6037964033653,
+        "decoded_frames": 310,
+        "timed_frames_identified": 310,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 31,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.06170140286986,
+        "run": 5,
+        "order": 21
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_nvenc",
+        "mode": "reuse",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 310,
+        "fps": 61.829762877262866,
+        "latency_ms_p50": 30.3648,
+        "latency_ms_p95": 34.4951,
+        "latency_ms_max": 137.8601,
+        "present_to_capture_ms_p50": 2.8043,
+        "capture_to_nv12_ms_p50": 10.949,
+        "encode_ms_p50": 4.2311,
+        "encode_ms_p95": 4.9744,
+        "cpu_ms_per_frame": 6.905241935483871,
+        "mbps": 7.506512967714287,
+        "psnr_db_median": 39.45383194821394,
+        "psnr_db_min": 35.77459881974124,
+        "decoded_frames": 310,
+        "timed_frames_identified": 310,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 31,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 164.74640044070685,
+        "run": 2,
+        "order": 35
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_nvenc",
+        "mode": "reuse",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 313,
+        "fps": 62.48588452852901,
+        "latency_ms_p50": 30.1581,
+        "latency_ms_p95": 34.5701,
+        "latency_ms_max": 139.5866,
+        "present_to_capture_ms_p50": 2.8446,
+        "capture_to_nv12_ms_p50": 10.8507,
+        "encode_ms_p50": 4.2115,
+        "encode_ms_p95": 4.8415,
+        "cpu_ms_per_frame": 7.388178913738019,
+        "mbps": 7.595004746632397,
+        "psnr_db_median": 39.451640177671024,
+        "psnr_db_min": 36.772593546829256,
+        "decoded_frames": 313,
+        "timed_frames_identified": 313,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 32,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.09848723672042,
+        "run": 3,
+        "order": 56
+      }
+    ],
+    "gpu-nv12|h264_qsv|reuse": [
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_qsv",
+        "mode": "reuse",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 227,
+        "fps": 45.26798046178315,
+        "latency_ms_p50": 36.0564,
+        "latency_ms_p95": 42.4283,
+        "latency_ms_max": 151.9254,
+        "present_to_capture_ms_p50": 2.5033,
+        "capture_to_nv12_ms_p50": 11.1856,
+        "encode_ms_p50": 9.4513,
+        "encode_ms_p95": 10.9049,
+        "cpu_ms_per_frame": 6.883259911894273,
+        "mbps": 5.35350862743916,
+        "psnr_db_median": 36.911271936877235,
+        "psnr_db_min": 32.97618832384877,
+        "decoded_frames": 227,
+        "timed_frames_identified": 227,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 23,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 164.5201933082427,
+        "run": 1,
+        "order": 14
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_qsv",
+        "mode": "reuse",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 222,
+        "fps": 44.301340913795336,
+        "latency_ms_p50": 37.3024,
+        "latency_ms_p95": 43.0658,
+        "latency_ms_max": 145.0017,
+        "present_to_capture_ms_p50": 2.7977,
+        "capture_to_nv12_ms_p50": 11.6852,
+        "encode_ms_p50": 9.681,
+        "encode_ms_p95": 10.7477,
+        "cpu_ms_per_frame": 7.460585585585585,
+        "mbps": 5.256457070106103,
+        "psnr_db_median": 37.09320397833052,
+        "psnr_db_min": 34.00556139224747,
+        "decoded_frames": 222,
+        "timed_frames_identified": 222,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 23,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 162.43825001724957,
+        "run": 2,
+        "order": 16
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_qsv",
+        "mode": "reuse",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 230,
+        "fps": 45.872497393486604,
+        "latency_ms_p50": 36.534,
+        "latency_ms_p95": 42.1585,
+        "latency_ms_max": 140.7145,
+        "present_to_capture_ms_p50": 2.6511,
+        "capture_to_nv12_ms_p50": 10.9615,
+        "encode_ms_p50": 9.6384,
+        "encode_ms_p95": 10.7792,
+        "cpu_ms_per_frame": 6.182065217391305,
+        "mbps": 5.433385903879197,
+        "psnr_db_median": 37.536620983588335,
+        "psnr_db_min": 33.41125572789052,
+        "decoded_frames": 230,
+        "timed_frames_identified": 230,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 23,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.14099061655176,
+        "run": 3,
+        "order": 17
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_qsv",
+        "mode": "reuse",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 222,
+        "fps": 44.37845071191201,
+        "latency_ms_p50": 36.7002,
+        "latency_ms_p95": 43.3424,
+        "latency_ms_max": 146.1093,
+        "present_to_capture_ms_p50": 2.5413,
+        "capture_to_nv12_ms_p50": 11.3476,
+        "encode_ms_p50": 9.5225,
+        "encode_ms_p95": 10.9102,
+        "cpu_ms_per_frame": 7.108671171171171,
+        "mbps": 5.245849520390917,
+        "psnr_db_median": 36.91576956908435,
+        "psnr_db_min": 33.09311435890279,
+        "decoded_frames": 222,
+        "timed_frames_identified": 222,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 23,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 161.92137421913841,
+        "run": 4,
+        "order": 39
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "h264_qsv",
+        "mode": "reuse",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 221,
+        "fps": 44.104700327721204,
+        "latency_ms_p50": 36.6991,
+        "latency_ms_p95": 43.5551,
+        "latency_ms_max": 151.9388,
+        "present_to_capture_ms_p50": 2.7304,
+        "capture_to_nv12_ms_p50": 11.5864,
+        "encode_ms_p50": 9.45,
+        "encode_ms_p95": 10.7233,
+        "cpu_ms_per_frame": 6.999434389140271,
+        "mbps": 5.2676498728608765,
+        "psnr_db_median": 37.09255852060943,
+        "psnr_db_min": 33.832181242643095,
+        "decoded_frames": 221,
+        "timed_frames_identified": 221,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 23,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 164.24510574531473,
+        "run": 5,
+        "order": 65
+      }
+    ],
+    "gpu-nv12|hevc_nvenc|reuse": [
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_nvenc",
+        "mode": "reuse",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 323,
+        "fps": 64.59935400645276,
+        "latency_ms_p50": 29.1811,
+        "latency_ms_p95": 34.2098,
+        "latency_ms_max": 141.7141,
+        "present_to_capture_ms_p50": 2.3534,
+        "capture_to_nv12_ms_p50": 10.8633,
+        "encode_ms_p50": 3.4717,
+        "encode_ms_p95": 4.007,
+        "cpu_ms_per_frame": 4.885835913312693,
+        "mbps": 8.427810121897844,
+        "psnr_db_median": 46.93607553204279,
+        "psnr_db_min": 45.90887492902948,
+        "decoded_frames": 323,
+        "timed_frames_identified": 323,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 33,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.19834801650146,
+        "run": 4,
+        "order": 19
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_nvenc",
+        "mode": "reuse",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 319,
+        "fps": 63.5307414702771,
+        "latency_ms_p50": 29.2816,
+        "latency_ms_p95": 33.9162,
+        "latency_ms_max": 143.0299,
+        "present_to_capture_ms_p50": 2.3206,
+        "capture_to_nv12_ms_p50": 11.1279,
+        "encode_ms_p50": 3.4836,
+        "encode_ms_p95": 4.0925,
+        "cpu_ms_per_frame": 5.338949843260188,
+        "mbps": 8.29527622847821,
+        "psnr_db_median": 46.5558899130569,
+        "psnr_db_min": 45.80234391063114,
+        "decoded_frames": 319,
+        "timed_frames_identified": 319,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 32,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.1002654509709,
+        "run": 2,
+        "order": 22
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_nvenc",
+        "mode": "reuse",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 316,
+        "fps": 63.051007946165676,
+        "latency_ms_p50": 29.2106,
+        "latency_ms_p95": 33.7668,
+        "latency_ms_max": 139.9672,
+        "present_to_capture_ms_p50": 2.065,
+        "capture_to_nv12_ms_p50": 11.083,
+        "encode_ms_p50": 3.4427,
+        "encode_ms_p95": 4.1231,
+        "cpu_ms_per_frame": 5.24129746835443,
+        "mbps": 8.274226870932653,
+        "psnr_db_median": 46.49336912510492,
+        "psnr_db_min": 45.63983862924726,
+        "decoded_frames": 316,
+        "timed_frames_identified": 316,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 32,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.010074593288,
+        "run": 5,
+        "order": 41
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_nvenc",
+        "mode": "reuse",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 323,
+        "fps": 64.53249255954617,
+        "latency_ms_p50": 29.0381,
+        "latency_ms_p95": 32.9493,
+        "latency_ms_max": 130.6897,
+        "present_to_capture_ms_p50": 2.1442,
+        "capture_to_nv12_ms_p50": 10.8951,
+        "encode_ms_p50": 3.4609,
+        "encode_ms_p95": 3.9862,
+        "cpu_ms_per_frame": 4.5472136222910216,
+        "mbps": 8.367446813889638,
+        "psnr_db_median": 46.73803444315011,
+        "psnr_db_min": 45.65896739041722,
+        "decoded_frames": 323,
+        "timed_frames_identified": 323,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 33,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.0273648736382,
+        "run": 3,
+        "order": 50
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_nvenc",
+        "mode": "reuse",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 318,
+        "fps": 63.535781843850955,
+        "latency_ms_p50": 29.1306,
+        "latency_ms_p95": 33.943,
+        "latency_ms_max": 162.0548,
+        "present_to_capture_ms_p50": 2.2714,
+        "capture_to_nv12_ms_p50": 10.9759,
+        "encode_ms_p50": 3.444,
+        "encode_ms_p95": 4.2515,
+        "cpu_ms_per_frame": 3.6851415094339623,
+        "mbps": 8.245149497595738,
+        "psnr_db_median": 46.490064238973126,
+        "psnr_db_min": 45.897864478736054,
+        "decoded_frames": 318,
+        "timed_frames_identified": 318,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 32,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 163.83440601244587,
+        "run": 1,
+        "order": 66
+      }
+    ],
+    "gpu-nv12|av1_nvenc|reuse": [
+      {
+        "path": "gpu-nv12",
+        "encoder": "av1_nvenc",
+        "mode": "reuse",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 316,
+        "fps": 63.04416113807702,
+        "latency_ms_p50": 29.3805,
+        "latency_ms_p95": 33.8774,
+        "latency_ms_max": 134.6488,
+        "present_to_capture_ms_p50": 2.4849,
+        "capture_to_nv12_ms_p50": 11.2332,
+        "encode_ms_p50": 3.4205,
+        "encode_ms_p95": 4.0224,
+        "cpu_ms_per_frame": 6.675237341772152,
+        "mbps": 8.470801824968087,
+        "psnr_db_median": 50.12631319421136,
+        "psnr_db_min": 47.06876096028607,
+        "decoded_frames": 316,
+        "timed_frames_identified": 316,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 32,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 164.39363537270717,
+        "run": 3,
+        "order": 20
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "av1_nvenc",
+        "mode": "reuse",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 290,
+        "fps": 57.827916841626454,
+        "latency_ms_p50": 29.3539,
+        "latency_ms_p95": 49.3105,
+        "latency_ms_max": 155.8834,
+        "present_to_capture_ms_p50": 2.3922,
+        "capture_to_nv12_ms_p50": 11.0108,
+        "encode_ms_p50": 3.4299,
+        "encode_ms_p95": 4.014,
+        "cpu_ms_per_frame": 7.758620689655173,
+        "mbps": 7.819720631739218,
+        "psnr_db_median": 50.041958106396145,
+        "psnr_db_min": 46.0317694367746,
+        "decoded_frames": 290,
+        "timed_frames_identified": 290,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 29,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 151.94783666661849,
+        "run": 2,
+        "order": 42
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "av1_nvenc",
+        "mode": "reuse",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 282,
+        "fps": 56.293875910992234,
+        "latency_ms_p50": 29.3739,
+        "latency_ms_p95": 51.1212,
+        "latency_ms_max": 149.4269,
+        "present_to_capture_ms_p50": 2.4002,
+        "capture_to_nv12_ms_p50": 11.0688,
+        "encode_ms_p50": 3.46,
+        "encode_ms_p95": 4.1119,
+        "cpu_ms_per_frame": 6.815159574468085,
+        "mbps": 7.663538450581299,
+        "psnr_db_median": 50.19603914784159,
+        "psnr_db_min": 46.448187370512606,
+        "decoded_frames": 282,
+        "timed_frames_identified": 282,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 29,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 151.7139918168585,
+        "run": 5,
+        "order": 44
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "av1_nvenc",
+        "mode": "reuse",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 320,
+        "fps": 63.93608820749192,
+        "latency_ms_p50": 29.1798,
+        "latency_ms_p95": 33.7364,
+        "latency_ms_max": 134.4362,
+        "present_to_capture_ms_p50": 2.3138,
+        "capture_to_nv12_ms_p50": 10.9565,
+        "encode_ms_p50": 3.445,
+        "encode_ms_p95": 4.0496,
+        "cpu_ms_per_frame": 4.443359375,
+        "mbps": 8.563647606577623,
+        "psnr_db_median": 50.187359824989045,
+        "psnr_db_min": 45.98046090416442,
+        "decoded_frames": 320,
+        "timed_frames_identified": 320,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 32,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 163.23682520475282,
+        "run": 1,
+        "order": 67
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "av1_nvenc",
+        "mode": "reuse",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 321,
+        "fps": 63.99816642261367,
+        "latency_ms_p50": 29.3946,
+        "latency_ms_p95": 33.8066,
+        "latency_ms_max": 133.9974,
+        "present_to_capture_ms_p50": 2.364,
+        "capture_to_nv12_ms_p50": 11.0139,
+        "encode_ms_p50": 3.44,
+        "encode_ms_p95": 3.9449,
+        "cpu_ms_per_frame": 5.257009345794392,
+        "mbps": 8.563742582466276,
+        "psnr_db_median": 50.17004446256479,
+        "psnr_db_min": 45.973600730640236,
+        "decoded_frames": 321,
+        "timed_frames_identified": 321,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 33,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.07938254805023,
+        "run": 4,
+        "order": 73
+      }
+    ],
+    "gpu-nv12|hevc_qsv|pipelined": [
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_qsv",
+        "mode": "pipelined",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 266,
+        "fps": 53.08823016373545,
+        "latency_ms_p50": 47.0534,
+        "latency_ms_p95": 52.3524,
+        "latency_ms_max": 167.205,
+        "present_to_capture_ms_p50": 0.2882,
+        "capture_to_nv12_ms_p50": 16.8686,
+        "encode_ms_p50": 14.9402,
+        "encode_ms_p95": 18.6378,
+        "cpu_ms_per_frame": 7.283834586466165,
+        "mbps": 6.336026782652037,
+        "psnr_db_median": 43.970541993919866,
+        "psnr_db_min": 41.77745104475899,
+        "decoded_frames": 266,
+        "timed_frames_identified": 266,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 27,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.05250505792938,
+        "run": 3,
+        "order": 33
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_qsv",
+        "mode": "pipelined",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 262,
+        "fps": 52.1387680874608,
+        "latency_ms_p50": 47.2821,
+        "latency_ms_p95": 53.2561,
+        "latency_ms_max": 160.2838,
+        "present_to_capture_ms_p50": 0.3127,
+        "capture_to_nv12_ms_p50": 17.1149,
+        "encode_ms_p50": 15.758,
+        "encode_ms_p95": 18.7054,
+        "cpu_ms_per_frame": 6.3215648854961835,
+        "mbps": 6.198828286656985,
+        "psnr_db_median": 43.95338307117423,
+        "psnr_db_min": 41.88807230991239,
+        "decoded_frames": 262,
+        "timed_frames_identified": 262,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 27,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 165.1724332541697,
+        "run": 2,
+        "order": 52
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_qsv",
+        "mode": "pipelined",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 229,
+        "fps": 45.647852967192286,
+        "latency_ms_p50": 46.9396,
+        "latency_ms_p95": 67.2302,
+        "latency_ms_max": 166.2559,
+        "present_to_capture_ms_p50": 0.4706,
+        "capture_to_nv12_ms_p50": 17.6004,
+        "encode_ms_p50": 15.4679,
+        "encode_ms_p95": 20.743,
+        "cpu_ms_per_frame": 9.347707423580786,
+        "mbps": 5.405326123710475,
+        "psnr_db_median": 43.58645226148889,
+        "psnr_db_min": 41.69761277276392,
+        "decoded_frames": 229,
+        "timed_frames_identified": 229,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 23,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 156.87711914925907,
+        "run": 4,
+        "order": 61
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_qsv",
+        "mode": "pipelined",
+        "pipeline_drops": 1,
+        "width": 2560,
+        "height": 1600,
+        "frames": 251,
+        "fps": 49.95195756049469,
+        "latency_ms_p50": 47.4365,
+        "latency_ms_p95": 59.5038,
+        "latency_ms_max": 170.8671,
+        "present_to_capture_ms_p50": 0.4452,
+        "capture_to_nv12_ms_p50": 17.1383,
+        "encode_ms_p50": 15.9928,
+        "encode_ms_p95": 18.7928,
+        "cpu_ms_per_frame": 7.594621513944223,
+        "mbps": 5.949261428465136,
+        "psnr_db_median": 43.88635527222138,
+        "psnr_db_min": 42.80314446330188,
+        "decoded_frames": 251,
+        "timed_frames_identified": 251,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 26,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 159.60745005385155,
+        "run": 5,
+        "order": 68
+      },
+      {
+        "path": "gpu-nv12",
+        "encoder": "hevc_qsv",
+        "mode": "pipelined",
+        "pipeline_drops": 0,
+        "width": 2560,
+        "height": 1600,
+        "frames": 249,
+        "fps": 49.62001629210167,
+        "latency_ms_p50": 47.3358,
+        "latency_ms_p95": 54.8593,
+        "latency_ms_max": 161.7196,
+        "present_to_capture_ms_p50": 0.3419,
+        "capture_to_nv12_ms_p50": 17.2963,
+        "encode_ms_p50": 16.0739,
+        "encode_ms_p95": 18.9618,
+        "cpu_ms_per_frame": 8.722389558232932,
+        "mbps": 5.910428656758705,
+        "psnr_db_median": 43.69430416091508,
+        "psnr_db_min": 42.57843756379262,
+        "decoded_frames": 249,
+        "timed_frames_identified": 249,
+        "undecodable_markers": 0,
+        "order_errors": 0,
+        "identity_checked": 25,
+        "identity_errors": 0,
+        "flushed_packets": 0,
+        "source_fps": 161.0159564820006,
+        "run": 1,
+        "order": 74
+      }
+    ]
+  }
+}

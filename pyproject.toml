@@ -9,7 +9,7 @@ name = "rapidshot"
 # checked each against the git tag but never against each other, so two could
 # agree while the third drifted.
 dynamic = ["version"]
-description = "A high-performance screencapture library for Windows using Desktop Duplication API"
+description = "Windows screen and window capture for Python: NumPy frames, or model-ready FP16 GPU tensors for PyTorch, CuPy and DLPack without a CPU round trip"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
@@ -19,7 +19,23 @@ authors = [
 maintainers = [
     { name = "Zaatra", email = "imzaatra@gmail.com" }
 ]
-keywords = ["screencapture", "desktop-duplication", "screen-recorder", "windows"]
+keywords = [
+    "screencapture",
+    "screenshot",
+    "screen-capture",
+    "window-capture",
+    "desktop-duplication",
+    "windows-graphics-capture",
+    "dxgi",
+    "screen-recorder",
+    "windows",
+    "gpu",
+    "pytorch",
+    "cupy",
+    "dlpack",
+    "computer-vision",
+    "machine-learning",
+]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
@@ -37,7 +53,9 @@ classifiers = [
     "Operating System :: Microsoft :: Windows :: Windows 11",
     "Topic :: Multimedia :: Graphics",
     "Topic :: Multimedia :: Graphics :: Capture",
-    "Topic :: Multimedia :: Graphics :: Capture :: Screen Capture"
+    "Topic :: Multimedia :: Graphics :: Capture :: Screen Capture",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Processing"
 ]
 dependencies = [
     "numpy>=1.19.0",
@@ -59,7 +77,7 @@ rapidshot = "rapidshot.__main__:main"
 # the README's tables do. Without it the tensor is finished in system memory,
 # or on the capture GPU for GpuConverter, and reported separately.
 benchmark = [
-    "rapidshot-native>=0.3.1; platform_system == 'Windows'",
+    "rapidshot-native>=0.5.0; platform_system == 'Windows'",
     "psutil>=5.9",
     "mss>=9.0",
     # 0.3.0 is what the harness is verified against. Every DXcam since 0.1.0
@@ -106,7 +124,9 @@ gpu_cuda13 = ["cupy-cuda13x>=14.0.0"]
 # Windows.Graphics.Capture session, which 0.2.x does not have.
 # Raised to 0.3.1 for 2.7.1: NV12/P010 chroma is left-sited from 0.3.1, and
 # against 0.3.0 the documented siting would silently not hold.
-native = ["rapidshot-native>=0.3.1; platform_system == 'Windows'"]
+# Raised to 0.5.0 for 2.8: GpuConverter(output="texture") needs it, and it is
+# the build that stops GpuConverter holding the GIL through its GPU waits.
+native = ["rapidshot-native>=0.5.0; platform_system == 'Windows'"]
 # Everything that is not CUDA-version-specific. The cupy-cudaNNx wheels are
 # mutually exclusive, so none of them belongs in a catch-all extra -- pick
 # `gpu`, `gpu_cuda12` or `gpu_cuda13` explicitly.
@@ -125,7 +145,7 @@ native = ["rapidshot-native>=0.3.1; platform_system == 'Windows'"]
 # and nothing else in the library imports it.
 all = [
     "opencv-python>=4.5.0",
-    "rapidshot-native>=0.3.1; platform_system == 'Windows'",
+    "rapidshot-native>=0.5.0; platform_system == 'Windows'",
 ]
 dev = [
     "black>=22.3.0",
@@ -147,6 +167,8 @@ docs = [
 "Bug Reports" = "https://github.com/Zaatra/Rapidshot/issues"
 "Source" = "https://github.com/Zaatra/Rapidshot"
 "Documentation" = "https://github.com/Zaatra/Rapidshot"
+"Changelog" = "https://github.com/Zaatra/Rapidshot/blob/main/CHANGELOG.md"
+"Discussions" = "https://github.com/Zaatra/Rapidshot/discussions"
 
 [tool.setuptools.dynamic]
 # `attr` on a module with no imports: setuptools reads the literal out of the
