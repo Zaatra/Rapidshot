@@ -1,8 +1,28 @@
 # Runbook for the RTX 4060 host (Machine B)
 
-Written for a Claude session starting cold on the RTX laptop, on branch `dev`.
-Everything here is work that **cannot** be done on the Intel host (HP 324pe),
-where the rest of the 2.9.0 inference measurements were taken.
+Written for a Claude session starting cold on the RTX laptop. Everything here is
+work that **cannot** be done on the Intel host (HP 324pe), where the rest of the
+2.9.0 inference measurements were taken.
+
+**Check out `bench/rtx-harness`, not `dev`.** Two branches exist on purpose:
+
+| Branch | Contains | Lifetime |
+| --- | --- | --- |
+| `dev` | The 2.9.0 release work only — package, tests, docs | Keep. This is what merges |
+| `bench/rtx-harness` | All of `dev`, **plus** the benchmark scripts | **Disposable.** Delete it when the runs are done |
+
+The benchmark harness lives under `.test/`, which is gitignored, so it cannot
+reach this machine without being force-added — and anything force-added onto
+`dev` would follow it into `main` forever. So it sits on a throwaway branch
+instead. `bench/rtx-harness` is a descendant of `dev`, so one checkout gives you
+everything; commit results there if you like, copy anything worth keeping into
+`docs/change-detection/`, cherry-pick that onto `dev`, and then:
+
+```powershell
+git push origin --delete bench/rtx-harness
+```
+
+That leaves no harness in any branch anyone keeps.
 
 Read [`inference-2.9.0.md`](inference-2.9.0.md) first. It records what was
 measured on Intel, and — more usefully — a list of confounds that already cost
@@ -56,7 +76,7 @@ Intel and moved `rapidshot_tight` by 4 states of 1,530, so it is not the risk it
 was once assumed to be.
 
 ```powershell
-git fetch origin && git checkout dev
+git fetch origin && git checkout bench/rtx-harness
 ```
 
 Then, in the repo's virtual environment:
@@ -87,10 +107,23 @@ Windows reports, and the helper requires an attached, unrotated, 1080p DXGI
 output, so a 2560×1600 panel needs that constraint relaxed — read
 `monitor_target.py` before fighting it.
 
-`.test/change-detection/*.py` is tracked on this branch **deliberately**, so the
-harness reaches this machine; `.test/` is otherwise gitignored, so campaign
-outputs stay local. Copy the ones worth keeping into `docs/change-detection/`
-as the Intel results were.
+On `bench/rtx-harness`, `.test/change-detection/*.py` is tracked deliberately so
+the harness reaches this machine. Everything else under `.test/` stays ignored,
+so campaign outputs do not get committed by accident. Copy results worth keeping
+into `docs/change-detection/`, as the Intel ones were.
+
+**Two things are deliberately not in git at all**, and both will stop a script
+rather than degrade quietly:
+
+- **The native tile comparator.** `cpu_default.Native` loads
+  `.test/change-detection/target/release/rapidshot_cpu_default_benchmark.dll`,
+  built from a Rust crate whose sources (17 `.rs` files and four `.hlsl`
+  shaders) were left out rather than ship a manifest with no code behind it.
+  Only `inference_gate_cost.py`, `real_trace.py` and `live_cpu_default.py` need
+  it; **none of the GPU priorities below do.** If you want it, copy
+  `.test/change-detection/{Cargo.toml,build.cmd,src}` from the Intel host and
+  `cargo build --release` — it depends on `native/core`, which *is* tracked.
+- **The vendored `windows-capture` wheel** (see Priority 2).
 
 ## Priority 1 — refresh the README's GPU detector table
 
