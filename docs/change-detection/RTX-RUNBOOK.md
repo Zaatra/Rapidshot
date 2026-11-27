@@ -1,8 +1,9 @@
 # Runbook for the RTX 4060 host (Machine B)
 
 Written for a Claude session starting cold on the RTX laptop. Everything here is
-work that **cannot** be done on the Intel host (HP 324pe), where the rest of the
-2.9.0 inference measurements were taken.
+work that **cannot** be done on the Intel host (HP 324pe), where every 2.9.0
+measurement so far was taken — both the exact change-detection feature and the
+inference work built on top of it.
 
 **Check out `bench/rtx-harness`, not `dev`.** Two branches exist on purpose:
 
@@ -37,6 +38,9 @@ real time. Three of them will bite on GPU too.
 | A native DXGI binding with no metadata reached within **5.3%** of RapidShot's metadata | Always keep this control in. It is what stops the claim inflating |
 | At ~210 ms per inference every library saturates and misses 7–14 of 100 states | Pick detector costs that leave the consumer headroom, or you measure the model |
 | INT8 dynamic quantization **drops a detection** and is only 1.09× faster at 4 threads | Do not use INT8 as an arm. On GPU, prefer FP16, and verify detections before trusting it |
+| The change map is **exact**, not probabilistic: `audit_every=N` found zero omissions in 217 eligible trace pairs and zero missed tiles in 187 audits over an hour, after first catching a deliberately injected one | The correctness design is settled. Re-run the audit on NVIDIA to confirm it holds, but do not redesign it |
+| `grab_tiles()` cut readback from **7.91 MiB to 1.51 MiB** per result and pixel age from 6.33 to 5.09 ms, on an Intel iGPU | The headline capture-side saving. Priority 1 asks whether it grows across PCIe |
+| GPU-side comparison **lost** on Intel: 0.77 ms against 0.48 ms CPU-side | Because the frame goes to the CPU anyway. That premise changes on a discrete card |
 
 ## Traps that already cost time here — all three apply on GPU
 
