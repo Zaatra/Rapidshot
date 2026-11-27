@@ -7,10 +7,12 @@
 
 **The Windows desktop, in Python, fresher and cheaper than anything else we
 measured: a NumPy array when you want one, a model-ready GPU tensor when you
-don't, without the pixels ever touching the CPU.**
+don't, and — new in 2.9 — only the tiles that actually changed, verified byte
+for byte.**
 
 ```text
-Windows desktop → native GPU frame → fused preprocessing → Torch / CuPy / DLPack
+Windows desktop ─┬─ native GPU frame → fused preprocessing → Torch / CuPy / DLPack
+                 └─ exact changed tiles → the 1.5 MiB that moved, not the 7.9 MiB frame
 ```
 
 ## Measured, not claimed
@@ -40,10 +42,46 @@ machine. **No AMD GPU has run it yet.** If you have one, or an HDR display, or
 any setup unlike the four above, [your numbers are the most useful thing you
 can send](#help-wanted-amd-gpus-hdr-displays-and-unusual-setups).
 
+### And in 2.9: only the pixels that changed
+
+A second claim, on its own fixture. `grab_tiles()` stages only the tiles
+Desktop Duplication reports dirty, then checks **every byte of them** against a
+private history — so what comes back is exactly what changed, not what the
+compositor hinted at. A scripted desktop presents 1,530 known states at
+30 updates/s; a consumer must find a marker in each and finish inside the
+33.33 ms frame budget. **Both libraries run the same OpenCV search**, and DXcam
+is handed change bounds from an independent full-frame byte scan, so this
+compares libraries rather than algorithms:
+
+| Same search, both sides | correct and on time | result pixel age p50/p95 | CPU, % of one core | GPU readback per result |
+| --- | ---: | ---: | ---: | ---: |
+| **RapidShot `grab_tiles()`** | **1,517/1,530** | **5.09 / 9.07 ms** | **14.09%** | **1.51 MiB** |
+| DXcam 0.3.0 `grab_view()` + full byte scan | 1,514/1,530 | 7.30 / 10.28 ms | 24.81% | 7.91 MiB |
+
+Three updates apart on the deadline, so the deadline is not the story — the
+**cost** is. Identical answers, zero wrong detections on either side, for
+**43% less CPU**, **2.2 ms fresher pixels** and **5.2× fewer bytes off the GPU**
+per result. Against DXcam's *best* waiting strategy the CPU gap narrows but
+does not close: still a third less. And against the pipeline most projects
+actually write — a stock full-frame search — the same fixture finishes **0 of
+1,530** inside the deadline, because that search alone takes 68.89 ms.
+
+The tables, the crossover where this stops paying, the ~8 MiB it costs and the
+one-hour soak behind it are in [Only what changed](#only-what-changed).
+**Intel graphics, 1080p, 100 Hz** — this feature has not run on NVIDIA or AMD.
+
 ## Why RapidShot
 
 - **Fresher frames.** A frame is converted where it was captured, in one GPU
   dispatch, and handed over without a readback. The figures above are that path.
+- **Only what changed, and it is exact.** `grab_tiles()` copies just the dirty
+  tiles off the GPU and then verifies them byte for byte against a private
+  history, alpha included, so the change map is the truth rather than the
+  compositor's hint — with a scheduled full-frame audit to prove it. Of the
+  libraries we checked, none exposes a *verified* change map: DXcam 0.3.0
+  exposes no change metadata at all, and `windows-capture` 2.0.1 has dirty
+  regions in its Rust API but not in its Python frame wrapper. Either way, a
+  hint is not a check.
 - **Model-ready tensors in one line.** Crop, resize, colour order,
   normalisation, FP16 and layout in a single Direct3D 12 dispatch, then
   `to_torch()`, `to_cupy()` or `to_dlpack()`, zero-copy. No `ctypes`.
@@ -138,6 +176,8 @@ Clone if you need one to outlive the next frame.
 | Goal | API | CPU pixels? | Native required? |
 | --- | --- | --- | --- |
 | NumPy screenshot | `camera.grab()` | Yes | No |
+| Which tiles changed, exactly | `camera.grab_with_changes()` | Yes | No |
+| Only the changed tiles' pixels | `camera.grab_tiles()` | Yes | No |
 | One window | `create(source=Window.find(...))` | Either | **Yes** (WGC) |
 | Which backend, measured | `rapidshot.plan(calibrate=True)` | -- | No |
 | GPU frame, no readback | `camera.grab_frame()` | No | No |
@@ -326,6 +366,79 @@ the frame you hold *is* the staging buffer and there is nothing to fall back to:
 `grab()` returns `None` until one comes back.
 
 Prefer plain arrays? `rapidshot.create(pool_output=False)`.
+
+### Exact changed tiles
+
+Opt-in, new in 2.9, and the one thing here that no other Windows capture
+library we checked offers at all. Two methods, both DXGI CPU BGRA8 SDR, both
+keeping a **private byte-for-byte history** so the change map is verified
+rather than trusted:
+
+```python
+import rapidshot
+
+camera = rapidshot.create(output_color="BGRA", nvidia_gpu=False)
+try:
+    frame = camera.grab_tiles(tight_rectangles=True, audit_every=120)
+    if frame is not None:
+        with frame:                                  # a lease: released on exit
+            for rect in frame.changes.tight_rectangles:
+                patch = frame.materialize(rect)      # owned array, just this box
+                search(patch)
+finally:
+    camera.release()
+```
+
+- **`grab_with_changes()`** hands back the whole frame plus the change map. Use
+  it when the consumer wants a full image anyway.
+- **`grab_tiles()`** stages only the candidate tiles off the GPU — 1.51 MiB
+  instead of 7.91 on a sparse 1080p frame — and exposes them as read-only views
+  through `frame.tiles`, or as an owned crop through `materialize(rect)`.
+
+**Why the hint is not the answer.** Desktop Duplication's dirty rectangles say
+which tiles *may* have changed. RapidShot compares those candidate tiles
+against its history byte for byte, **all four BGRA bytes including alpha**, and
+reports only the tiles that genuinely differ. Where the metadata cannot be
+trusted — a frame gap, a move rectangle, rotation, accumulated frames, missing
+or invalid rectangles — it falls back to a full exact comparison and names the
+case in `changes.fallback_reason`.
+
+| What you get | What it means |
+| --- | --- |
+| `None` | No image was delivered; the same reporting as `grab()` |
+| `reason="initial"` / `"reset"` | First frame, or the source, geometry or region changed: every tile marked |
+| `reason="changed"` | These tiles differ, byte for byte |
+| `reason="identical"` | A frame arrived and **nothing** changed: an empty tile set, not `None` |
+
+`changes` also carries `indices` (row-major 128×128 tile IDs), `rectangles`
+(clipped tile bounds), `tight_rectangles` (the bounding box of the actual byte
+changes inside each tile, when `tight_rectangles=True`), `size`,
+`present_time_qpc` (DXGI's own `LastPresentTime`) and `accumulated_frames`.
+The change map stays readable after the frame is released.
+
+**Trust, measured rather than asserted.** `audit_every=N` runs a full pixel
+comparison on every Nth hint-guided capture, corrects the map if the hints ever
+under-reported, and disables hint-guided copies for that capture generation;
+`camera.change_audit_stats()` reports the running totals. In a one-hour soak
+through the public API this found **zero missed tiles in 187 full audits**,
+beside 29,985 change maps each checked against an independent full scan.
+
+**Leases, not copies.** `frame.pixels`, the tile views and a tiled snapshot are
+leased until `release()`. Use the frame as a context manager or call `release()`
+yourself; reading afterwards raises `BufferReleasedError`, and running out of
+tiled snapshot slots raises `PoolExhaustedError` — both importable from
+`rapidshot`. `pixels.copy()` and `materialize(rect)` give you an array that
+outlives the lease. Editing a live lease is allowed: the history is updated
+*before* the lease is exposed, so your edits cannot corrupt the next comparison.
+
+**The search is yours.** RapidShot gives you the rectangles; it does not ship a
+search planner or an OpenCV wrapper, because the right strategy depends on the
+task. That also means the downstream saving only arrives if your consumer
+really does restrict its work to those rectangles. What it saves, where it
+stops paying, and what it costs to run are in
+[Only what changed](#only-what-changed); the full contract, every fallback
+reason and the concurrency rules are in
+[`docs/EXACT_TILES.md`](https://github.com/Zaatra/Rapidshot/blob/main/docs/EXACT_TILES.md).
 
 ## Sources and backends
 
@@ -646,6 +759,180 @@ frame). Full tables:
 [`section7-inference-machineB-hybrid-2.6.1.json`](https://github.com/Zaatra/Rapidshot/blob/main/benchmarks/section7-inference-machineB-hybrid-2.6.1.json),
 [`section7-inference-machineB-dgpu-2.6.0.json`](https://github.com/Zaatra/Rapidshot/blob/main/benchmarks/section7-inference-machineB-dgpu-2.6.0.json).
 
+### Only what changed
+
+New in 2.9, measured on its own fixture rather than the five-pass benchmark
+above, and scoped more narrowly than anything else in this section:
+**Intel graphics, 1920×1080, 100 Hz** on an HP 324pe. A scripted desktop
+presents 1,530 known states at 30 updates/s; a consumer must find a marker in
+each and finish inside the 33.33 ms frame budget. Pixel age is counted from
+DXGI's `LastPresentTime`; the deadline from submission. Five shuffled trials
+per arm, cold starts included. Every pass/fail limit below was written down
+*before* the runs that scored it.
+[Full report and protocols](https://github.com/Zaatra/Rapidshot/blob/main/docs/change-detection/report.md)
+— the readable half; the 61 MB of per-trial JSON behind it is not in the repo.
+The live arms were **re-run after the 2.9.0 version bump** and came out equal or
+better in every arm:
+[reproduction](https://github.com/Zaatra/Rapidshot/blob/main/docs/change-detection/release-2.9.0-reproduction.md).
+
+**Same search on both sides.** Both libraries feed the same OpenCV search, and
+DXcam is handed change bounds from an independent full-frame byte scan in the
+harness — so this compares libraries, not algorithms:
+
+| Pipeline | correct and on time | result pixel age p50/p95 | CPU, % of one core | GPU readback per result |
+| --- | ---: | ---: | ---: | ---: |
+| **RapidShot `grab_tiles(tight_rectangles=True)`** | **1,517/1,530** | **5.09 / 9.07 ms** | **14.09%** | **1.51 MiB** |
+| DXcam 0.3.0 `grab_view()` + full byte scan | 1,514/1,530 | 7.30 / 10.28 ms | 24.81% | 7.91 MiB |
+
+Three updates apart on the deadline, so the deadline is not the story — the
+cost is. Same answers, zero wrong detections on either side, for **43% less
+CPU**, pixels **2.2 ms fresher**, and **5.2× fewer bytes** pulled off the GPU
+per result.
+
+**DXcam, given every advantage.** Part of that CPU gap was the harness's 0.5 ms
+retry loop, so all four waiting strategies were re-run in one 20-trial block,
+again with the same search:
+
+| Arm | correct on time | result age p50/p95 | CPU, % of one core | Mcycles/s | GPU readback |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| **RapidShot `grab_tiles()`** | **1,517/1,530** | **4.60 / 8.38 ms** | **13.79%** | **467.48** | **1.51 MiB** |
+| DXcam one-shot, 0.5 ms retry | 1,517/1,530 | 7.05 / 9.21 ms | 24.66% | 838.06 | 7.91 MiB |
+| DXcam one-shot, 2 ms retry | 1,511/1,530 | 7.86 / 10.57 ms | 20.83% | 691.00 | 7.91 MiB |
+| DXcam streaming, 100 fps target | 1,177/1,530 | 15.41 / 18.13 ms | 22.21% | 820.23 | 7.91 MiB |
+
+A 2 ms retry cut DXcam's empty calls from 38,660 to 16,584 and its CPU by 3.83
+points — so some of the original gap really was the loop. **Against DXcam's
+best wait setting the gap is still about 7 points, roughly a third less CPU**,
+with pixels 3.3 ms fresher. (7.04 points in the run tabled here, 6.89 in the
+2.9.0 re-run below — the point is the third, not the decimal.) Logical CPU pixel writes per result: **0.72 MiB** for
+RapidShot's tiled path against **15.82 MiB** for streamed DXcam with owned
+frames. Streaming changes pacing, ownership and frame selection all at once, so
+read that row as a configuration, not as a verdict on streaming.
+
+**And the pipeline most projects actually write.** Stock DXcam `grab_view()`
+into a stock full-frame OpenCV search, on the same fixture:
+
+| Pipeline | correct and on time | completed | search p50 | pixel age at result p50/p95 | CPU |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| **RapidShot tiles + rectangle-limited search** | **1,517/1,530** | 1,525 | **1.99 ms** | **5.09 / 9.07 ms** | **14.09%** |
+| Stock DXcam + full-frame OpenCV search | **0/1,530** | 696 | 68.89 ms | 89.75 / 111.94 ms | 96.65% |
+
+Both had zero wrong detections. **That gap is the search, not the capture**, and
+these two rows come from separate campaigns. It is stated here because it is the
+reason the feature exists: no library can make a 68.89 ms full-frame search fit
+in a 33.33 ms budget — it can only tell you precisely enough what moved that
+you stop running one.
+
+**What the rectangles buy the consumer.** On six timed sparse pairs, tight
+rectangles covered **15.9-43.4× fewer pixels** than the frame and cut
+detector-plus-search time by **95.4-96.4%**, with matched detections. Offline at
+4K: **10.7-11.2 ms against 277-281 ms**, and 37-39M CPU cycles per frame
+against 942-951M, again with identical detections.
+
+**And skipping work entirely.** The point of a verified change map is that you
+can not run the next stage at all. With a real detector — YOLOX-S through
+OpenCV's DNN module on the CPU — running it only when the change map reported a
+change agreed with running it on **every** frame on **20 of 20 frames**,
+including all 13 positive detections. Gating cost nothing on that fixture.
+
+Replayed over three *recorded* desktop traces, the detector time it saves comes
+out equal to the share of frames that are byte-identical, to within a twentieth
+of a percent:
+
+| Recorded trace | Frames byte-identical | Detector time saved |
+| --- | ---: | ---: |
+| Spreadsheet | 69.0% | **69.13%** |
+| Browser | 33.6% | **33.62%** |
+| Game | 13.3% | **13.28%** |
+
+Detections matched always-infer on every frame of all three. Read that table
+both ways: **the saving is a property of how still your screen is, not of
+RapidShot.** A caller willing to pay a full-frame compare on every frame lands
+within 0.7 points of the same number. What RapidShot changes is what the
+decision costs — **0.001 ms against 2.0–2.6 ms** of full-frame compare, live,
+with 608 of its verdicts checked against an independent compare and none
+disagreeing. On a busy screen there is little to skip and little to gain.
+
+**What that is worth to a whole pipeline.** With duplicate frames deliberately
+presented — 401 frames delivered, 300 of them byte-identical — every arm went
+from **401 detector calls to 101, 74.8% eliminated, with none of the 100 screen
+states missed.** CPU seconds for the consumer process over the same 20 s
+workload, three rounds, median:
+
+| Consumer policy | Cheap consumer (15 ms) | Real model (YOLOX-S, 75 ms) |
+| --- | ---: | ---: |
+| Infer on every delivered frame | 7.28 s | 67.47 s |
+| Skip after a full-frame compare | 3.70 s | 28.70 s |
+| **Skip on RapidShot's change metadata** | **2.67 s** | **28.22 s** |
+| Full-frame compare on a native DXGI binding with no metadata | 2.91 s | 29.81 s |
+
+**Gating is the win: it cuts consumer CPU 64% with a cheap consumer and 58%
+with a real detector**, eliminating 60% of inference calls without missing one
+of 100 screen states.
+
+**Which gating mechanism you use is almost irrelevant once the detector is
+real.** RapidShot's metadata beats a full-frame compare by 28% at a 15 ms
+consumer but only **1.7% at a 75 ms model**, and beats the metadata-free native
+DXGI binding by 12% and **5.3%** respectively. A 2 ms compare is a quarter of a
+15 ms detector and under 3% of a 75 ms one. The sub-millisecond decision
+figures above are the decision in isolation and **do not carry over to a
+pipeline with a real model.** The dirty-rectangle hint is also Windows', not
+RapidShot's; what RapidShot adds is verifying it byte for byte inside capture.
+
+Against the *other libraries* at 75 ms the gap is wider than any of that:
+**28.22 s against DXcam's 39.25 s and MSS's 33.88 s**, with detections 77.9 ms
+old at the median against DXcam's 85.1 ms. And past roughly 200 ms per
+inference every library saturates, misses 7–14 states of 100, and gating stops
+helping at all.
+[The full inference measurements, including what they failed to establish](docs/change-detection/inference-2.9.0.md).
+
+**RapidShot against itself.** With the same rectangle-limited search on both
+exact paths, staging only candidate tiles beat reading the full frame:
+
+| RapidShot path | correct and on time | result age p50 | GPU readback per result |
+| --- | ---: | ---: | ---: |
+| `grab_tiles()` | **1,517/1,530** | **5.09 ms** | **1.51 MiB** |
+| `grab_with_changes()` | 1,504/1,530 | 6.33 ms | 7.91 MiB |
+
+**Where it stops paying.** Measured on identical pixels against a full search,
+using whole-tile regions rather than tight bounds:
+
+| Change layout | still saving at | first loss at | saving at 8.1% of tiles changed |
+| --- | ---: | ---: | ---: |
+| Clustered | 75.6% of tiles changed | 90.4% | **81.6%** |
+| Scattered | 30.4% of tiles changed | 40.0% | **57.7%** |
+
+So this is a feature for **sparse and local** change. Dense *scattered* change
+can cost you: −18.3% at the first losing point. **There is deliberately no
+scrolling claim.** Chrome's scroll frames change about 59% of tiles, scattered,
+which is past that crossover, and Desktop Duplication reported no usable move
+rectangles in 690 trace frames.
+
+**What it costs to run**, against matched plain RapidShot capture with the same
+lease policy:
+
+| Cost | Measured | Pre-set limit |
+| --- | ---: | ---: |
+| Steady private commit | one history frame, **7.91 MiB** at 1080p | ≤ 12 MiB |
+| At 4K | **31.64 MiB** of history | no 4K gate was set |
+| History writes per sparse result | **~0.7 MiB** (7.91 MiB when the whole frame changed) | — |
+| Idle CPU, `grab_with_changes()` | **+1.15%** of process cycles/s, 95% CI −0.82% to +2.84%, 38 pairs | ≤ +5% |
+| Idle CPU, `grab_tiles()` | **−1.40%**, 95% CI −3.03% to +1.13%, 39 pairs | ≤ +5% |
+| GPU memory | unchanged | — |
+
+The idle result has a mechanism behind it, not only statistics: across **3,818
+confirmed `AcquireNextFrame` timeouts** an instrumented probe counted **zero GPU
+copies, zero surface maps, zero processor calls and zero history writes** on
+both exact paths. With nothing on screen, the exact path does nothing.
+
+**Reliability.** One process ran the public API for 3,600 seconds: **29,985
+change maps**, each checked against an independent comparison of consecutive
+delivered frames, **1,033 retained-lease checks**, **zero missed tiles in 187
+full audits**, two capture-resource generations rebuilt and zero restarts.
+Private commit ended 2.92 MiB above the first post-warm-up block and below the
+previous four, with a +8.48 MiB/hour median block-pair slope that this trace
+does not attribute to a source — [disclosed rather than explained](#known-limitations).
+
 ### Run it on your machine
 
 ```bash
@@ -676,6 +963,12 @@ if something failed. An AMD result would be especially welcome; see
   frames queue behind `Present()`, adding a 0-3 frame offset to every path at
   once. The ranking and the within-table comparisons hold; the absolute
   milliseconds do not. The tables above use the newer source, which queues one.
+- **The change-detection tables are one machine, one panel, one rate.** Intel
+  graphics at 1080p and 100 Hz, and a synthetic fixture rather than a real
+  application. At the same 60 updates/s a 60 Hz panel delivered 93 of 96
+  offered states and got 88 of them right, against 96/96 on the 100 Hz panel —
+  more captured frames mix two desktop updates at the lower refresh rate.
+  Nothing in that feature has run on NVIDIA, on AMD, or at native 4K.
 - **Older capture-only comparisons** (RapidShot 2.1-2.4, a call-rate loop
   rather than pixel age) are kept as history in
   [`docs/BENCHMARKS.md`](https://github.com/Zaatra/Rapidshot/blob/main/docs/BENCHMARKS.md), with their methodology.
@@ -699,6 +992,13 @@ These are the disciplines the code actually enforces:
 - **Producer and consumer both have a barrier.** `GpuTensor.sync()` blocks
   until CUDA work on the buffer is done, and `set_consumer_fence()` stops the
   producer overwriting a buffer a consumer is still reading.
+- **A change map is checked, not inferred.** The exact paths compare candidate
+  tiles byte for byte against a private history rather than trusting the
+  compositor's dirty rectangles, fall back to a full comparison whenever the
+  metadata is uncertain, and will audit themselves on a schedule
+  (`audit_every=N`) so a driver that under-reports shows up as a counter rather
+  than as silently missing pixels. The audit caught a deliberately injected
+  omission, and found zero real ones in 187 audits over an hour.
 - **WARP is not a GPU.** A software adapter proves an API works and nothing
   about what it costs, and every table and message that uses one says so.
 
@@ -717,6 +1017,7 @@ run, which is a different claim:
 | Hybrid Intel UHD → RTX 4060 (Optimus) | Capture on Intel, CUDA on the RTX; full suite, 32 live cross-adapter tests, benchmark, 2026-11-12 |
 | Cross-adapter **tensor** transfer + CUDA import | `TensorTransfer` on real Optimus, CUDA reading the transferred buffer |
 | Hybrid, capture to YOLO11n detections | All six hybrid paths verified, then timed |
+| HP 324pe, Intel iGPU, 1080p 100 Hz | The exact-change feature: 2,192 cost-matrix windows, a one-hour public-API soak, the frozen release gates |
 | Python 3.9 – 3.14 | CI matrix |
 
 **Partly verified, or not at all**
@@ -726,6 +1027,8 @@ run, which is a different claim:
 | AMD Radeon hybrid (ThinkPad E580, Intel UHD 620 + Radeon 500) | Found the refused-capture case above. Capture there runs on the Intel GPU: no screen is wired to the Radeon |
 | AMD GPU capturing | **Not run.** The BGRA swizzle rule is confirmed on Intel and NVIDIA and follows from the DXGI format, but it is the one rule a silent mismatch would corrupt rather than crash |
 | HDR panel with full Windows HDR support | **One machine**: Lunar Lake (Arc 130V) on a Samsung TU7100 4K TV over HDMI 2.0, FP16 scRGB, 2026-11-12; see below. Not yet on NVIDIA or AMD, or on a 10-bit HDR surface |
+| Exact changed tiles on any non-Intel GPU | **Not run.** Every figure for `grab_with_changes()` and `grab_tiles()` comes from one Intel integrated GPU at 1080p and 100 Hz. Staging only the dirty tiles should matter *more* on a discrete card, where the copy crosses PCIe, but that is a prediction |
+| Exact changed tiles at native 4K | **Offline replay only.** The 4K search figures are a replay from captured pixels, not a live 4K capture, and the history grows to 31.64 MiB there |
 | Headless / virtual display (IDD) | Diagnostics exist; capture on one has not been run |
 | Hardware encoding of RapidShot's NV12 | **One machine**: the RTX 4060 laptop, hybrid. NVENC and Intel Quick Sync through FFmpeg, and Intel Quick Sync through Media Foundation, each stream decoded and checked. NVIDIA's Media Foundation encoder refused to start in hybrid mode. Not run: AMD (AMF), Intel-only or NVIDIA-only machines |
 
@@ -764,6 +1067,42 @@ the screen. If a path fails or a colour check does not pass,
 instead, so it can be tracked as a bug.
 
 ## Known limitations
+
+**Exact changed tiles: what the contract does and does not promise.** The
+feature is opt-in and marked provisional for 2.9 — all of its evidence comes
+from one Intel integrated GPU, so the API may still change before it is
+considered settled.
+
+- **A captured frame can mix two desktop updates**, and the change map reports
+  that faithfully. Desktop Duplication hands over whatever the compositor had
+  at the moment of the copy; at high update rates part of the image can belong
+  to the previous present. This is not a detector error, it happened with DXcam
+  too, and a full-frame search agreed with every case. **It is more common on a
+  60 Hz panel**: 88 of 96 states correct at 60 Hz against 96 of 96 at 100 Hz
+  with the same 60 updates/s offered. If your consumer cannot tolerate a
+  half-drawn screen, it must settle frames itself; a two-acquisition
+  confirmation rule was measured and delivered 0 of 128 states at 100/s, which
+  is why none ships.
+- **DXGI only, CPU BGRA8, SDR, one-shot.** A GPU output, another colour mode,
+  the WGC backend, an HDR surface or an active `start()` stream raises
+  `ValueError`. Each camera keeps its own history, and the two methods keep
+  separate histories from each other.
+- **It costs a frame of memory** — 7.91 MiB of private history at 1080p,
+  31.64 MiB at 4K — and `tight_rectangles=True` spends extra CPU finding which
+  pixels differ inside a tile. In a capture-only run with no search afterwards
+  that was 7.55 against 3.56 Mcycles per state, so leave it off unless a later
+  stage uses the rectangles.
+- **Dense scattered change is slower than a full search**, by up to 18% at the
+  crossover; see [Only what changed](#only-what-changed). There is no scrolling
+  claim: DXGI reported no usable move rectangles in 690 trace frames.
+- **Private commit drifted +8.48 MiB/hour** across the one-hour soak's
+  five-minute blocks, ending 2.92 MiB above the first block and below the
+  previous four, with the histories themselves fixed at 7.91 MiB each. The slope
+  is not monotonic and the trace does not identify a source, so it is reported
+  rather than explained. No leak was demonstrated; neither was its absence.
+- **The audit samples the stream.** `audit_every=N` can miss a change that
+  appears and reverts between samples, and pool exhaustion raises
+  `PoolExhaustedError` rather than silently reusing a buffer.
 
 **HDR desktops: converted to SDR, not captured as HDR.** With Windows HDR on,
 the desktop is duplicated as linear light (scRGB, 1.0 = 80 nits) in a 10-bit or
@@ -844,6 +1183,9 @@ From a shell, `rapidshot diagnose` prints the same report.
 | --- | --- |
 | `grab()` returns `None` | Nothing changed on screen. This is normal, not an error. |
 | `None` forever in `BGRA` | Pool exhausted: release your frames, or raise `pool_size_frames`. |
+| `PoolExhaustedError` from `grab_tiles()` | Tiled snapshot slots are all leased: release a `TiledFrame`, or raise `pool_size_frames`. |
+| `BufferReleasedError` | A lease was read after `release()`. Copy with `pixels.copy()` or `materialize(rect)` before releasing. |
+| `ValueError` from `grab_with_changes()` / `grab_tiles()` | They are DXGI, CPU, BGRA8, SDR, one-shot only, and refuse an active `start()` stream. |
 | `AttributeError` on `GpuConverter` | Native extension older than 0.2.0. Upgrade it. |
 | `CrossAdapterRequired` | Capture is on the iGPU and CUDA is on the dGPU: the hybrid case. |
 | `DXGI_ERROR_UNSUPPORTED` on every adapter of a laptop | Python is running on the discrete GPU of a muxless laptop; the error names the setting. See [Hybrid GPU laptops](#hybrid-gpu-laptops). |
@@ -874,6 +1216,16 @@ worked, commented versions. You should not need any of this to use
 
 ## What's new
 
+- **2.9**: **exact changed tiles**, opt-in and provisional.
+  `grab_with_changes()` returns a frame plus a byte-verified map of which
+  128×128 tiles changed; `grab_tiles()` stages only the candidate tiles off the
+  GPU — 1.51 MiB instead of 7.91 on a sparse 1080p frame — and hands them over
+  as views or as an owned crop. Both take `tight_rectangles=True` for the
+  bounding box of the real byte changes inside each tile, and `audit_every=N`
+  to verify the compositor's hints on a schedule. With the same search on both
+  sides, this finished 1,517 of 1,530 scripted updates inside a 33.33 ms budget
+  against DXcam's 1,514, on 43% less CPU with pixels 2.2 ms fresher; every
+  number is Intel graphics, 1080p, 100 Hz. No existing behaviour changed.
 - **2.8** (with rapidshot-native 0.5.0): continuous capture keeps only the
   newest frame by default (`policy="latest"`), with `max_age_ms`, in-order
   reads through `get_next_frame()` and `stream_stats`; measured live, a slow
@@ -899,6 +1251,16 @@ worked, commented versions. You should not need any of this to use
 
 Every change, with the measurement behind it, is in
 [`CHANGELOG.md`](https://github.com/Zaatra/Rapidshot/blob/main/CHANGELOG.md).
+
+**Upgrading from 2.8:** nothing changed. 2.9 only adds
+`camera.grab_with_changes()`, `camera.grab_tiles()`,
+`camera.change_audit_stats()`, the `ChangedFrame` / `TiledFrame` / `ChangeSet` /
+`ChangeAuditStats` types and the `BufferReleasedError` / `PoolExhaustedError`
+names at the top level. `grab()`, `start()`, the default wait and the pooling
+behaviour are byte-for-byte the 2.8 paths, and the native floor is still
+`rapidshot-native >= 0.5.0` — the exact paths are pure Python and need no
+extension. The two new APIs are **provisional**: their evidence is one Intel
+GPU, and they may change before being treated as settled.
 
 **Upgrading from 2.7:** `camera.start()` without a `policy` now keeps one
 frame, so `get_latest_frame()` waits for a newer frame instead of handing back

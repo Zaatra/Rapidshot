@@ -2,7 +2,7 @@ import time
 import ctypes
 import warnings
 from typing import Tuple, Optional, Union, List, Any
-from threading import Thread, Event, Lock, RLock, current_thread
+from threading import BoundedSemaphore, Thread, Event, Lock, RLock, current_thread
 import comtypes  # type: ignore[import-untyped]
 import numpy as np
 import logging
@@ -13,6 +13,7 @@ from rapidshot.memory_pool import (
     PooledBuffer,
     PoolExhaustedError,
 )
+from rapidshot.changes import ChangeAuditStats, ChangedFrame, TiledFrame, _ChangeHistory, _TiledHistory
 from rapidshot.util.errors import ( # Added for Phase 2
     RapidShotError,
     RapidShotDXGIError,
@@ -31,6 +32,10 @@ from rapidshot.core import native_duplicator
 
 
 _PYTHON_DUPLICATOR = Duplicator
+
+
+class _TileCaptureValueError(ValueError):
+    """The current capture geometry or texture cannot supply exact tiles."""
 
 
 def _duplicator_class():
@@ -384,6 +389,11 @@ class ScreenCapture:
         # format. `Frame.generation` stamps each frame with the value current
         # when it was taken.
         self._generation = 0
+        self._change_history: Optional[_ChangeHistory] = None
+        self._tile_history: Optional[_TiledHistory] = None
+        self._tile_lease_slots = BoundedSemaphore(pool_size_frames)
+        self._tile_protected = False
+        self._last_tile_capture_cost = None
         self._sequence = 0
         self._recovery_count = 0
         self._last_recovery_reason = None
@@ -835,6 +845,182 @@ class ScreenCapture:
         if region is not None:
             region = self._normalize_region(region)
         return self._grab(region)
+
+    def grab_with_changes(
+        self, region: Optional[Tuple[int, int, int, int]] = None, *, tight_rectangles: bool = False,
+    ) -> Optional[ChangedFrame]:
+        """Grab a CPU BGRA8 SDR image and lease it with its exact changed tiles.
+
+        The first image for this camera or coordinate space reports all tiles.
+        An acquired byte-identical image has an empty change map. A call that
+        delivers no image returns None, as in :meth:`grab`.
+
+        Release the returned frame when its pixels and views are no longer
+        used. Calls are serialized per camera. The caller serializes camera
+        start, stop and release with one-shot capture.
+        """
+        with self._dup_lock():
+            self._require_exact_capture("grab_with_changes()")
+            if region is not None:
+                region = self._normalize_region(region)
+            frame = self._grab_locked(region)
+            if frame is None:
+                return None
+
+            history = self._change_history
+            try:
+                source_format = self._stagesurf.dxgi_format
+                if source_format != hdr.DXGI_FORMAT_B8G8R8A8_UNORM:
+                    raise ValueError("Exact tiles require a BGRA8 SDR capture surface")
+                if history is None:
+                    history = self._change_history = _ChangeHistory()
+                duplicator = self._duplicator
+                instance_id = getattr(duplicator, "instance_id", None)
+                source = (instance_id, self._generation, source_format) if instance_id is not None else None
+                changes = history.update(
+                    frame.array if isinstance(frame, PooledBuffer) else frame,
+                    source=source,
+                    serial=getattr(duplicator, "frame_serial", None),
+                    region=self.region if region is None else region,
+                    output_size=(self.width, self.height),
+                    dirty_rects=duplicator.dirty_rects,
+                    move_rects=duplicator.move_rects,
+                    accumulated_frames=int(duplicator.accumulated_frames),
+                    present_time_qpc=int(duplicator.last_present_time) or None,
+                    rotation=self.rotation_angle,
+                    tight_rectangles=tight_rectangles,
+                )
+                return ChangedFrame(frame, changes)
+            except BaseException:
+                if history is not None:
+                    history.clear()
+                if isinstance(frame, PooledBuffer):
+                    frame.release()
+                raise
+
+    def _require_exact_capture(self, operation):
+        if self.released:
+            raise RuntimeError("A released camera cannot capture exact tiles")
+        capture_thread = getattr(self, "_capture_thread", None)
+        if self.is_capturing or (capture_thread is not None and capture_thread.is_alive()):
+            raise ValueError("Exact tiles are available for one-shot capture only")
+        if self._backend_name != "dxgi" or self.nvidia_gpu or self.output_color != "BGRA":
+            raise ValueError("Exact tiles require DXGI capture with CPU BGRA8 SDR output")
+        self._ensure_no_live_frame(operation)
+
+    def grab_tiles(
+        self, region: Optional[Tuple[int, int, int, int]] = None, *,
+        tight_rectangles: bool = False, audit_every: int = 0,
+    ) -> Optional[TiledFrame]:
+        """Grab exact CPU BGRA tiles with an on-demand snapshot of the entire region.
+
+        Only candidate tiles are staged when DXGI metadata is usable. Returned
+        tile pixels are read-only. Materialize a crop or full image for an
+        independently owned array. Release each lease to free its slot.
+        ``audit_every`` counts eligible metadata-guided acquisitions, with zero
+        disabling audits. An acquired identical image still returns a lease.
+        """
+        if not isinstance(audit_every, int) or isinstance(audit_every, bool) or audit_every < 0:
+            raise ValueError("audit_every must be a non-negative integer")
+        with self._dup_lock():
+            self._require_exact_capture("grab_tiles()")
+            if region is not None:
+                region = self._normalize_region(region)
+            self._last_tile_capture_cost = None
+            slots = self._tile_lease_slots
+            if not slots.acquire(blocking=False):
+                raise PoolExhaustedError("No tile snapshot slots available. Release a tiled frame.")
+            token_lock = Lock()
+            returned = False
+
+            def release_slot():
+                nonlocal returned
+                with token_lock:
+                    if not returned:
+                        returned = True
+                        slots.release()
+
+            frame = None
+            try:
+                frame = self._grab_locked(region, tiled=(tight_rectangles, audit_every, release_slot))
+                return frame
+            finally:
+                if frame is None:
+                    release_slot()
+                    if self._tile_history is not None and not self._last_grab_unchanged:
+                        self._tile_history.clear()
+
+    def change_audit_stats(self) -> ChangeAuditStats:
+        """Return cumulative audit counts for this camera's tiled capture history."""
+        with self._dup_lock():
+            history = self._tile_history
+            return ChangeAuditStats() if history is None else history.audit_stats
+
+    def _read_tiled_locked(self, region, tight_rectangles, audit_every, release_slot):
+        duplicator = self._duplicator
+        stage = self._stagesurf
+        mapped = None
+        try:
+            source_format = stage.format_of(duplicator.texture)
+            if source_format != hdr.DXGI_FORMAT_B8G8R8A8_UNORM:
+                raise _TileCaptureValueError("Exact tiles require a BGRA8 SDR capture surface")
+            history = self._tile_history
+            if history is None:
+                history = self._tile_history = _TiledHistory()
+            instance_id = getattr(duplicator, "instance_id", None)
+            source = (instance_id, self._generation, source_format) if instance_id is not None else None
+            protected = bool(getattr(duplicator, "protected_content_detected", False))
+            plan = history.plan(
+                source=source, serial=getattr(duplicator, "frame_serial", None),
+                region=region, output_size=(self.width, self.height),
+                dirty_rects=duplicator.dirty_rects, move_rects=duplicator.move_rects,
+                accumulated_frames=int(duplicator.accumulated_frames),
+                present_time_qpc=int(duplicator.last_present_time) or None,
+                rotation=self.rotation_angle, audit_every=audit_every,
+                force_full="protected_content" if protected or self._tile_protected else False,
+            )
+            self._tile_protected = protected
+            copied = ()
+            pixels = None
+            if plan.read_indices:
+                memory_region = self.region_to_memory_region(region, self.rotation_angle, self._output)
+                width = memory_region[2] - memory_region[0]
+                height = memory_region[3] - memory_region[1]
+                stage.ensure(self._output, self._device, (width, height), source_format)
+                if len(plan.read_indices) == len(plan.rectangles):
+                    copied = ((0, 0, width, height),)
+                else:
+                    copied = tuple(plan.rectangles[index] for index in plan.read_indices)
+                stage.copy_bgra_regions(self._device.im_context, duplicator.texture, memory_region, copied)
+
+            if duplicator._frame_acquired:
+                duplicator.release_frame()
+
+            if copied:
+                mapped = stage.map()
+                pixels = stage.bgra_view(mapped)
+                if self.rotation_angle:
+                    pixels = np.rot90(pixels, k=-(self.rotation_angle // 90))
+
+            def read_tile(index, rect):
+                left, top, right, bottom = rect
+                return pixels[top:bottom, left:right]
+
+            frame = history.update(plan, read_tile, tight_rectangles=tight_rectangles, release_token=release_slot)
+            self._last_tile_capture_cost = {
+                "gpu_readback_bytes": sum((r - l) * (b - t) * 4 for l, t, r, b in copied),
+                "gpu_copy_operations": len(copied),
+                "history_bytes_written": sum((r - l) * (b - t) * 4 for l, t, r, b in frame.changes.rectangles),
+                "history_bytes_retained": frame.changes.size[0] * frame.changes.size[1] * 4,
+            }
+            return frame
+        finally:
+            try:
+                if mapped is not None:
+                    stage.unmap()
+            finally:
+                if duplicator._frame_acquired:
+                    duplicator.release_frame()
 
     def _checkout_output_buffer(self, width: int, height: int):
         """A pooled buffer for the converted frame, or None if not in use.
@@ -1790,7 +1976,7 @@ class ScreenCapture:
         with self._dup_lock():
             return self._grab_locked(region)
 
-    def _grab_locked(self, region: Optional[Tuple[int, int, int, int]] = None) -> Optional[np.ndarray]:
+    def _grab_locked(self, region: Optional[Tuple[int, int, int, int]] = None, *, tiled=None):
         """
         Grab a frame with a specific region with improved error handling.
 
@@ -1825,27 +2011,30 @@ class ScreenCapture:
             # The camera's region, as it stands after any rebuild above.
             if region is None:
                 region = self.region
+            elif tiled is not None:
+                # A recovery can have replaced the output since the public
+                # method validated this explicit region.
+                try:
+                    region = self._normalize_region(region)
+                except ValueError as error:
+                    raise _TileCaptureValueError(str(error)) from error
 
             pooled_buffer_wrapper = None
             output_wrapper = None
             output_array_for_region = None
             can_use_pool = False
 
-            staging_shape = self._staging_shape(region)
-            if self.memory_pool:
-                if tuple(self.memory_pool.buffer_shape) == staging_shape:
-                    can_use_pool = True
-
-            if can_use_pool:
-                pooled_buffer_wrapper = self.memory_pool.checkout()
-                output_array_for_region = pooled_buffer_wrapper.array
-            else:
-                logger.debug(
-                    f"Region {region} not matching pool config. Using temporary buffer for this grab."
-                )
-                output_array_for_region = self._scratch_staging_buffer(
-                    staging_shape[0], staging_shape[1]
-                )
+            if tiled is None:
+                staging_shape = self._staging_shape(region)
+                can_use_pool = bool(self.memory_pool and tuple(self.memory_pool.buffer_shape) == staging_shape)
+                if can_use_pool:
+                    pooled_buffer_wrapper = self.memory_pool.checkout()
+                    output_array_for_region = pooled_buffer_wrapper.array
+                else:
+                    logger.debug(
+                        f"Region {region} not matching pool config. Using temporary buffer for this grab."
+                    )
+                    output_array_for_region = self._scratch_staging_buffer(staging_shape[0], staging_shape[1])
 
             try:
                 self._duplicator.update_frame()
@@ -1899,6 +2088,11 @@ class ScreenCapture:
             if self._duplicator.updated:
                 self._last_frame_time = now
             else:
+                if tiled is not None:
+                    protected = bool(getattr(self._duplicator, "protected_content_detected", False))
+                    if self._tile_history is not None and protected != self._tile_protected:
+                        self._tile_history.clear()
+                    self._tile_protected = protected
                 # Warn about a screen that has actually been still for a while,
                 # and say so in seconds. A run of empty acquires is normal at any
                 # timeout and says nothing on its own.
@@ -1921,6 +2115,9 @@ class ScreenCapture:
                     pooled_buffer_wrapper.release()
                 self._last_grab_unchanged = True
                 return None
+
+            if tiled is not None:
+                return self._read_tiled_locked(region, *tiled)
 
             frame_needs_release = self._duplicator._frame_acquired
             mapped_rect = None
@@ -2015,6 +2212,8 @@ class ScreenCapture:
 
             return final_array
 
+        except _TileCaptureValueError:
+            raise
         except PoolExhaustedError:
             logger.warning("Memory pool exhausted during grab. Consider increasing pool_size_frames.")
             return None
@@ -3117,6 +3316,9 @@ class ScreenCapture:
             if not locked:
                 logger.warning("release(): a capture call still holds the duplicator "
                                "after 5 s; releasing resources anyway.")
+
+            self._change_history = None
+            self._tile_history = None
 
             # A Frame still holding the desktop texture would keep DXGI's
             # surface pinned past the duplicator's own teardown.

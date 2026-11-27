@@ -8,10 +8,19 @@ This document is written to be read cold. It states where the project actually i
 
 ## 1. Start here
 
-**Current state.** Rapidshot captures the desktop via DXGI Desktop Duplication and can hand a frame to a GPU consumer as a **model-ready tensor that never touches the CPU** — `float16` or `float32`, NCHW or NHWC, produced by one fused dispatch and exported zero-copy to Torch, CuPy or DLPack (2.6). Since 2.7 it also captures single windows, and monitors through Windows.Graphics.Capture. The CPU path for the same work costs ~8 ms per 1080p frame on a toolchain-free install. Core capture is pure Python; an *optional* Rust extension provides GPU interop **and byte-exact AVX2 conversion kernels** — with it, colour conversion drops to 0.26–0.36 ms and stops being the dominant CPU cost (§ 3, § 10).
+**Current state.** Rapidshot captures the desktop via DXGI Desktop Duplication and can hand a frame to a GPU consumer as a **model-ready tensor that never touches the CPU** — `float16` or `float32`, NCHW or NHWC, produced by one fused dispatch and exported zero-copy to Torch, CuPy or DLPack (2.6). Since 2.7 it also captures single windows, and monitors through Windows.Graphics.Capture. Since 2.9 it can tell a consumer **exactly which 128x128 tiles changed**, verified byte for byte against a private history rather than trusted from the compositor's hint, and can stage only those tiles off the GPU (§ 7.4b). The CPU path for the same work costs ~8 ms per 1080p frame on a toolchain-free install. Core capture is pure Python; an *optional* Rust extension provides GPU interop **and byte-exact AVX2 conversion kernels** — with it, colour conversion drops to 0.26–0.36 ms and stops being the dominant CPU cost (§ 3, § 10).
 
-> **The current release is 2.8.0 with `rapidshot-native` 0.5.0
-> (2026-11-22).** 2.8 brings § 7.4c's freshness contract
+> **The current release is 2.9.0 with `rapidshot-native` 0.5.0
+> (2026-11-26).** 2.9 is § 7.4b: `grab_with_changes()` and `grab_tiles()`,
+> exact changed tiles verified byte for byte, tight change rectangles, and a
+> scheduled self-audit against the compositor's hints. It is **pure Python**,
+> changes no existing behaviour, and keeps the 0.5.0 native floor. Its two APIs
+> are marked **provisional**, because every figure behind them comes from one
+> Intel integrated GPU at 1080p and 100 Hz. The measured case, the gates it was
+> held to, the crossover where it stops paying, and the ten ideas that were
+> measured and rejected are in § 7.4b and `CHANGELOG.md`.
+>
+> **2.8.0 (2026-11-22) with `rapidshot-native` 0.5.0.** 2.8 brings § 7.4c's freshness contract
 > (`start(policy=..., max_age_ms=...)`, `latest` the default, measured live),
 > NV12 written straight into an encoder's texture, `GpuConverter` releasing
 > the GIL, and § 7.3a's hardware-encoding measurements (no `Encoder` class
@@ -80,7 +89,7 @@ This document is written to be read cold. It states where the project actually i
 
 ### Release status
 
-**2.8.0 is the current release** (`v2.8.0`, 22 November 2026), together with **`rapidshot-native` 0.5.0** (`native-v0.5.0`); every tag below is also a GitHub Release. Since 2.6.0: **2.7.4** with native 0.4.1, **2.7.3** with native 0.4.0 and **2.7.2** (12 November), **2.7.1** with native 0.3.1 (3 November; `v2.7.0` was never tagged, see § 1), **2.6.3** (30 September) with native 0.2.2 (29 September), **2.6.2** (27 September), and **2.6.1** with native 0.2.1 (25 September).
+**2.9.0 is the current release** (`v2.9.0`, 26 November 2026). It needs no new native wheel: **`rapidshot-native` 0.5.0** (`native-v0.5.0`) remains the floor, because the exact-change paths are pure Python and CPU-side. Every tag below is also a GitHub Release. Before it: **2.8.0** (22 November 2026) with native 0.5.0. Since 2.6.0: **2.7.4** with native 0.4.1, **2.7.3** with native 0.4.0 and **2.7.2** (12 November), **2.7.1** with native 0.3.1 (3 November; `v2.7.0` was never tagged, see § 1), **2.6.3** (30 September) with native 0.2.2 (29 September), **2.6.2** (27 September), and **2.6.1** with native 0.2.1 (25 September).
 
 **2.6.0 is tagged and published** (`v2.6.0`, 20 September 2026), together with the separately versioned **`rapidshot-native` 0.2.0** (`native-v0.2.0`) that its GPU features require. Before it: **2.5.0** (13 September), **2.4.0** (`v2.4.0` at `9d40b70`, 22 August 2026), **2.3.0** (`v2.3.0` at `b3a01f2`, 21 August), **2.2.0** (`403849e`, 6 August), **2.1.0** (5 August) and **2.0.0** (4 August). PyPI Trusted Publishing and the `pypi` GitHub environment are configured and restricted to `v*` tags, so a pushed tag is what cuts a release; the full procedure is in `RELEASING.md`.
 
@@ -101,6 +110,7 @@ What each release delivered, in one line each — `CHANGELOG.md` has the detail:
 | **2.6.1–2.6.3** | `rapidshot benchmark` for testers (2.6.1), the benchmark without CuPy (2.6.2), testing fixes and the 80-nit HDR clip raised as a warning (2.6.3) |
 | **2.7.1** | Windows sources: `Monitor` / `Window` / `Region`, window capture, the native Windows.Graphics.Capture backend, the measuring planner behind `backend="auto"`, the HDR tone map in `GpuConverter`, left-sited NV12/P010 chroma. Requires `rapidshot-native` ≥ 0.3.1 |
 | **2.7.2–2.7.4** | A hybrid laptop that refuses capture names the GPU setting that fixes it (2.7.2); HDR desktops convert to sRGB by default and a WGC camera open at exit no longer crashes (2.7.3); an HDR switch no longer stops `grab_frame()` on NVIDIA (2.7.4) |
+| **2.9.0** | Exact changed tiles (§ 7.4b): `grab_with_changes()` and `grab_tiles()`, byte-verified change maps with DXGI dirty rectangles used only as a hint, opt-in tight change rectangles, and `audit_every=N` with `change_audit_stats()` proving the hints. Pure Python, opt-in, nothing existing changed. Measured against DXcam 0.3.0 **with the same search on both sides**: 1,517/1,530 scripted updates on time against 1,514, at 14.09% of a core against 24.81%, 5.09 ms median result pixel age against 7.30 ms, and 1.51 MiB of GPU readback per result against 7.91 MiB. Intel iGPU, 1080p, 100 Hz |
 | **2.6.0** | Capture to a model-ready tensor. `GpuConverter` (one fused dispatch: crop, resize, colour, normalise, layout), native **FP16**, NHWC, multi-ROI, NV12/P010; `TensorStream`; one-call `to_torch()` / `to_cupy()` / `to_dlpack()`; `TensorTransfer` convert-before-transfer verified Intel→RTX 4060 with CUDA importing the result. **`grab()` −58%, `grab_frame()` −63% memory** against 2.5. Requires `rapidshot-native` ≥ 0.2.0 |
 
 **All of them published. Checked against PyPI on 2026-09-13**, which is the authority the repository is not: 2.0.0, 2.1.0, 2.2.0, 2.3.0 and 2.4.0 each serve two files, and 1.1.0 is present and yanked as intended. This entry previously said the outcome could not be verified from the tree and asked for a manual UI pass; the tree is still not the authority, but the index is one query away.
@@ -523,6 +533,224 @@ That asymmetry mattered more than it looks: § 10's rule is that **a spurious im
 
 ## 4. Settled questions — do not re-litigate
 
+**The capture library ships change *metadata*, not a search strategy.** Settled
+2026-11-24 by measurement, not preference. An adaptive search planner was
+prototyped and was genuinely better than any fixed strategy — +8% against a
+full search at 59% scattered change, where the fixed planner lost 18% — and it
+*still* missed its predeclared 2% worst-case target in 10 of 52 pairs, worst
+loss 6.2%. A planner that is wrong 1 time in 5 is harder for a consumer to opt
+out of than to write. So `ChangeSet` carries tile indices and rectangles, and
+the consumer owns the search. Corollary: the downstream saving only materialises
+if the consumer actually restricts its work to those rectangles, and the README
+says so rather than implying the library does it.
+
+**Comparing frames on the GPU loses on an integrated GPU.** 0.77 ms against
+0.48 ms for the CPU candidate comparison, measured 2026-11-24, because the frame
+is being read back to the CPU anyway. § 7.4b's original plan said "hierarchical
+GPU comparison"; it is CPU-side. **This is scoped to Intel integrated
+graphics** — on a discrete card the readback crosses PCIe and the balance may
+invert, so retest there rather than assuming either way.
+
+**Ten change-detection ideas were measured and rejected.** Listed with their
+numbers in `CHANGELOG.md` under 2.9.0, so they are not re-proposed: two-slot
+staging (no more states, pixel age 4-5 ms to 12-13 ms), settled frames (0 of 128
+states at 100/s), metadata risk flags (too many false positives), reseeding
+history at 25% changed (slower, more writes), lazy history pages (cheaper only
+under a false assumption), scroll-offset inference (faster on Chrome, slower on
+Word, nothing in Excel), an adaptive idle wait (69-73% fewer idle cycles, but
+stop-through-release 7.22 ms to 23.60 ms median and 15.30 ms to 62.12 ms
+maximum — shutdown latency is the more visible complaint), first-hit ranking and
+a repeat cache (helpers at best), and a GPU-resident comparison (above).
+
+**The ~75 states/s ceiling at 80-100 updates/s is the compositor and the
+fixture, not RapidShot's copy.** Measured 2026-11-24: it appears identically
+with a bare DXGI loop, with a marker-only crop, and with DXcam. Double-buffered
+staging was built to test the alternative hypothesis and delivered no more
+states while raising median pixel age from 4-5 ms to 12-13 ms. Do not spend
+more time on it without first reproducing a bare loop that exceeds it.
+
+**A captured frame can contain parts of two desktop updates, and that is the
+API's contract rather than a bug.** All 63 saved mismatches from a 100
+updates/s rerun held an exact mix of two consecutive intended states; it
+happened with DXcam too and a full-frame search agreed with every case. It is
+more common at 60 Hz (88 of 96 states correct against 96 of 96 at 100 Hz, same
+offered rate). An exact change map reports what was *captured*, which is not
+guaranteed to be a single consistent desktop update, and any consumer that
+cannot tolerate a half-drawn screen must settle frames itself — a
+two-acquisition rule inside the library was measured and delivered nothing.
+
+**The change-detection harness conflates "capture returned nothing" with
+"capture returned a frame whose marker could not be read", and both are
+reported as `undelivered`.** Found 2026-11-26 while reproducing the 2.9.0
+figures: one arm appeared to lose 19 states, and all 19 were a single ~800 ms
+window in one round of five where the fixture presented on schedule (source
+gaps 32.76-34.25 ms against a 33.33 ms nominal) and capture returned 47 healthy
+observations at 1.7-7.7 ms pixel age, every one carrying `stamp: null`. An
+always-on-top overlay had covered the marker region. Until the two outcomes are
+separated, **an `undelivered` count from this harness is not by itself evidence
+about capture**, and an unexplained one should be traced to the raw trials
+before it is reported. The same campaign also records overlays appearing and
+clearing during live rounds, so this is not rare.
+
+**Screen-capture contention does not move the change-detection numbers, and
+the earlier 4-10 ms warning does not apply to this fixture.** Measured
+2026-11-26 across five complete 20-trial conditions on the same seed: capturers
+running, capturers killed, capturers killed plus a competing Desktop
+Duplication consumer on the same output, and TeamViewer restarted.
+`rapidshot_tight` spanned **4 states out of 1,530 (0.26%), 0.59 ms of median
+pixel age and 0.76 points of one core** across all five, and the *clean*
+condition was not the best on any column. The competing consumer captured
+5,431 frames and copied 42 GiB off the same output during the campaign and cost
+RapidShot **1 state and 0.15 ms**. So the published figures were never
+contaminated, and the expectation that a contended run reads 4-10 ms older
+pixels — carried over from a different harness — is wrong here. It also
+established that **two processes can duplicate one output simultaneously**.
+The manifest still records no contention; record it anyway, because proving it
+did not matter cost a full re-run of everything.
+
+**Desktop Duplication is refused with `E_ACCESSDENIED` when the display sleeps,
+and that is what kills unattended benchmark runs on this host.** Found
+2026-11-26: a clean-condition campaign lost 3 of 20 trials, all in round 5, all
+DXcam arms, all failing at `DuplicateOutput`. Nothing was locked afterwards;
+the AC display timeout is 600 s. The sting is that **TeamViewer running had
+been keeping the display awake**, so killing it as "contention" is what exposed
+the sleep — the software being treated as noise was holding the experiment up.
+Hold the display awake explicitly for any unattended run; the three conditions
+that did completed 20/20. And note the diagnosis only landed quickly because
+`rapidshot/util/desktop.py` already names this refusal correctly instead of
+calling it protected content.
+
+**Change-gated inference saves exactly the fraction of frames that are
+byte-identical, and nothing more.** Measured 2026-11-26 with the verified
+YOLOX-S CPU detector over three *recorded* application traces: spreadsheet
+69.0% identical → 69.13% detector time saved; browser 33.6% → 33.62%; game
+13.3% → 13.28%. The agreement with the trivial prediction is the result. Two
+consequences for how this feature is described. First, **the saving is a
+property of the content's stillness, not of the capture library** — any caller
+willing to pay a full-frame compare lands within 0.7 points of the same number,
+so the library's contribution is the *decision cost* (257× / 25× / 21× cheaper
+over candidate tiles, 0.001 ms against 2.0–2.6 ms live), never the saving
+itself. Second, a README line implying the change map makes a detector
+dramatically cheaper is only true on still content, and must say so.
+
+**The inference-avoidance headline could not be measured, because duplicate
+frame delivery was never controlled.** Recorded 2026-11-26 as a harness defect,
+not a result. Three live runs of the *same* 2 Hz configuration saw 214
+byte-identical frames of 255 delivered, then 3 of 65, then 0 of 61 — the first
+run's skips came from incidental screen activity. Worse, the no-filter baseline
+ran the detector exactly as many times as the gated arm (61 against 61), because
+**Desktop Duplication only delivers on present and so rarely hands a consumer a
+duplicate at all**: the thing the gate exists to catch mostly never arrives. MSS
+is the counter-case that proves the mechanism — polling GDI returned 497 and 674
+frames where DDA delivered 61, 457 and 613 of them identical. **Fixed the same
+day** with a fixture that deliberately re-presents identical states and a
+detector whose cost is a dial; see the entry below for what it then measured.
+The trap inside the trap: `ScenePlayer.present()` computes its own dirty regions
+and `repaint()` returns without painting when nothing moved, so re-showing a
+state through the normal path puts nothing on the wire at all.
+
+**Change-gated inference avoids 74.8% of detector calls, and the metadata
+verdict is worth 12% of consumer CPU against a native DDA binding — not 2,000×.**
+Measured 2026-11-26 with duplicates controlled (401 frames delivered, 300 of
+them byte-identical, 20 updates a second, three rounds, every numeric runtime
+pinned to one thread). All arms went from 401 detector calls to 101 with zero of
+100 states missed. CPU seconds for the 20 s workload, medians: RapidShot
+unfiltered 7.28, RapidShot full compare 3.70, **RapidShot metadata 2.67**, and
+the control that matters — `windows-capture` 2.0.1, a native Rust Desktop
+Duplication binding whose Python wrapper exposes no dirty rectangles at all —
+**2.91 with a full compare**. Non-overlapping ranges, so the advantage is real,
+but **the dirty-rectangle information is Windows', not RapidShot's**; what
+RapidShot adds is verifying the hint byte for byte inside capture, worth about an
+eighth of consumer CPU against a good native baseline. **The 257× and 2,000×
+decision-cost figures do not survive contact with a whole pipeline, and must
+never be quoted as pipeline numbers.** The metadata advantage also shrinks as
+the detector grows — 41% at 5 ms, 28% at 15 ms, 20% at 50 ms, nothing at 250 ms
+— because the decision is a fixed cost against a rising one. At 250 ms every arm
+missed 21–30 of 100 states and gating bought nothing, since a consumer that slow
+finds every frame already new. One exception: **MSS with a gate caught all 100
+states where MSS without one missed 28**, because polling GDI always returns
+pixels, so there the gate buys correctness, not CPU.
+
+**The gating *mechanism* matters in inverse proportion to what the detector
+costs, and with a real model it nearly stops mattering.** Measured 2026-11-26
+with the verified YOLOX-S model through ONNX Runtime 1.32.0 CPU, using
+`intra_op_num_threads` as the cost dial (210.1 / 117.1 / 75.5 ms). Gating itself
+still pays well — **58% of consumer CPU at 75.5 ms** (67.47 s to 28.22 s, 253
+detector calls to 101, zero of 100 states missed) and 35% at 117.1 ms. But
+RapidShot's metadata verdict beat a full-frame compare on the same library by
+only **1.7% at 75.5 ms and 1.4% at 117.1 ms**, against 28% with a 15 ms
+synthetic consumer; against the metadata-free native DXGI binding, **5.3% and
+3.0%** rather than 12%. A 2 ms compare is a quarter of a 15 ms detector and
+under 3% of a 75 ms one. **So the synthetic-consumer figures are right for a
+cheap consumer and misleading for a real model, and any claim has to say which.**
+What RapidShot still wins at 75.5 ms is the rest of the capture path: 28.22 s
+against DXcam's 39.25 s and MSS's 33.88 s, detections 77.9 ms old against
+DXcam's 85.1 ms. At 210.1 ms every arm saturates and misses 7-14 of 100 states.
+
+**INT8 dynamic quantization is not usable for this model: it loses a
+detection.** Measured 2026-11-27 so it does not get proposed again. It is
+**1.91× faster at one intra-op thread** (232.2 to 121.4 ms) and a quarter of the
+size (35.9 MB to 9.1 MB), but only **1.09× at four threads**, because dynamic
+quantization targets MatMul and Attention while YOLOX-S is convolution-heavy —
+once the convolutions are parallelized there is nothing left to win, and the
+pre-processed variant was *slower* than FP32 at four threads (0.97×). The
+blocker is accuracy: on the frame gate's own public fixtures it drops one of
+four detections when the dog photo moves (classes 1, 2, 16 against 1, 2, 7, 16)
+and never matches FP32 boxes and scores inside the 0.01 px / 0.00001 tolerance
+on a positive fixture. Running `quant_pre_process` first, as ONNX Runtime's
+warning advises, changed the accuracy outcome **not at all** (symbolic shape
+inference needs `sympy` and was skipped, which is sound here: the model's shapes
+are fully static). Static quantization against a calibration dataset is the only
+route left, and it was not attempted.
+
+**ONNX Runtime's intra-op thread pool spin-waits between runs, and left on it
+hides the entire benefit.** Recorded 2026-11-26 because it inverted a result.
+The pool burns cycles on every thread whether or not an inference is in flight,
+so the CPU-seconds column reflects the idle pool rather than the work: the first
+run showed gating saving **14%** of CPU, and the identical configuration with
+`session.intra_op.allow_spinning` set to `0` showed **59%**. Set it (and
+`session.inter_op.allow_spinning`) for any ORT pipeline whose CPU is being
+measured, and state the setting in the result.
+
+**A calibrated synthetic inference workload must pin its BLAS threads.**
+Recorded because it cost a whole 13-minute campaign. A 192×192 float32 matmul
+sized to a target millisecond count let NumPy parallelize it across cores, so it
+burned 3.9 cores, reported 97 CPU seconds inside a 25 second window, and its
+calibration drifted with load — making the CPU-seconds column incomparable with
+the single-thread YOLOX arm. Pin `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`,
+`MKL_NUM_THREADS`, `NUMEXPR_NUM_THREADS` and `VECLIB_MAXIMUM_THREADS` in the
+worker's environment. Also: calibrated arithmetic, never `sleep()` — a sleep
+models a slow consumer without consuming the cycles the saving is measured in.
+
+**A saturated consumer hides every capture difference.** At 5, 10 and 30
+updates a second the 255 ms single-thread detector pinned the core and all five
+library arms converged on 3.65–3.95 frames through the model per second at
+94–100% of a core. Only the 2 Hz row discriminated. Any future
+capture-versus-capture claim through a model must state the consumer's spare
+headroom, or it is measuring the model.
+
+**RapidShot's CPU lead at low update rates is its blocking wait, not its change
+detection.** Measured 2026-11-26 and worth keeping because the obvious reading
+is wrong. RapidShot's arms ran at 1761–1933 Mcycles/s against DXcam's
+3282–3353, and a no-filter control with gating switched off and identical
+detector work reproduced the whole gap (1761/1755 against 3347/3351). The cause
+is empty reads: **899 and 915 against 333,403 and 340,814.** DXcam 0.3.0's
+`grab()` returns immediately with no way to wait on a frame, so a polling
+consumer spins. A DXcam caller closes most of it with a retry delay — which is
+why this project's own matched arms carry 0.5 ms and 2 ms budgets — and pays
+latency for it. Also recorded: `dxcam_view()` delivered 127 frames where
+`dxcam_copy()` delivered 61, 66 of them duplicates the caller must detect alone.
+
+**A benchmark that gives the two libraries different algorithms measures the
+algorithms.** Recorded because this project got it wrong twice in one week, in
+the same direction both times: a "1,517 against 357" and later a "1,517 against
+0 of 1,530" each compared RapidShot's rectangle-limited search with DXcam's
+stock full-frame search and read as a library result. The honest number on the
+same fixture is 1,517 against 1,514. Both retracted figures were real
+measurements of real pipelines; what was wrong was the label. **Any
+cross-library row must state what both sides ran**, and the stock-versus-stock
+comparison belongs under its own heading saying the gap is the search.
+
 **Python is not the bottleneck.** CPU pixel work is ~2,500× the entire Python/COM binding overhead. At 240 FPS the binding cost is 0.07% of the frame budget.
 
 **Capture rate is bounded by the compositor's present rate, not by the display's refresh rate.** This entry previously said "at most one frame per display refresh", which is **wrong**, and § 6.2 already contradicted it in passing ("DDA is driven by presents, not refresh") — the two sat in the same document for months.
@@ -626,7 +854,11 @@ Topology: single
 | **7.2 — `GpuTensor` exports (unreleased, 2.6)** ⚠️ | `to_torch()` / `to_cupy()` / `to_dlpack()` written and **never run** — no CUDA device on the machine that built them. A release gate (§ 1) |
 | **Capture-ordering fix (unreleased, 2.6)** ✅ | `GpuPreprocessor12` and `CrossAdapterTransfer` read the previous frame 5–43% of the time on a moving source, since 2.3.0. Now ordered on the GPU behind the capture copy; 0 / 150 each, regression tests fail when the ordering is removed. Hardware destination unverified (§ 4, § 10) |
 
+| **7.4b — Exact changed tiles (2.9.0)** ✅ | `grab_with_changes()` and `grab_tiles()`: candidate tiles narrowed by DXGI dirty rectangles, then **compared byte for byte, alpha included**, against a private per-camera history; a full exact comparison whenever the metadata is uncertain, with the reason named; `tight_rectangles=True`; `audit_every=N` plus `change_audit_stats()`. `grab_tiles()` stages only the candidate tiles with `CopySubresourceRegion`: **1.51 MiB of readback per result against 7.91**. Validated by a **one-hour public-API soak** — 29,985 change maps each checked against an independent scan, 1,033 retained-lease checks, **zero missed tiles in 187 full audits**, two resource generations rebuilt, zero restarts — and by fault injection for pool exhaustion, access loss, a locked desktop, protected content, source and crop resets, rotation and DPI. Every frozen release gate passed (§ 7.4b) |
+
 **Also fixed:** `pip install rapidshot` shipped a broken package — `pyproject.toml` listed `packages = ["rapidshot"]`, so the wheel contained 5 modules instead of 25 and failed with `ModuleNotFoundError: No module named 'rapidshot.util'`. Invisible from a source checkout. Now guarded by CI.
+
+**Test coverage, 2026-11-26, Intel-only machine (Machine A), at 2.9.0: 2,486 passed, 25 skipped, 0 failed** of 2,508 collected, in 152 s. An earlier run the same day read 2,456/48 on the same code — the live HDR, NHWC-transposition and exclusive-fullscreen fixtures skip or run depending on what is on screen, which is the per-machine instability this section already documents. The 2.9 work added `tests/test_exact_tiles.py`, `tests/test_tiled_capture.py` and eight blocks in `tests/test_readme_examples.py` that run the README's exact-change examples as printed, so a drift between the document and the API fails locally rather than in a reader's loop.
 
 **Test coverage, 2026-09-14, Intel-only machine: 895 passed, 17 skipped**; `cargo test --release` 27 passed. The 2.6 work added `test_gpu_converter*.py` (seven files), `test_tensor_transfer.py`, `test_tensor_stream.py`, `test_tensor_stream_logic.py` (GPU-free, so it runs in CI) and `test_capture_order_shipped_paths.py`. **On Machine B the same day: 931 passed, 12 skipped, 0 failed**, the difference being the live GPU and CUDA files that Machine A skips, plus `test_gpu_tensor_export.py`, added there for the LUID selection behind the framework exports (§ 1). Three of its seven still skip on Optimus and need capture and CUDA on one adapter. The tables below are the 2026-08-06 state and are kept for the per-machine skip analysis, which still applies.
 
@@ -3223,6 +3455,84 @@ probabilistic rather than buried, and probably opt-in.
 
 #### 7.4b — Exact change detection, then event-driven inference
 
+> **Shipped in 2.9.0, 2026-11-26, and the plan below was half right.**
+> `grab_with_changes()` and `grab_tiles()` are built, documented in
+> `docs/EXACT_TILES.md`, and validated against gates frozen before the runs.
+> **What held:** exact rather than probabilistic, with DWM's metadata as a hint
+> that narrows which tiles to examine rather than as the answer. That was the
+> right call and the audit proves it — `audit_every=N` found zero omissions in
+> 217 unique eligible trace pairs and zero missed tiles in 187 audits over an
+> hour, having first caught a deliberately injected one.
+>
+> **What did not hold, and is now settled (§ 4):**
+>
+> - **"Hierarchical GPU comparison" lost on Intel.** Comparing on the GPU cost
+>   0.77 ms against 0.48 ms for the CPU candidate comparison, because the frame
+>   is going to the CPU anyway. The shipped comparison is CPU-side. Worth
+>   retesting on a discrete card, where the readback crosses PCIe; not before.
+> - **"ROI scheduling does not reduce DXGI capture work" was wrong in one
+>   respect, and it is the biggest win here.** Desktop Duplication hands over
+>   the whole monitor, but it does not force you to *read back* the whole
+>   monitor. `grab_tiles()` stages only the candidate tiles with
+>   `CopySubresourceRegion`: **7.91 MiB of readback per result becomes 1.51 MiB**
+>   on a sparse 1080p frame, with median result pixel age falling from 6.33 ms
+>   to 5.09 ms against the full-frame exact path. The argument in this section
+>   still stands — the downstream saving dwarfs it — but the capture-side saving
+>   is real and is the part DXcam and the Windows Capture binding do not offer.
+> - **The bitmask was not what shipped.** `ChangeSet` carries a tuple of
+>   ascending tile indices plus their rectangles, because every measured
+>   consumer wanted rectangles to feed a search, not a set to union. The
+>   bitmask's bounded-state argument applies to a *consumer* accumulating change
+>   across frames, which is downstream work and stays there.
+> - **`stream.watch(...)` was not built.** It presumes a scheduler inside the
+>   capture library. The measurements said the opposite: an adaptive search
+>   planner, prototyped, was better than any fixed strategy (+8% against a full
+>   search at 59% scattered change, where a fixed planner lost 18%) and *still*
+>   missed its 2% worst-case target in 10 of 52 pairs. **RapidShot ships the
+>   rectangles, not the search.** A half-right planner inside the capture
+>   library is harder to opt out of than to write.
+>
+> **What it buys, measured.** Against DXcam 0.3.0 with the **same** OpenCV
+> search on both sides and DXcam handed change bounds from an independent full
+> byte scan: 1,517 of 1,530 scripted 30 updates/s states correct and inside a
+> 33.33 ms budget against 1,514 — three updates, so the deadline is not the
+> story — at **14.09% of a core against 24.81%**, **5.09 ms median result pixel
+> age against 7.30 ms**, and **1.51 MiB of readback against 7.91 MiB**. Giving
+> DXcam its best wait setting (2 ms retry) brought it to 20.83%, so roughly a
+> third of the CPU gap survives every advantage. Downstream, tight rectangles
+> covered 15.9-43.4x fewer pixels than the frame and cut detector-plus-search
+> time by 95.4-96.4% on six timed sparse pairs; the fixture's search fell from
+> 68.89 ms to 1.99 ms p50.
+>
+> **What it costs.** One history frame: 7.91 MiB at 1080p, 31.64 MiB at 4K,
+> against a 12 MiB gate set at 1080p. Idle cycles are indistinguishable from
+> zero — +1.15% (95% CI -0.82% to +2.84%, 38 pairs) for the full-frame path and
+> -1.40% (-3.03% to +1.13%, 39 pairs) for tiles, against a 5% ceiling — and the
+> mechanism is counted, not inferred: across **3,818 confirmed
+> `AcquireNextFrame` timeouts** an instrumented probe saw zero GPU copies, zero
+> maps, zero processor calls and zero history writes.
+>
+> **Where it stops paying, and the claim that was dropped.** With whole-tile
+> regions the crossover is 75.6-90.4% of tiles changed for clustered change but
+> **only 30.4-40.0% for scattered change**, losing 18.3% past it. Chrome's
+> scroll frames change about 59% of tiles, scattered, and DXGI reported **no
+> usable move rectangles in 690 trace frames**, so scroll-offset inference was
+> prototyped (faster on Chrome, slower on Word, nothing usable in Excel) and
+> **the scrolling claim was dropped rather than weakened**. It is not in the
+> README and should not be added without a crossover above 59%.
+>
+> **What is not measured.** NVIDIA, AMD, native 4K, HDR, and any real
+> application rather than the scripted fixture. A captured frame can mix two
+> desktop updates and the map reports that faithfully; it happens more at 60 Hz
+> (88 of 96 states correct against 96 of 96 at 100 Hz, same offered rate). That
+> is why both APIs are provisional. The nine other ideas that were measured and
+> rejected are listed in `CHANGELOG.md` under 2.9.0 so they are not
+> re-proposed. The readable report is published at
+> `docs/change-detection/report.md`; the 61 MB of raw per-trial JSON, memory
+> samples and saved mismatch images stay in the untracked
+> `.test/change-detection/results-tiled-final/` tree on the recording machine,
+> which is where any re-analysis has to start.
+
 Given 7.4a, build the detector **exact** rather than probabilistic where the
 budget allows: hierarchical GPU comparison against the previous frame, with DWM's
 metadata as a hint that narrows which tiles to examine rather than as the answer.
@@ -3329,7 +3639,13 @@ independently, so this is *alignment within a tolerance* using each frame's
 bundle = group.capture(target_time=qpc, tolerance_us=1500)
 ```
 
-### 7.5 — 2.9: many consumers, and earned trust
+### 7.5 — 2.10: many consumers, and earned trust
+
+> **This was numbered 2.9 until 2026-11-26.** 2.9 went to § 7.4b's exact change
+> detection instead, which was ready and measured first. Nothing in this
+> section was dropped; it is the next release's content, and the
+> crowdsourced-hardware item below is now the project's **largest** evidence
+> gap, because 2.9's whole case rests on one Intel integrated GPU.
 
 **`SharedFrameBus`.** A real N-slot shared GPU ring: producer sequence number →
 producer fence → N consumers → per-consumer completion. The shared D3D12

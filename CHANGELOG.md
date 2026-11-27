@@ -10,6 +10,358 @@ each release can be traced back to the plan it implements.
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-11-26: Exact changed tiles, and staging only the tiles that moved (ROADMAP § 7.4b)
+
+Pure Python. The native floor is unchanged at `rapidshot-native >= 0.5.0`, and
+nothing in this release needs the extension. **No existing behaviour changed**:
+`grab()`, `grab_frame()`, `start()`, the default wait and the pooling policy are
+the 2.8 paths untouched. Everything below is opt-in and reached only through two
+new methods.
+
+Both new APIs are **provisional**. All of their evidence comes from one Intel
+integrated GPU at 1920x1080 and 100 Hz (an HP 324pe), so the shape of the
+contract may still change before it is treated as settled. Every figure in this
+entry carries that scope.
+
+### Added — `grab_with_changes()`: which tiles changed, verified byte for byte
+
+- **`ScreenCapture.grab_with_changes(region=None, *, tight_rectangles=False)`**
+  returns a `ChangedFrame` lease — CPU BGRA8 pixels plus an immutable
+  `ChangeSet` naming the 128x128 tiles that differ from the previous delivered
+  frame — or `None` when no image was delivered.
+- **Desktop Duplication's dirty rectangles are treated as a hint, not an
+  answer.** They narrow which tiles are *candidates*; RapidShot then compares
+  those candidates against a private history **byte for byte, all four BGRA
+  bytes including alpha**, and reports only tiles that genuinely differ. The
+  history is private per camera and updated *before* a lease is handed out, so a
+  caller editing live pixels cannot corrupt the next comparison.
+- **Four outcomes, told apart deliberately.** `None` for no image; an empty
+  change set with `reason="identical"` for a frame that arrived and changed
+  nothing; `reason="changed"` for the real case; and `reason="initial"` or
+  `"reset"` marking every tile on the first frame or after a source, geometry,
+  format or region change. An earlier design returned `None` for both of the
+  first two, which the benchmarks showed was the distinction that mattered most.
+- **When the metadata cannot be trusted, a full exact comparison runs instead**,
+  and `changes.fallback_reason` names which case it was: `baseline`, `rotation`,
+  `frame_gap`, `accumulated_frames`, `move_rects`, `metadata_unavailable`,
+  `empty_dirty_rects` or `invalid_dirty_rects`.
+- `ChangeSet` also carries `indices` (ascending row-major tile IDs),
+  `rectangles` (edge-clipped tile bounds), `size`, `present_time_qpc` (DXGI's
+  `LastPresentTime` in QPC ticks, or `None`) and `accumulated_frames`. The map
+  stays readable after the frame is released.
+
+### Added — `grab_tiles()`: copy only the tiles that moved off the GPU
+
+- **`ScreenCapture.grab_tiles(region=None, *, tight_rectangles=False, audit_every=0)`**
+  returns a `TiledFrame` lease. When the dirty hints are usable it stages *only*
+  the candidate tiles with `CopySubresourceRegion` instead of the whole frame:
+  **1.51 MiB of requested GPU readback per result against 7.91 MiB**, on the
+  sparse 30 updates/s fixture.
+- `frame.tiles` yields read-only BGRA views in `changes.indices` order;
+  `frame.materialize(rect=None)` assembles the whole snapshot or one half-open
+  frame-coordinate rectangle into a writable, C-contiguous array the caller
+  owns. A materialized snapshot keeps its pixels even after the camera is
+  released.
+- A complete immutable CPU baseline is kept behind the snapshots, and unchanged
+  pages are shared between them: holding an earlier tiled snapshot through an
+  hour-long soak added **at most 19 pages and 1.12 MiB**. A reset, frame gap,
+  move, rotation, missing metadata or protected masking falls back to a full
+  readback for that acquisition.
+- `pool_size_frames` bounds live tiled snapshots. Exhausting them raises
+  **`PoolExhaustedError` before acquiring an update**, rather than silently
+  reusing a buffer a caller still holds.
+- **Measured against the full-frame exact path**, with the same
+  rectangle-limited search on both: 1,517 of 1,530 scripted updates correct and
+  inside a 33.33 ms budget against 1,504, median result pixel age 5.09 ms
+  against 6.33 ms, and 1.51 MiB of readback against 7.91 MiB.
+
+### Added — tight change rectangles, and a self-audit
+
+- **`tight_rectangles=True`** on either method populates
+  `ChangeSet.tight_rectangles`: one frame-local bounding rectangle per changed
+  tile, enclosing the actual byte changes inside it, alpha-only changes
+  included. `None` when disabled, `()` for an identical frame when enabled, and
+  full clipped tile bounds on initial and reset frames.
+  **On six timed sparse pairs this covered 15.9-43.4x fewer pixels than the
+  frame and cut the consumer's detector-plus-search time by 95.4-96.4%**, with
+  matched detections. It is off by default because it costs capture-side CPU
+  with nothing in return when no search follows: 7.55 against 3.56 Mcycles per
+  state in a capture-only run.
+- **`audit_every=N`** on `grab_tiles()` schedules a full pixel comparison on
+  every Nth hint-guided capture. An audit that finds a changed tile outside the
+  hints reports the corrected pixels and map and disables hint-guided copies for
+  that capture generation. **`camera.change_audit_stats()`** returns a
+  `ChangeAuditStats` with cumulative audited frames, frames with omissions and
+  omitted tile counts. The audit caught a deliberately injected omission and
+  found **zero real omissions in 217 unique eligible trace pairs** offline and
+  **zero missed tiles in 187 audits** across the one-hour soak. It samples the
+  stream, so a change that appears and reverts between samples can still be
+  missed.
+
+### Added — exported types
+
+- `rapidshot.ChangedFrame`, `rapidshot.TiledFrame`, `rapidshot.ChangeSet` and
+  `rapidshot.ChangeAuditStats` are importable from the top level, and
+  **`rapidshot.BufferReleasedError` and `rapidshot.PoolExhaustedError` now are
+  too** — the contract tells callers to catch them by name, so they belong in
+  the public namespace rather than only in `rapidshot.memory_pool`.
+
+### Measured — against DXcam 0.3.0, with the same search on both sides
+
+Earlier rounds of this work produced two comparisons that were retracted,
+because they measured an algorithm difference and reported it as a library
+difference. The headline below is the matched one. HP 324pe, Intel integrated
+graphics, 1920x1080 at 100 Hz; 1,530 scripted desktop states at 30 updates/s
+against a 33.33 ms deadline; five shuffled trials per arm; cold starts included.
+DXcam is handed change bounds from an independent full-frame byte scan so that
+both sides run the identical OpenCV search.
+
+| Pipeline | correct and on time | result pixel age p50/p95 | CPU, % of one core | GPU readback per result |
+| --- | ---: | ---: | ---: | ---: |
+| RapidShot `grab_tiles(tight_rectangles=True)` | **1,517/1,530** | **5.09 / 9.07 ms** | **14.09%** | **1.51 MiB** |
+| DXcam `grab_view()` + full CPU byte scan | 1,514/1,530 | 7.30 / 10.28 ms | 24.81% | 7.91 MiB |
+
+- Zero wrong detections on either side. **Three updates apart on the deadline**
+  — the deadline is not where the difference is. The cost is: 43% less CPU,
+  pixels 2.2 ms fresher, 5.2x fewer bytes off the GPU per result.
+- **DXcam's CPU, given every advantage.** All four waiting strategies were
+  re-run in one 20-trial block with the same search. A 2 ms retry cut DXcam's
+  empty calls from 38,660 to 16,584 and its CPU by 3.83 points, to 20.83%
+  against RapidShot's 13.79% — so some of the gap was the harness's retry loop,
+  and **about a third of it was not**. Streaming DXcam at a 100 fps target
+  finished 1,177 of 1,530 at 22.21% with a 15.41 ms median result age; pacing,
+  ownership and frame selection all change there, so that row is a
+  configuration rather than a verdict on streaming.
+- Logical CPU pixel writes per result: **0.72 MiB** for the tiled path against
+  **15.82 MiB** for streamed DXcam with owned frames.
+- **The comparison most code will actually hit**, from a separate campaign:
+  stock DXcam `grab_view()` into a stock full-frame OpenCV search finished
+  **0 of 1,530** inside the deadline and completed 696 at all, with a 68.89 ms
+  median search and 96.65% of one core, against 1.99 ms and 14.09%. **That gap
+  is the search, not the capture** — and it is the reason this feature exists.
+
+### Measured — reproduced after the version bump
+
+The campaign above ran while the tree read `2.8.1.dev0`. The live arms were
+re-run on the same machine with the same fixture seed after the bump to 2.9.0:
+**pixel age and search time came out equal or better in all five RapidShot
+arms**, the 1.51 against 7.91 MiB staging split and the pool counters were
+identical, and `grab_tiles()` measured 13.79-14.25% of a core across three
+separate runs of the same path. One arm's deadline count fell by 19 states; all
+19 were traced to a single ~800 ms window in one round of five where capture
+stayed healthy (pixel age 1.7-7.7 ms) but an on-screen overlay made the
+fixture's marker unreadable, which the harness classifies as *undelivered*.
+No published figure changed as a result. See
+`docs/change-detection/release-2.9.0-reproduction.md`.
+
+### Measured — what it costs, against gates set before the runs
+
+| Cost | Measured | Pre-set limit |
+| --- | ---: | ---: |
+| Steady private commit | one history frame, **7.91 MiB** at 1080p | <= 12 MiB |
+| History writes per sparse result | **~0.7 MiB** (7.91 MiB when the whole frame changed) | — |
+| Idle CPU, `grab_with_changes()` | **+1.15%** of process cycles/s, 95% CI -0.82% to +2.84%, 38 pairs | <= +5% |
+| Idle CPU, `grab_tiles()` | **-1.40%**, 95% CI -3.03% to +1.13%, 39 pairs | <= +5% |
+| Idle CPU, `grab_tiles(tight_rectangles=True)` | **-1.90%**, 95% CI -3.97% to +2.06%, 18 pairs | <= +5% |
+| GPU memory | unchanged | — |
+
+- **The idle gate has a mechanism behind it, not only a confidence interval.**
+  Across **3,818 confirmed `AcquireNextFrame` timeouts** an instrumented probe
+  counted zero GPU copy calls, zero surface maps, zero processor calls and zero
+  history-update calls or bytes written, on both exact paths. With nothing on
+  screen the exact path does nothing, by construction.
+- The idle gate was first scored as *inconclusive* on two paths — medians of
+  +0.62% and -0.95% with intervals reaching +5.77% and +5.07% on about 20 pairs
+  each. The ceiling was **not** moved. More pairs were collected under the same
+  frozen rule, declared before the new data existed, and the pooled intervals
+  closed below it. The original inconclusive result is preserved in the report.
+- **The CPU-percentage counter was dropped for per-pair work** and kept only for
+  whole-window shares. Windows process-time ticks move in steps of about
+  0.155 percentage points on this host, which is coarser than the threshold
+  being tested; process cycles per second is the counter the gate uses.
+
+### Measured — correctness and endurance
+
+- **One hour through the public API**, one process: `grab_with_changes` for
+  1,950 s and `grab_tiles(audit_every=60)` for 1,650 s, every reported change
+  map checked against an independent comparison of consecutive delivered BGRA
+  arrays. **29,985 map matches, 1,033 retained-lease checks, zero missed tiles
+  in 187 full audits**, two capture-resource generations rebuilt, zero process
+  restarts, longest loop gap 2.02 s.
+- **Fault injection**: forced pool exhaustion, access loss, a locked desktop,
+  protected content, source resets, rotation, DPI changes, crop and region
+  resets, alpha-only changes, edge tiles, frame gaps, and mutation of a live
+  lease.
+- **0 failed** on the Intel machine at this version, across four runs of the same
+  code: 2,486 / 2,484 / 2,474 passed with 25 / 27 / 37 skipped, in 2m44s–3m10s
+  (2,508 collected, plus three modules skipped whole at collection, for 2,511
+  outcomes every time). The skip count is a property of the machine and the
+  screen rather than of the code: the spread is almost entirely
+  `test_cross_adapter.py` and `test_memory_bounds.py` reporting *no frame
+  captured — the screen must be changing*, which skip when the desktop is idle
+  and pass when something is repainting it. Installing `onnxruntime` 1.32.0
+  partway through changed none of it; all 167 tests that touch it pass. That
+  includes the new
+  `tests/test_exact_tiles.py` and `tests/test_tiled_capture.py`, and eight new
+  blocks in
+  `tests/test_readme_examples.py` that run the README's exact-change examples as
+  printed.
+
+### Measured — through a real detector, and what that did not settle
+
+Full detail, including the limits, in
+[`docs/change-detection/inference-2.9.0.md`](docs/change-detection/inference-2.9.0.md).
+
+- **The published YOLOX frame-gate figure reproduced**: 49.13% of detector time
+  saved against the published 48.94%, with a tighter p95 (262.97 ms against
+  336.64 ms) on a quieter host.
+- **The same detector over three recorded desktop traces** — new, never run at
+  any previous version. Detector time saved equals the share of byte-identical
+  frames to within a twentieth of a percent: spreadsheet 69.0% → **69.13%**,
+  browser 33.6% → **33.62%**, game 13.3% → **13.28%**. Detections matched
+  always-infer on every frame of all three.
+- **The skip decision itself**, over 762 recorded frame pairs: candidate tiles
+  cost **257× / 25× / 21×** less than a whole-frame compare as a pure gate, and
+  134× / 6× / 27× less as a gate that also returns the changed-tile list. The
+  native comparator reads slower than a NumPy tile loop on two traces because it
+  cannot exit early — it computes the complete list, which the loop does not.
+- **Live, five libraries through one CPU detector**, one worker process each so
+  the fixture's own cost lands on nobody. `grab_with_changes()` reached its
+  verdict in **0.001 ms against 2.0–2.6 ms**, and **608 of its verdicts were
+  checked against an independent full-frame compare outside the timed path, none
+  disagreeing**. RapidShot cost 15–20 MiB more memory than DXcam and 37 MiB more
+  than MSS.
+- **Inference avoided, with duplicates controlled and a native DXGI control.**
+  The first attempt could not measure this — duplicate delivery was never
+  controlled and swung from 214 identical frames of 255 to 3 of 65 to 0 of 61
+  across three runs of one configuration, and the no-filter baseline ran the
+  detector exactly as often as the gated arm because Desktop Duplication rarely
+  delivers a duplicate at all. With a fixture that **re-presents identical states
+  deliberately** (401 frames delivered, 300 byte-identical, three rounds, every
+  numeric runtime pinned to one thread), all arms went from **401 detector calls
+  to 101 — 74.8% eliminated, 0 of 100 states missed**. CPU seconds for the 20 s
+  workload, medians: unfiltered 7.28, full-frame compare 3.70, **change metadata
+  2.67**. Gating cuts consumer CPU **64%**; the metadata verdict beats a full
+  compare by **28%** at 15 ms, 41% at 5 ms, 20% at 50 ms and nothing at 250 ms.
+- **The honest ceiling on that claim.** `windows-capture` 2.0.1 — a native Rust
+  Desktop Duplication binding whose Python wrapper exposes no dirty rectangles —
+  reached **2.91 s** with a full compare against RapidShot's **2.67 s** with
+  metadata. Non-overlapping ranges, so the advantage is real, but it is **12% at
+  the median, not a different league.** The dirty-rectangle information is
+  Windows'; what RapidShot adds is verifying it byte for byte inside capture.
+  **The 257× and 2,000× decision-cost figures are measurements of the decision in
+  isolation and do not survive contact with a whole pipeline.**
+- **Repeated with a real model, which revises the mechanism claim.** The
+  verified YOLOX-S model through ONNX Runtime 1.32.0 CPU, with
+  `intra_op_num_threads` as the cost dial (210.1 / 117.1 / 75.5 ms). Gating still
+  pays well — **58% of consumer CPU at 75.5 ms**, 67.47 s to 28.22 s, 253
+  detector calls to 101, zero of 100 states missed. But the *metadata* verdict
+  beats a full-frame compare on the same library by only **1.7%** there (1.4% at
+  117.1 ms), against 28% with a 15 ms synthetic consumer, and beats the
+  metadata-free native DXGI binding by **5.3%** rather than 12%. A 2 ms compare
+  is a quarter of a 15 ms detector and under 3% of a 75 ms one, so the decision
+  mechanism matters in inverse proportion to what the detector costs. What
+  RapidShot still wins at 75.5 ms is the rest of the capture path: **28.22 s
+  against DXcam's 39.25 s and MSS's 33.88 s**, detections 77.9 ms old at the
+  median against DXcam's 85.1 ms. At 210.1 ms every arm saturates and misses
+  7–14 of 100 states.
+- **INT8 was measured and rejected.** Dynamic quantization of the same model is
+  **1.91× faster at one intra-op thread** (232.2 ms to 121.4 ms) and a quarter of
+  the size (35.9 MB to 9.1 MB), but only **1.09× at four threads** — dynamic
+  quantization does not touch convolution, and YOLOX-S is convolution-heavy. More
+  to the point it is **not detection-equivalent**: on the frame gate's own
+  fixtures it drops one of four detections when the dog photo moves (classes 1,
+  2, 16 against FP32's 1, 2, 7, 16) and never matches FP32 boxes and scores
+  within the 0.01 px / 0.00001 tolerance on a positive fixture. Running
+  `quant_pre_process` first, as ONNX Runtime's warning advises, changed the
+  accuracy outcome not at all. So INT8 is not an arm in any comparison above;
+  recovering that detection would need static quantization against a calibration
+  dataset.
+- **One confound caught, because it inverted a result.** ONNX Runtime's intra-op
+  thread pool spin-waits between runs by default, burning cycles whether or not
+  an inference is in flight. With spinning on, gating appeared to save **14%** of
+  CPU; with `session.intra_op.allow_spinning` set to `0`, the identical
+  configuration showed **59%**.
+- **Still not settled.** A saturated consumer hid every library difference at 5,
+  10 and 30 updates a second, and at a 250 ms detector every arm missed 21–30 of
+  100 states while gating bought nothing. The avoidance detector is calibrated
+  arithmetic, not a model. Three rounds, not five. No `onnxruntime`, so no
+  YOLO11n, MobileNetV3, INT8 or multi-threaded real model was tried. And
+  RapidShot's CPU lead at 2 updates a second is
+  its **blocking wait**, not its change detection — a no-filter control
+  reproduced the whole gap, caused by 899 empty reads against DXcam's 333,403.
+- **No GPU inference was measured at this version.** The README's "Through a
+  detector" table remains a 2.6.0/2.6.1 measurement recorded 2026-09-25 on the
+  RTX 4060 host; this release does not refresh it.
+
+### Known limits, stated rather than discovered later
+
+- **A captured frame can mix two desktop updates**, and the change map reports
+  that faithfully rather than hiding it. All 63 saved mismatches from a 100
+  updates/s rerun contained an exact mix of two consecutive intended states;
+  this happened with DXcam too, and a full-frame search agreed with every saved
+  detection. **It is more common at 60 Hz**: 88 of 96 states correct against
+  96 of 96 at 100 Hz with the same 60 updates/s offered. A two-acquisition
+  settling rule was measured and delivered 0 of 128 states at 100/s, so none
+  ships.
+- **Dense scattered change is slower than a full search.** With whole-tile
+  regions the crossover is 75.6-90.4% of tiles changed for clustered change but
+  only 30.4-40.0% for scattered change, with an 18.3% loss past it. At 8.1%
+  changed tiles the saving was 81.6% clustered and 57.7% scattered.
+  **There is no scrolling claim**: Chrome's scroll frames change about 59% of
+  tiles, scattered, and DXGI reported no usable move rectangles in 690 trace
+  frames.
+- **At 4K the history is 31.64 MiB**, and the 4K search figures (10.7-11.2 ms
+  against 277-281 ms for a full search, identical detections) are an offline
+  replay from captured pixels, not a live 4K capture. No 4K memory gate was set.
+- **Private commit drifted +8.48 MiB/hour** across the soak's five-minute
+  blocks, ending 2.92 MiB above the first block and below the previous four,
+  with the histories themselves fixed at 7.91 MiB each. The slope is not
+  monotonic and the trace does not identify a source. Disclosed, not explained:
+  no leak was demonstrated, and neither was its absence. The 115 MiB
+  working-set step at the midpoint is Windows trimming, not RapidShot releasing
+  anything.
+- **DXGI, CPU BGRA8, SDR, one-shot only.** A GPU output, another colour mode,
+  another backend, an HDR surface or an active `start()` stream raises
+  `ValueError`; a released camera raises `RuntimeError`. The two methods keep
+  separate histories, so alternating between them can hold two baselines and
+  force a full readback after a frame gap.
+- **No NVIDIA, no AMD, no native 4K, no HDR.** Staging only the dirty tiles
+  should matter *more* where the copy crosses PCIe, but that is a prediction and
+  is labelled as one.
+
+### Not shipped, and why — ideas measured and rejected
+
+Recorded so they are not re-proposed. Each was built far enough to measure.
+
+- **GPU-side comparison**: 0.77 ms against 0.48 ms for the CPU candidate
+  comparison on Intel, where the frame is going to the CPU anyway. Worth
+  retesting on a discrete GPU; not shipped.
+- **Two-slot staging**: no more states delivered, and median pixel age rose from
+  4-5 ms to 12-13 ms. The ~75 states/s ceiling at 80-100 updates/s also appears
+  with a bare DXGI loop, so it is the compositor and the fixture, not the copy.
+- **Settled frames** (report a tile only once it is stable across acquisitions):
+  0 of 128 states delivered at 100/s. Mixed frames only appear at the rates
+  where waiting cannot deliver.
+- **Metadata risk flags**: flagged too many correct frames.
+- **Dropping and reseeding history at 25% changed**: slower, with more writes.
+- **Lazy history pages**: only looked cheaper while assuming a separate complete
+  baseline stayed available.
+- **Scroll offset inference**: faster on sampled Chrome traces, slower on Word,
+  and no usable shift found in Excel.
+- **An adaptive search planner and OpenCV helpers**: measured as prototypes and
+  genuinely better than a fixed strategy (+8% against a full search at 59%
+  scattered change, where the fixed planner lost 18%), but they still missed
+  the 2% worst-case target in 10 of 52 pairs. **RapidShot ships the rectangles,
+  not the search.** The right strategy depends on the task, and a half-right
+  planner inside the capture library is harder to opt out of than to write.
+- **An adaptive idle wait** (5 ms while frames arrive, backing off to 50 ms when
+  quiet) cut idle cycles by 69-73%, but stop-through-release rose from a 7.22 ms
+  median and 15.30 ms maximum to 23.60 ms and 62.12 ms. Shutdown latency is a
+  more visible complaint than half a percent of an idle core, so the fixed 5 ms
+  wait remains the only one shipped and the controller stays in the benchmark.
+
+
 ## [2.8.0] - 2026-11-22: Continuous capture keeps the newest frame, and NV12 goes straight to an encoder's texture, with rapidshot-native 0.5.0
 
 Published together with `rapidshot-native` 0.5.0, which the `native`,

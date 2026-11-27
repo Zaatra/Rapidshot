@@ -128,6 +128,28 @@ class StageSurface:
             self.texture.QueryInterface(IDXGISurface).Map(ctypes.byref(rect), 1)
         return rect
 
+    def copy_bgra_regions(self, context, source, memory_region, regions) -> None:
+        """Stage crop-local boxes at their original offsets in this surface."""
+        x, y, right, bottom = memory_region
+        width, height = right - x, bottom - y
+        if (width, height) != (self.width, self.height):
+            raise ValueError("Staging size does not match the copied region")
+        for left, top, end_x, end_y in regions:
+            if not (0 <= left < end_x <= width and 0 <= top < end_y <= height):
+                raise ValueError("Copy box lies outside the staging region")
+            box = D3D11_BOX(left=x + left, top=y + top, right=x + end_x, bottom=y + end_y,
+                            front=0, back=1)
+            context.CopySubresourceRegion(self.texture, 0, left, top, 0, source, 0, ctypes.byref(box))
+
+    def bgra_view(self, mapped_rect: DXGI_MAPPED_RECT) -> np.ndarray:
+        """View pixel rows until unmap, excluding the driver row padding."""
+        pitch = int(mapped_rect.Pitch)
+        if not mapped_rect.pBits or pitch < self.width * 4:
+            raise ValueError("Invalid mapped BGRA surface")
+        rows = np.ctypeslib.as_array(ctypes.cast(mapped_rect.pBits, ctypes.POINTER(ctypes.c_uint8)),
+                                     shape=(self.height, pitch))
+        return rows[:, :self.width * 4].reshape(self.height, self.width, 4)
+
     def _unmap_raw(self) -> None:
         if self.interface:
             # Use cached interface for better performance

@@ -42,6 +42,8 @@ from rapidshot.util.topology import (
 from rapidshot.preprocess import to_nchw
 
 # Plain values with no OS dependency, so they import everywhere (§ 9).
+from rapidshot.changes import ChangeAuditStats, ChangedFrame, ChangeSet, TiledFrame
+from rapidshot.memory_pool import BufferReleasedError, PoolExhaustedError
 from rapidshot.sources import Monitor, Window, Region
 
 # The GPU transform path is optional in exactly the way the native extension
@@ -80,7 +82,8 @@ __all__ = [
     "to_nchw",
     "GpuConverter", "GpuTensor", "TensorTransfer", "CrossAdapterRequired",
     "TensorStream", "HdrClippedWarning",
-    "Monitor", "Window", "Region", "plan",
+    "Monitor", "Window", "Region", "plan", "ChangedFrame", "ChangeSet", "TiledFrame", "ChangeAuditStats",
+    "BufferReleasedError", "PoolExhaustedError",
 ]
 
 class RapidshotError(Exception):

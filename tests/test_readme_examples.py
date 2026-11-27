@@ -417,3 +417,127 @@ def test_to_cupy_and_to_dlpack_alternatives_block():
             assert type(capsule).__name__ == "PyCapsule"
     finally:
         camera.release()
+
+
+# -- exact changed tiles (2.9) ---------------------------------------------
+
+def _exact_camera():
+    """The camera the README's exact-tiles block creates, verbatim."""
+    return _camera(output_color="BGRA", nvidia_gpu=False)
+
+
+def _tiled(camera, tries=4000, **kwargs):
+    for _ in range(tries):
+        frame = camera.grab_tiles(**kwargs)
+        if frame is not None:
+            return frame
+    pytest.skip("no frame captured — the screen must be changing")
+
+
+def test_exact_tiles_block_runs_as_printed():
+    """`grab_tiles(tight_rectangles=True, audit_every=120)` + `materialize(rect)`.
+
+    The README's one exact-change example, run as written. `materialize()` is
+    documented as returning an owned, writable, C-contiguous array, and the
+    rectangles it is fed come straight out of `changes.tight_rectangles` — so
+    if the rectangle convention ever stops being half-open frame coordinates
+    this fails here rather than in a reader's loop.
+    """
+    camera = _exact_camera()
+    try:
+        frame = _tiled(camera, tight_rectangles=True, audit_every=120)
+        with frame:
+            rects = frame.changes.tight_rectangles
+            assert rects is not None, "tight_rectangles=True must populate the tuple"
+            for rect in rects:
+                patch = frame.materialize(rect)
+                left, top, right, bottom = rect
+                assert patch.shape == (bottom - top, right - left, 4)
+                assert patch.flags["C_CONTIGUOUS"] and patch.flags["WRITEABLE"]
+            assert len(list(frame.tiles)) == len(frame.changes.indices)
+    finally:
+        camera.release()
+
+
+def test_exact_tiles_lease_raises_after_release():
+    """The README promises `BufferReleasedError`, and the map staying readable."""
+    camera = _exact_camera()
+    try:
+        frame = _tiled(camera, tight_rectangles=True)
+        reason = frame.changes.reason
+        frame.release()
+        with pytest.raises(rapidshot.BufferReleasedError):
+            frame.materialize()
+        assert frame.changes.reason == reason, "the README says the map survives release"
+    finally:
+        camera.release()
+
+
+def test_grab_with_changes_block_runs_as_printed():
+    """The README's `grab_with_changes()` fields and `pixels.copy()`."""
+    camera = _exact_camera()
+    try:
+        for _ in range(4000):
+            frame = camera.grab_with_changes()
+            if frame is not None:
+                break
+        else:
+            pytest.skip("no frame captured — the screen must be changing")
+        with frame:
+            changes = frame.changes
+            assert changes.reason in ("initial", "reset", "changed", "identical")
+            assert changes.size == (frame.pixels.shape[1], frame.pixels.shape[0])
+            assert len(changes.rectangles) == len(changes.indices)
+            for left, top, right, bottom in changes.rectangles:
+                assert frame.pixels[top:bottom, left:right].shape[2] == 4
+            owned = frame.pixels.copy()
+        assert owned.shape[2] == 4, "the README offers copy() as the owned route"
+        with pytest.raises(rapidshot.BufferReleasedError):
+            frame.pixels
+    finally:
+        camera.release()
+
+
+def test_readme_names_the_change_types_the_package_exports():
+    """Every name the exact-tiles section tells a reader to import or catch."""
+    text = README.read_text(encoding="utf-8")
+    for name in ("ChangedFrame", "TiledFrame", "ChangeSet", "ChangeAuditStats",
+                 "BufferReleasedError", "PoolExhaustedError"):
+        assert name in text, f"the README no longer mentions {name}"
+        assert hasattr(rapidshot, name), f"README names {name}; rapidshot does not export it"
+        assert name in rapidshot.__all__, f"{name} is not in rapidshot.__all__"
+
+
+def test_change_audit_stats_block():
+    """`camera.change_audit_stats()`, as the README prints it."""
+    camera = _exact_camera()
+    try:
+        stats = camera.change_audit_stats()
+        for field in ("audited_frames", "miss_frames", "missed_tiles"):
+            assert hasattr(stats, field), f"the README names {field}"
+            assert getattr(stats, field) >= 0
+    finally:
+        camera.release()
+
+
+def test_the_exact_paths_refuse_what_the_readme_says_they_refuse():
+    """Known limitations: DXGI, CPU, BGRA8, SDR, one-shot — and no live stream."""
+    camera = _exact_camera()
+    try:
+        camera.start(video_mode=False)
+        try:
+            with pytest.raises(ValueError):
+                camera.grab_with_changes()
+            with pytest.raises(ValueError):
+                camera.grab_tiles()
+        finally:
+            camera.stop()
+    finally:
+        camera.release()
+
+
+def test_tile_size_matches_the_readme():
+    """The README states 128x128 tiles as a fixed number, not a setting."""
+    from rapidshot.changes import TILE_SIZE
+    assert TILE_SIZE == 128
+    assert "128×128" in README.read_text(encoding="utf-8")
