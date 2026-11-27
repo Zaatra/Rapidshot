@@ -123,9 +123,82 @@ rather than degrade quietly:
   it; **none of the GPU priorities below do.** If you want it, copy
   `.test/change-detection/{Cargo.toml,build.cmd,src}` from the Intel host and
   `cargo build --release` — it depends on `native/core`, which *is* tracked.
-- **The vendored `windows-capture` wheel** (see Priority 2).
+- **The vendored `windows-capture` wheel** (see Priority 3).
 
-## Priority 1 — refresh the README's GPU detector table
+## Priority 1 — exact changed tiles on a non-Intel GPU
+
+**This is the 2.9.0 feature itself, and the README says plainly that it has
+never run on NVIDIA or AMD.** Every figure for `grab_with_changes()` and
+`grab_tiles()` comes from one Intel integrated GPU at 1920×1080 and 100 Hz. The
+tested-hardware table carries the row *"Exact changed tiles on any non-Intel
+GPU — **Not run**"*, and `docs/EXACT_TILES.md` opens by calling itself
+provisional for exactly this reason. This machine is the first chance to change
+that, and its 2560×1600 165 Hz panel also varies the panel and the rate, which
+the README flags as unvaried.
+
+### Set the MUX to discrete-only first, or the whole exercise is wasted
+
+**In MUX hybrid mode the Intel UHD drives the display, so Desktop Duplication
+captures on Intel** — the manifests from the 2.6 runs say so in as many words:
+*"MUX hybrid: Intel UHD capture, RTX 4060 Laptop CUDA"* against *"MUX
+discrete-only: RTX 4060 Laptop drives the display and does the CUDA work"*.
+
+So a change-detection campaign in hybrid mode re-measures the Intel iGPU and
+proves nothing new, however many hours it takes. **Switch to discrete-only, and
+record which mode every result came from.** Hybrid is still worth a run, but as
+a second data point, not the headline.
+
+### Do not try to pair the exact paths with CUDA tensors
+
+`grab_with_changes()` and `grab_tiles()` **refuse GPU output by design** — an
+unsupported backend, GPU output, capture format or active stream raises
+`ValueError`, and they require a CPU BGRA8 SDR surface. That is not a gap to
+work around; the comparison is CPU-side on purpose, for the reason in the next
+item. If a script raises there, it is the contract talking.
+
+### The three things worth measuring
+
+1. **Does GPU-side comparison win once readback crosses PCIe?** On Intel,
+   comparing on the GPU cost **0.77 ms against 0.48 ms** for the CPU candidate
+   comparison, because the frame is going to the CPU anyway — so the shipped
+   comparison is CPU-side. The roadmap's § 4 entry says this is *"worth
+   retesting on a discrete card, where the readback crosses PCIe; not before"*.
+   This is that card. `idea_gpu.py` is the experiment. If GPU comparison wins
+   here, the shipped design is wrong for discrete GPUs and that is a finding
+   worth the trip on its own.
+2. **Does staging only the dirty tiles save more on a discrete card?** On
+   Intel, `grab_tiles()` cut readback per result from **7.91 MiB to 1.51 MiB**
+   and median result pixel age from **6.33 ms to 5.09 ms** against the
+   full-frame exact path. The README states the prediction and labels it one:
+   *"Staging only the dirty tiles should matter **more** on a discrete card,
+   where the copy crosses PCIe, but that is a prediction."* Confirm or refute
+   it.
+3. **Do the frozen release gates still pass on NVIDIA capture?** All four were
+   validated on Intel only: correctness, memory **≤ 12 MiB**, idle CPU **≤ +5%**
+   of process cycles/s, and a downstream saving **≥ 50%**. Re-run them rather
+   than assume. `run_cost_campaign.py` drives the cost matrix,
+   `exact_live_check.py` the live public-API check, `quiet_cycle_gate.py` and
+   `idle_path_probe.py` the idle-CPU gate. Read each script's arguments before
+   launching; several take hours.
+
+### Free wins on this hardware
+
+- **Cross-adapter tests actually run here.** On the Intel host they skip with
+  *"only one hardware adapter; destination can only be WARP"*. A hybrid Intel
+  UHD + RTX 4060 machine has two, and an earlier 2.6-era run exercised 32 live
+  cross-adapter tests. Run the full suite in **both** MUX modes and compare the
+  skip lists — the skips are where this feature is least tested.
+- **Rotation at 0/90/180/270°** was covered on a Lunar Lake laptop but not with
+  the exact paths. Cheap to add.
+
+### Still not covered by anything, including this machine
+
+Native 4K (the 4K figures are an offline replay at 3840×2160, not a panel), HDR
+(the separate UHD 630 + 4K HDR host, which only does clipped 10-bit HDR), and
+**AMD capturing** — the one case where the README notes a silent BGRA swizzle
+mismatch would corrupt rather than crash.
+
+## Priority 2 — refresh the README's GPU detector table
 
 This is the highest-value run, because the table is **2.6.0/2.6.1 data recorded
 2026-09-25** and the README says so. Three releases stale. It needs no new code.
@@ -147,7 +220,7 @@ measure, so expect them to hold. **Expecting is not measuring** — if they hold
 say so and relabel them 2.9.0; if they move, the README's 1.55× and 1.34×
 claims need rewriting, not footnoting.
 
-## Priority 2 — GPU inference avoidance
+## Priority 3 — GPU inference avoidance
 
 The CPU answer is known. The GPU question is whether gating still pays when an
 inference costs 5–15 ms instead of 75 ms.
@@ -169,7 +242,7 @@ or `pip install windows-capture==2.0.1`; if neither, drop the arm and say the
 native control is missing, because without it the comparison cannot distinguish
 RapidShot from what Windows exposes to anyone.
 
-## Priority 3 — what the critique asked for and nobody has measured
+## Priority 4 — what the critique asked for and nobody has measured
 
 In rough order of value. None of this exists yet.
 
